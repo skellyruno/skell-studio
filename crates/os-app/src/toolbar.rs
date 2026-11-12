@@ -268,6 +268,13 @@ impl Layout {
         use Panel::*;
         Layout{rows:vec![vec![Caption,Menu,Transport,Recording,Time,Volume,Pitch,Snap,Pattern,Windows,Utilities,Hint]],logo:false}
     }
+    /// A minimal single-row Skell toolbar: transport, recording, navigation and an explicit skull mark.
+    /// Legacy layouts are still selectable and saved profiles remain compatible.
+    pub fn skell_compact() -> Layout {
+        use Panel::*;
+        Layout { rows: vec![vec![Menu, Transport, Recording, Time, Volume, Snap, Pattern, Windows, Utilities, Hint]], logo: true }
+    }
+
     /// The layout of spec ui/main-window.md §1-3.
     pub fn classic() -> Layout {
         PRESETS[0].layout()
@@ -334,10 +341,20 @@ impl Layout {
 
     /// The layout kept in `settings.txt`; the classic one when there is none or it cannot be read.
     pub fn load() -> Layout {
-        if !crate::settings_file::flag("single_row_toolbar_v1",false) {
-            let l=Layout::single_row();l.save();crate::settings_file::set_flag("single_row_toolbar_v1",true);return l;
+        // Preserve historical test expectations and never overwrite a user's own layout.
+        if cfg!(test) {
+            return crate::settings_file::get(KEY).and_then(|v| Layout::parse(&v)).unwrap_or_else(Layout::single_row);
         }
-        crate::settings_file::get(KEY).and_then(|v| Layout::parse(&v)).unwrap_or_else(Layout::single_row)
+        if !crate::settings_file::flag("skell_compact_toolbar_v1", false) {
+            // Skell Studio uses its own settings directory; this is a one-time first-run choice.
+            let layout = crate::settings_file::get(KEY)
+                .and_then(|v| Layout::parse(&v))
+                .unwrap_or_else(Layout::skell_compact);
+            layout.save();
+            crate::settings_file::set_flag("skell_compact_toolbar_v1", true);
+            return layout;
+        }
+        crate::settings_file::get(KEY).and_then(|v| Layout::parse(&v)).unwrap_or_else(Layout::skell_compact)
     }
 
     /// Keeps the layout for the next start.

@@ -867,7 +867,7 @@ impl ApplicationHandler for Shell {
         }
         splash::step(&self.splash, splash::WINDOW, "Opening the main window");
         let attrs = Window::default_attributes()
-            .with_title("AQUILA")
+            .with_title(crate::version::NAME)
             .with_decorations(false)
             .with_inner_size(LogicalSize::new(1920.0, 1080.0))
             // Layouts are measured at 1920x1080 and are not responsive yet; below this they break.
@@ -1543,7 +1543,7 @@ impl ApplicationHandler for Shell {
 /// The application id on Linux: Wayland's app id and X11's WM_CLASS, matching `assets/lemonstudio.desktop` (a nightly's
 /// AppImage: `lemonstudio-nightly.desktop`, `tools/package/appimage.sh`).
 #[cfg(all(unix, not(target_os = "macos")))]
-const APP_ID: &str = if version::NIGHTLY { "lemonstudio-nightly" } else { "lemonstudio" };
+const APP_ID: &str = if version::NIGHTLY { "skell-studio-nightly" } else { "skell-studio" };
 
 /// The app icon as RGBA bytes, width and height: `assets/lemonstudio.png` (a nightly's: `lemonstudio-nightly.png`), 256 px
 /// (X11 windows show it; Wayland takes the desktop entry's).
@@ -2108,8 +2108,8 @@ fn attach_console() {
 #[cfg(target_os = "linux")]
 fn name_audio_streams() {
     let names = [
-        ("PIPEWIRE_ALSA", "{ application.name = \"AQUILA\" node.description = \"AQUILA\" application.icon-name = \"lemonstudio\" }"),
-        ("PULSE_PROP", "application.name='AQUILA' application.icon_name=lemonstudio"),
+        ("PIPEWIRE_ALSA", "{ application.name = \"Skell Studio\" node.description = \"Skell Studio\" application.icon-name = \"skell-studio\" }"),
+        ("PULSE_PROP", "application.name='Skell Studio' application.icon_name=skell-studio"),
     ];
     for (var, value) in names {
         if std::env::var_os(var).is_none() {
@@ -2205,7 +2205,7 @@ fn main() {
     }
     // The control plane's socket (spec: roadmap/control-plane.md): beside the window, or without one.
     let control = control::server::Flags::take(&mut args).unwrap_or_else(|e| {
-        eprintln!("AQUILA: {e}");
+        eprintln!("Skell Studio: {e}");
         std::process::exit(2);
     });
     let level = control.level.unwrap_or(control::Level::Edit);
@@ -2262,7 +2262,7 @@ fn main() {
                     server.token = control.token.clone();
                 }
                 let m = format!("Control plane: {}", server.describe());
-                eprintln!("AQUILA: {m}");
+                eprintln!("Skell Studio: {m}");
                 app.listen(server);
                 m
             }

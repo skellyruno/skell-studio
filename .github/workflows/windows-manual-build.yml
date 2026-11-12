@@ -16,10 +16,10 @@ jobs:
         env:
           OPENSTUDIO_NO_PLUGIN_BUILD: "1"
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
-        run: cargo build --locked --release -p os-app --bin lemonstudio
+        run: cargo build --locked --release -p os-app --bin skell-studio
       - uses: actions/upload-artifact@v4
         with:
           name: SkellStudio-Windows-DAW-Engineering-Baseline
-          path: target/release/lemonstudio.exe
+          path: target/release/skell-studio.exe
           if-no-files-found: error
           retention-days: 14

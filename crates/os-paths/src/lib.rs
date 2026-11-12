@@ -16,9 +16,9 @@
 use std::path::PathBuf;
 
 /// The folder's own name inside the platform's per-user settings folder.
-const APP: &str = "AQUILA";
+const APP: &str = "Skell Studio";
 /// Its name before the rename to Lemon Studio (`legacy_dir`).
-const LEGACY: &str = "OpenStudio";
+// No automatic migration of legacy profiles.
 
 /// Lemon Studio's per-user folder, or `None` when the platform has none (or its variables are not set). It may not
 /// exist yet: writers create it.
@@ -32,17 +32,16 @@ pub fn user_dir() -> Option<PathBuf> {
 /// The per-user folder from before the rename to Lemon Studio (`OpenStudio` in the same place), which the app moves to
 /// [`user_dir`] once. `None` when `OPENSTUDIO_USER_DIR` chooses the folder.
 pub fn legacy_dir() -> Option<PathBuf> {
-    if var("OPENSTUDIO_USER_DIR").is_some() || profile_name(std::env::current_exe().ok().as_deref()) != APP {
-        return None;
-    }
-    platform_dir().map(|d| d.join(LEGACY))
+    // Skell Studio is a distinct product: never silently move settings from the upstream apps.
+    // A future import wizard can migrate data with explicit user consent.
+    None
 }
 
 /// Keep the dedicated local preview isolated even when opened directly or pinned to the taskbar.
 /// Public releases keep their normal executable name and profile. Explicit user-dir overrides still win.
 fn profile_name(exe: Option<&std::path::Path>) -> &'static str {
-    if exe.and_then(|p|p.file_stem()).and_then(|n|n.to_str()).is_some_and(|n|n.eq_ignore_ascii_case("lemonstudio-development")) {
-        "AQUILA Public Preview"
+    if exe.and_then(|p|p.file_stem()).and_then(|n|n.to_str()).is_some_and(|n|n.eq_ignore_ascii_case("skell-studio-development")) {
+        "Skell Studio Public Preview"
     } else { APP }
 }
 
@@ -99,9 +98,9 @@ mod tests {
 
     #[test]
     fn development_profile_is_isolated_for_direct_launch() {
-        assert_eq!(profile_name(Some(std::path::Path::new("lemonstudio-development.exe"))), "AQUILA Public Preview");
-        assert_eq!(profile_name(Some(std::path::Path::new("LEMONSTUDIO-DEVELOPMENT.exe"))), "AQUILA Public Preview");
-        assert_eq!(profile_name(Some(std::path::Path::new("lemonstudio.exe"))), APP);
+        assert_eq!(profile_name(Some(std::path::Path::new("skell-studio-development.exe"))), "Skell Studio Public Preview");
+        assert_eq!(profile_name(Some(std::path::Path::new("SKELL-STUDIO-DEVELOPMENT.exe"))), "Skell Studio Public Preview");
+        assert_eq!(profile_name(Some(std::path::Path::new("skell-studio.exe"))), APP);
         assert_eq!(profile_name(None),APP);
     }
 

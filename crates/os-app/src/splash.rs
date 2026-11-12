@@ -10,10 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use os_ui::{Canvas, Color, Font};
-use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
+use tiny_skia::Pixmap;
 
 pub const SIZE: (f32, f32) = (500.0, 500.0);
-const LOGO_WIDTH: f32 = 350.0;
+// The brand mark and typography are drawn by Canvas, not a bitmap.
 
 /// Where startup's steps start on the gauge (0..1). The opened project's loading fills it from `LOADING` to `LOADED`.
 pub const SETTINGS: f32 = 0.06;
@@ -244,9 +244,7 @@ fn device(scale: f32) -> (u32, u32) {
 }
 
 struct Painter {
-    scale: f32,
     frame: Canvas,
-    logo: Pixmap,
 }
 
 impl Painter {
@@ -254,31 +252,44 @@ impl Painter {
         let (w, h) = device(scale);
         let mut frame = Canvas::new(w, h, scale).ok()?;
         frame.set_theme_font(2, None);
-        let logo = Pixmap::decode_png(include_bytes!("../assets/ml-splash.png")).ok()?;
-        Some(Self { scale, frame, logo })
+        Some(Self { frame })
     }
 
     fn paint(&mut self, look: &Look) -> &Pixmap {
         let cv = &mut self.frame;
         cv.pixmap.fill(tiny_skia::Color::TRANSPARENT);
-        let width = LOGO_WIDTH * look.scale;
-        let k = width / self.logo.width() as f32;
-        let height = self.logo.height() as f32 * k;
-        let transform = Transform::from_translate(
-            (SIZE.0 - width) * self.scale / 2.0,
-            (220.0 - height / 2.0) * self.scale,
-        ).pre_scale(k * self.scale, k * self.scale);
-        let smooth = PixmapPaint { quality: FilterQuality::Bicubic, ..PixmapPaint::default() };
-        cv.pixmap.draw_pixmap(0, 0, self.logo.as_ref(), &smooth, transform, None);
+        // Compact hardware-inspired black surface. No inherited ML splash image.
+        let panel = os_ui::Rect::new(55.0, 32.0, 390.0, 442.0);
+        cv.fill_rrect(panel, 22.0, Color::rgb(0x0a100b));
+        cv.stroke_rrect(panel, 22.0, 1.0, Color::rgb(0x36563b));
+        let green = os_theme::design::lemon::MAIN;
+        let glow = os_theme::design::lemon::DEEP;
+        cv.fill_rrect(os_ui::Rect::new(204.0, 52.0, 92.0, 4.0), 2.0, glow);
+        crate::icons::logo(cv, 250.0, 189.0, 89.0 * look.scale, green);
 
-        let ink = os_theme::design::lemon::MAIN;
-        let span = 136.0;
+        let f = Font::new(42);
+        let white = Color::rgb(0xf0f5ed);
+        let title = "SKELL";
+        let suffix = "STUDIO";
+        let gap = 9.0;
+        let a = cv.text_width(f, title);
+        let b = cv.text_width(f, suffix);
+        let start = (SIZE.0 - a - b - gap) / 2.0;
+        cv.text(f, start, 324.0, white, title);
+        cv.text(f, start + a + gap, 324.0, green, suffix);
+        let caption = "CREATE WITHOUT LIMITS";
+        let small = Font::new(13);
+        cv.text(small, (SIZE.0 - cv.text_width(small, caption)) / 2.0, 357.0, Color::rgb(0xb1c4ac), caption);
+
+        let span = 248.0;
         let x = (SIZE.0 - span) / 2.0;
-        cv.line(x, 429.0, x + span, 429.0, 2.0, ink.with_alpha(75));
-        cv.line(x, 429.0, x + span * look.progress, 429.0, 2.0, ink);
-        let font = Font::new(14);
-        let w = cv.text_width(font, &look.caption);
-        cv.text(font, (SIZE.0 - w) / 2.0, 443.0, Color::rgb(0xffffff), &look.caption);
+        cv.fill_rrect(os_ui::Rect::new(x, 409.0, span, 3.0), 1.5, Color::rgb(0x263c2a));
+        if look.progress > 0.0 {
+            cv.fill_rrect(os_ui::Rect::new(x, 409.0, span * look.progress, 3.0), 1.5, green);
+        }
+        let status_font = Font::new(14);
+        let w = cv.text_width(status_font, &look.caption);
+        cv.text(status_font, (SIZE.0 - w) / 2.0, 439.0, white, &look.caption);
         &cv.pixmap
     }
 }
@@ -305,7 +316,7 @@ mod win {
 
     use super::{device, Anim, Painter, Shared};
 
-    const CLASS: &str = "LemonStudioSplash";
+    const CLASS: &str = "SkellStudioSplash";
     /// The frame timer and its period (ms).
     const TIMER: usize = 1;
     const FRAME_MS: u32 = 15;
@@ -412,7 +423,7 @@ mod win {
             wc.hInstance = inst;
             wc.lpszClassName = class.as_ptr();
             RegisterClassW(&wc);
-            let title = wide("AQUILA");
+            let title = wide("Skell Studio");
             // Layered (per-pixel alpha) and transparent to the mouse; above every window that is not topmost too; a
             // tool window takes no taskbar button; never activated, so the main window gets the focus as before.
             let hwnd = CreateWindowExW(
@@ -606,7 +617,7 @@ mod x11 {
         if let (Some(ty), Some(splash)) = (atom(b"_NET_WM_WINDOW_TYPE"), atom(b"_NET_WM_WINDOW_TYPE_SPLASH")) {
             let _ = c.change_property32(PropMode::REPLACE, win, ty, AtomEnum::ATOM, &[splash]);
         }
-        let _ = c.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, b"AQUILA");
+        let _ = c.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, b"Skell Studio");
         let _ = c.change_property8(PropMode::REPLACE, win, AtomEnum::WM_CLASS, AtomEnum::STRING, b"lemonstudio\0LemonStudio\0");
         // No input region: clicks go through to what is behind.
         let _ = c.shape_rectangles(shape::SO::SET, shape::SK::INPUT, ClipOrdering::UNSORTED, win, 0, 0, &[]);
@@ -924,15 +935,15 @@ mod tests {
             let first = painter.paint(&look).clone();
             let at = |p: &Pixmap, x: f32, y: f32| p.pixel((x * scale) as u32, (y * scale) as u32).unwrap();
             assert_eq!(at(&first, 0.0, 0.0).alpha(), 0);
-            assert_eq!(at(&first, 250.0, 180.0).alpha(), 0);
-            assert!(first.pixels().iter().any(|p| p.alpha() == 255 && p.blue() > 230 && p.red() < 50));
+            assert!(at(&first, 250.0, 180.0).alpha() > 0);
+            assert!(first.pixels().iter().any(|p| p.alpha() == 255 && p.green() > 200 && p.red() > 100));
             look.progress = 1.0;
             let last = painter.paint(&look);
-            assert!(at(last, 285.0, 429.0).alpha() > at(&first, 285.0, 429.0).alpha());
+            assert!(at(last, 285.0, 410.0).green() > at(&first, 285.0, 410.0).green());
             if let Some(dir) = std::env::var_os("LEMON_SPLASH_PREVIEW") {
                 let dir = std::path::PathBuf::from(dir);
                 std::fs::create_dir_all(&dir).unwrap();
-                last.save_png(dir.join(format!("ml-splash-{scale}.png"))).unwrap();
+                last.save_png(dir.join(format!("skell-splash-{scale}.png"))).unwrap();
             }
         }
     }

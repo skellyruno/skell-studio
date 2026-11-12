@@ -338,20 +338,23 @@ pub fn paint(ui:&mut Ui,s:&State){
     ui.hit(r,Action::PluginPicker(Hit::Background),"Plugin picker");
     ui.hit(Rect::new(r.x, r.y, r.w - 88., 49.), Action::PluginPicker(Hit::ChainMovePanel), "Drag to move Plugin Picker");
     use os_ui::Color;
-    let lemon=Color::rgb(0x2096f3);
-    ui.c.fill_rect_gradient(r,Color::rgb(0x202124),Color::rgb(0x111215),14.);
-    ui.c.stroke_rrect(r,14.,1.,Color::rgb(0x46474b));
+    let lemon=ui.t.accent;
+    // Skell Studio's plugin vault: keep original sizing and drag targets, replace the inherited skin.
+    ui.c.fill_rect_gradient(r,ui.t.window_body,ui.t.sunken,14.);
+    ui.c.stroke_rrect(r,14.,1.,ui.t.window_border);
     let title=match v.target{Target::Gen(_)|Target::Replace(_)|Target::Stack(_)|Target::MemberInst(..)|Target::Track(_)=>"Choose an instrument",Target::Fx(_)|Target::ClipFx(..)|Target::Container(_)|Target::Member(..)=>"Choose an effect",Target::All=>"Choose a plugin"};
     let progress=crate::plugin_previews::progress();
     let btn=|ui:&mut Ui,b:Rect,label:&'static str,hit:Hit,on:bool|{
         let hover=ui.hit(b,Action::PluginPicker(hit),label);
-        let bg=if on {lemon} else if hover {Color::rgb(0x393a3e)} else {Color::rgb(0x2a2b2e)};
-        ui.c.fill_rect_gradient(b,bg.shade(0.08),bg.shade(-0.08),b.h*0.42);
-        ui.c.text_center(Font::light(12,0).natural(),b,if on {Color::rgb(0x191910)}else{ui.t.text},label);
+        let bg=if on {ui.t.button.mix(lemon,0.21)} else if hover {ui.t.button_hi} else {ui.t.button};
+        ui.c.fill_rect_gradient(b,bg.shade(0.08),bg.shade(-0.12),b.h*0.28);
+        ui.c.stroke_rrect(b.inset(0.5),b.h*0.28,1.0,if on {lemon}else{ui.t.window_border});
+        ui.c.text_center(Font::light(12,0).natural(),b,if on {lemon}else{ui.t.text},label);
     };
-    ui.c.fill_circle(r.x+32.,r.y+29.,13.,lemon);
-    for i in 0..6 {let a=i as f32*std::f32::consts::TAU/6.;ui.c.line(r.x+32.,r.y+29.,r.x+32.+11.*a.cos(),r.y+29.+11.*a.sin(),1.,Color::rgb(0x212222));}
-    ui.c.text_clip(Font::light(19,0).bold(),r.x+55.,r.y+17.,145.,ui.t.text,"AQUILA");
+    crate::icons::logo(ui.c,r.x+32.,r.y+28.,16.,lemon);
+    let brand_font = Font::light(18,0).bold();
+    ui.c.text_clip(brand_font,r.x+55.,r.y+16.,65.,ui.t.text,"SKELL");
+    ui.c.text_clip(brand_font,r.x+115.,r.y+16.,85.,lemon,"STUDIO");
     ui.c.text_clip(Font::light(15,0),r.x+203.,r.y+20.,r.w-260.,ui.t.text_dim,title);
     btn(ui,Rect::new(r.right()-81.,r.y+12.,30.,28.),"−",Hit::Minimize,false);
     btn(ui,Rect::new(r.right()-46.,r.y+12.,30.,28.),"×",Hit::Close,false);
@@ -362,7 +365,7 @@ pub fn paint(ui:&mut Ui,s:&State){
     let sort = Rect::new(r.right()-128.,r.y+54.,110.,32.);
     let sw = (sort.x - r.x - 26. - tabs).max(1.);
     let search=Rect::new(r.x+18.,r.y+54.,sw,33.);
-    ui.c.fill_rrect(search,16.,Color::rgb(0x161719));ui.c.stroke_rrect(search,16.,1.,lemon.with_alpha(170));
+    ui.c.fill_rrect(search,16.,ui.t.sunken);ui.c.stroke_rrect(search,16.,1.,lemon.with_alpha(170));
     ui.c.stroke_circle(search.x+15.,search.cy()-2.,4.,1.2,ui.t.text_dim);
     ui.c.line(search.x+18.,search.cy()+1.,search.x+22.,search.cy()+5.,1.3,ui.t.text_dim);
     ui.c.text_clip(Font::light(13,0),search.x+29.,search.y+8.,search.w-55.,ui.t.text,if v.query.is_empty(){if v.filter==chains::FILTER{"Search chains..."}else{"Search plugins..."}}else{&v.query});
@@ -405,7 +408,7 @@ pub fn paint(ui:&mut Ui,s:&State){
             let card=Rect::new(x+(n%cols) as f32*(cardw+8.),r.y+122.+(n/cols) as f32*138.,cardw,130.);
             let hover=ui.hit(card,Action::PluginPicker(Hit::Tile(fx,e.index)),if v.filter==5{format!("{} - select, then Restore to show again",e.label)}else{format!("{} - select, double-click to add, or drag to {}",e.label,if fx{"the mixer"}else{"the channel rack"})});
             let accent=lemon;
-            ui.c.fill_rect_gradient(card,Color::rgb(0x2d2e31),Color::rgb(0x202124),9.);
+            ui.c.fill_rect_gradient(card,ui.t.button,ui.t.window_body,9.);
             if hover||v.multi.contains(&(fx,e.index)){ui.c.stroke_rrect(card,9.,if v.multi.contains(&(fx,e.index)){2.}else{0.8},accent);}
             let preview=Rect::new(card.x+10.,card.y+8.,card.w-20.,92.);
             if let Some(p)=v.images.get(&e.uid){crate::plugin_artwork::draw(ui,preview,p);}else{fallback(ui,preview,fx);}
@@ -414,13 +417,14 @@ pub fn paint(ui:&mut Ui,s:&State){
         }
     }
     let inspector=Rect::new(r.x+18.,r.bottom()-76.,r.w-36.,66.);
-    ui.c.fill_rrect(inspector,6.,ui.t.s(0x111a1e));
+    ui.c.fill_rrect(inspector,6.,ui.t.sunken);
+    ui.c.stroke_rrect(inspector.inset(0.5),6.,1.,ui.t.window_border);
     if let Some((fx,e))=current {
             let pic=Rect::new(inspector.x+8.,inspector.y+5.,112.,56.);
             if let Some(p)=v.images.get(&e.uid){crate::plugin_artwork::draw(ui,pic,p);}else{fallback(ui,pic,fx);}
             let x=inspector.x+134.;let w=(inspector.w-390.).max(80.);
             ui.c.text_clip(Font::light(15,0).natural().bold(),x,inspector.y+8.,w,ui.t.text,&e.label);
-            ui.c.text_clip(Font::new(11),x,inspector.y+29.,w,ui.t.text_dim,&format!("Category: {}   |   Developer: {}",e.category,if e.builtin && e.vendor == crate::plugin_db::BUILTIN_VENDOR { "AQUILA" } else { &e.vendor }));
+            ui.c.text_clip(Font::new(11),x,inspector.y+29.,w,ui.t.text_dim,&format!("Category: {}   |   Developer: {}",e.category,if e.builtin && e.vendor == crate::plugin_db::BUILTIN_VENDOR { "Bundled (upstream)" } else { &e.vendor }));
             ui.c.text_clip(Font::new(10),x,inspector.y+47.,w,ui.t.text_dim,if v.filter==5{"Hidden from picker - select and Restore below"}else if progress.summary.is_empty(){"Ctrl/Cmd-click: toggle - Shift-click: range"}else{&progress.summary});
             if v.filter!=5{btn(ui,Rect::new(inspector.right()-186.,inspector.y+17.,100.,32.),"Choose",Hit::Choose,true);}
     }

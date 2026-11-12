@@ -689,6 +689,17 @@ mod tests {
     }
 
     #[test]
+    fn skell_brand_is_matte_black_with_high_contrast_neon_green() {
+        let p = palette(Design::Lemon, None);
+        assert_eq!(Design::Lemon.name(), "Skell");
+        assert_eq!(Design::parse("Studio"), Some(Design::Lemon), "old presets stay readable");
+        assert!(lemon::MAIN.g > lemon::MAIN.r && lemon::MAIN.r > lemon::MAIN.b);
+        assert!(p.workspace.r < 25 && p.workspace.g < 25 && p.workspace.b < 25);
+        assert!(p.mixer_strip.g < 50 && p.toolbar.g < 40);
+        assert_eq!(p.playhead, lemon::MAIN);
+    }
+
+    #[test]
     fn lemon_uses_the_brand_colours() {
         let p = palette(Design::Lemon, None);
         assert!(p.style.lemon());

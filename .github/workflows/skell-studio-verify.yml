@@ -1,0 +1,42 @@
+name: Skell Studio — branding and engine compile gates
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/skell-studio-verify.yml"
+      - "crates/os-app/**"
+      - "crates/os-theme/**"
+      - "crates/os-paths/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: skell-verify-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  core-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run theme and settings-path unit tests
+        run: cargo test --locked -p os-theme -p os-paths
+      - name: Check merge safety invariants
+        run: python3 scripts/verify_source_merge.py
+  windows-check:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify Skell Studio Windows code compiles
+        shell: pwsh
+        env:
+          OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        run: cargo check --locked -p os-app --bin skell-studio

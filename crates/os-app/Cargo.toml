@@ -1,12 +1,12 @@
 [package]
 name = "os-app"
-description = "AQUILA: the application"
+description = "Skell Studio: the application"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "lemonstudio"
+name = "skell-studio"
 path = "src/main.rs"
 
 [features]

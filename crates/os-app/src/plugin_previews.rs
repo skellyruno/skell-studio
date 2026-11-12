@@ -121,7 +121,7 @@ fn update(f: impl FnOnce(&mut Progress)) {
     j.progress.revision += 1;
 }
 fn run(queue: Vec<Task>, cancel: Arc<AtomicBool>) {
-    let mut report=String::from("AQUILA automatic plugin previews\nOnly this capture's editor window is photographed. No desktop or microphone capture.\n\n");
+    let mut report=String::from("Skell Studio automatic plugin previews\nOnly this capture's editor window is photographed. No desktop or microphone capture.\n\n");
     for task in queue {
         if cancel.load(Ordering::Acquire) {
             break;

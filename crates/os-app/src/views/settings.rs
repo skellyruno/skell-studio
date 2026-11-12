@@ -337,10 +337,10 @@ fn update_lines() -> Vec<Row> {
 /// MIDI: lists the devices again (`App::midi_refresh`); Update MIDI scripts stays greyed with its reason.
 pub const REFRESH_MIDI: &str = "Refresh device list";
 pub const UPDATE_SCRIPTS: &str = "Update MIDI scripts";
-const NO_SCRIPTS: &str = "AQUILA has no MIDI scripts";
+const NO_SCRIPTS: &str = "Skell Studio has no MIDI scripts yet";
 /// MIDI: Performance mode MIDI channel stays greyed with its reason.
 pub const PERFORMANCE_CHANNEL: &str = "Performance mode MIDI channel";
-const NO_PERFORMANCE: &str = "AQUILA has no playlist performance mode";
+const NO_PERFORMANCE: &str = "Skell Studio has no playlist performance mode yet";
 
 /// `LIVE`, and the checks declared in `crate::prefs`.
 fn live(key: &str) -> bool {
@@ -369,7 +369,7 @@ pub const BUFFER_LENGTH: &str = "Buffer length";
 pub const MODE: &str = "Mode";
 pub const MODE_SHARED: &str = "Shared (other programs play too)";
 #[cfg(not(target_os = "linux"))]
-pub const MODE_EXCLUSIVE: &str = "Exclusive (AQUILA alone, smaller buffers)";
+pub const MODE_EXCLUSIVE: &str = "Exclusive (Skell Studio only, smaller buffers)";
 #[cfg(target_os = "linux")]
 pub const MODE_EXCLUSIVE: &str = "Exclusive (ALSA directly, past the sound server)";
 /// Linux: as a client of the JACK server (`audio_cfg::AudioCfg::jack`).
@@ -753,15 +753,15 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                         let device = st.audio.device.as_deref().unwrap_or("the default device");
                         let alone = exclusive.then(|| {
                             let line = if cfg!(windows) {
-                                format!("Other programs can't play on {device} while AQUILA has it open.")
+                                format!("Other programs can't play on {device} while Skell Studio has it open.")
                             } else {
-                                format!("Other programs can't play on {device} while AQUILA has it open through ALSA (it lets go once nothing plays).")
+                                format!("Other programs can't play on {device} while Skell Studio has it open through ALSA (it lets go once nothing plays).")
                             };
                             Text(line, true)
                         });
                         // JACK: its server sets the rate and buffer length; the ports connect to the system's own.
                         let jack = st.audio.jack().then(|| {
-                            Text("AQUILA plays as a JACK client at the server's rate and buffer length (set them in the server, e.g. qjackctl); its ports connect to the system playback and capture ports. With no JACK server running it plays as in shared mode.".into(), true)
+                            Text("Skell Studio plays as a JACK client at the server's rate and buffer length (set them in the server, e.g. qjackctl); its ports connect to the system playback and capture ports. With no JACK server running it plays as in shared mode.".into(), true)
                         });
                         std::iter::once(mode).chain(alone).chain(jack).collect()
                     } else {
@@ -1176,7 +1176,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
         }
         DEBUG => {
             let mut lines = vec![
-                format!("AQUILA {}", crate::version::text()),
+                format!("Skell Studio {}", crate::version::text()),
                 format!("Project: {}", s.path.as_ref().map_or("(new project)".into(), |p| p.display().to_string())),
                 format!("Saved by: {}", s.project.saved_by),
                 format!("PPQ {}, tempo {:.3}", s.project.ppq, s.tempo),
@@ -1198,11 +1198,11 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             g("", [
                 vec![
                     Gap(20.0),
-                    Big("AQUILA".into()),
+                    Big("SKELL STUDIO".into()),
                     txt(&format!("Version {} · build {}", crate::version::staged(), crate::updates::VERSION)),
-                    txt("Based on ML Studio by Michael Lane and Lemon Studio by its contributors."),
+                    txt("A Skelly DAW built on the open-source ADE, ML Studio and Lemon Studio codebases."),
                     txt("A digital audio workstation written in Rust."),
-                    txt("Copyright (C) 2026 ItsAlphaNeon and the upstream contributors."),
+                    txt("Copyright (C) 2026 ItsAlphaNeon and contributors. Skell Studio changes by Skelly."),
                     Buttons(vec![(WEBSITE, 80.0), (WIKI, 64.0), (SOURCE_CODE, 100.0)]),
                     Gap(10.0),
                 ],
@@ -1224,12 +1224,12 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             .flatten()
             .collect()),
             g("Licence", vec![
-                Big("AQUILA needs no account.".into()),
+                Big("Skell Studio needs no account.".into()),
                 txt("It is free software: you can redistribute it and/or modify it under the terms"),
                 txt("of the GNU General Public License, version 3 or (at your option) any later version."),
                 txt("It comes with ABSOLUTELY NO WARRANTY. Licence: https://www.gnu.org/licenses/"),
-                txt("No registration and no usage data. Release builds ask GitHub for updates"),
-                txt("(Settings > General > Updates); a build from source never goes online."),
+                txt("No registration and no usage data. Automatic updates are disabled in this fork"),
+                txt("while the first-party Skell Studio update channel is being developed."),
             ]),
         ],
     }

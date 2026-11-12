@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Skell Studio provisional original mark, created for Skelly, 2026-11-12.
+     Geometry is intentionally matched by tools/branding/generate_skell_icons.py.
+     Final master SkellCore skull can supersede this without altering application formats. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Skell Studio skull">
+  <defs>
+    <linearGradient id="bone" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#d7ffa4"/>
+      <stop offset=".48" stop-color="#a3ff39"/>
+      <stop offset="1" stop-color="#3fae3f"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#bone)" stroke="#152419" stroke-width="1.5"
+        d="M27 10 L38 5 L63 5 L75 10 L85 26 L84 49 L77 63 L69 70 L69 84 L62 90 L55 85 L50 91 L45 85 L39 90 L32 84 L32 70 L24 63 L17 49 L16 26 Z"/>
+  <path fill="#0a130c" d="M24 36 L45 37 L40 53 L31 55 L23 48 Z"/>
+  <path fill="#0a130c" d="M55 37 L76 36 L77 48 L69 55 L60 53 Z"/>
+  <path fill="#0a130c" d="M50 54 L56 62 L44 62 Z"/>
+  <path fill="none" stroke="#101b12" stroke-width="2.5" stroke-linecap="round"
+        d="M39 72 V86 M50 72 V88 M61 72 V86"/>
+</svg>

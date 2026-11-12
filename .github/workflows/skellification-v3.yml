@@ -1,0 +1,46 @@
+name: Skell Studio UI v3 - unified controls
+on:
+  push:
+    paths:
+      - ".github/workflows/skellification-v3.yml"
+      - "scripts/apply_skell_ui_v3.py"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: skell-ui-v3-apply
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply anchored UI-only changes
+        run: |
+          python3 -m py_compile scripts/apply_skell_ui_v3.py
+          python3 scripts/apply_skell_ui_v3.py
+          python3 scripts/verify_source_merge.py
+          git diff --check
+      - name: Test design and profile compatibility
+        run: cargo test --locked -p os-theme -p os-paths
+  commit-validated:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply tested transformations
+        run: python3 scripts/apply_skell_ui_v3.py
+      - name: Commit tool visual system
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/os-app/src/views/playlist.rs crates/os-app/src/views/piano.rs crates/os-app/src/views/mixer.rs
+          git diff --cached --check
+          git diff --cached --stat
+          git commit -m "style: share original Skell controls across playlist, piano roll and mixer"
+          git push origin HEAD:main

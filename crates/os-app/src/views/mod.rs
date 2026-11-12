@@ -463,6 +463,14 @@ pub fn window_frame_ex(ui: &mut Ui, win: Win, r: Rect, title: &str, title_x: f32
         ui.c.fill_rect_gradient(bar, t.window_title.shade(0.04), t.window_title.shade(-0.03), 0.0);
         ui.c.fill_rect(Rect::new(r.x, r.y + 22.0, r.w, 1.0), t.splitter_dark);
     }
+    // Shared Skell title trim visually unifies the arrangement, keys and mix
+    // workspaces without changing draggable window regions or tool positions.
+    if !t.style.vintage_2005
+        && kit::lemon::on(t)
+        && matches!(win, Win::Playlist | Win::PianoRoll | Win::Mixer)
+    {
+        skell_chrome::title_trim(ui, bar);
+    }
     let font = if t.style.vintage_2005 {os_ui::Font::vintage(12)}else{kit::title_font(t, os_ui::Font::new(17))};
     // The title stops short of the window buttons (a narrow window cuts it).
     ui.c.text_clip(font, r.x + title_x, r.y + 1.0, (title_room(r, buttons) - title_x).max(0.0), t.text, title);

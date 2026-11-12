@@ -122,9 +122,13 @@ def main():
                  '-DGRIDLINE_BUNDLED_SDL2=ON', '-DGRIDLINE_COLLAB=OFF',
                  '-DGRIDLINE_GUI_TESTS=OFF', '-DGRIDLINE_DEV_ASSETS=OFF']
     if os.name == 'nt':
-        # CMake selects the installed MSVC toolchain without requiring a modified user shell.
-        configure += ['-G', 'Visual Studio 17 2022', '-A',
-                      'ARM64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x64']
+        # Let CMake find the installed Visual Studio version. Pinning VS 2022
+        # broke Windows CI as soon as hosted runners moved to newer MSVC.
+        # A configured Ninja generator does not support "-A".
+        generator = os.environ.get('CMAKE_GENERATOR', '')
+        if not generator or 'Visual Studio' in generator:
+            configure += ['-A',
+                          'ARM64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x64']
     if os.environ.get('CMAKE_OSX_ARCHITECTURES'):
         configure += ['-DCMAKE_OSX_ARCHITECTURES=' + os.environ['CMAKE_OSX_ARCHITECTURES']]
     run(configure)

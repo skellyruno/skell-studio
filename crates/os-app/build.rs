@@ -110,12 +110,12 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "The AQUILA contributors"
+      VALUE "CompanyName", "Skell Studio and upstream contributors"
       VALUE "FileDescription", "{name}"
       VALUE "FileVersion", "{text}"
-      VALUE "InternalName", "lemonstudio"
-      VALUE "LegalCopyright", "Copyright (C) 2026 ItsAlphaNeon and the AQUILA contributors. GPL-3.0-or-later."
-      VALUE "OriginalFilename", "lemonstudio.exe"
+      VALUE "InternalName", "skell-studio"
+      VALUE "LegalCopyright", "Copyright (C) 2026 ItsAlphaNeon and Skell Studio contributors. GPL-3.0-or-later."
+      VALUE "OriginalFilename", "skell-studio.exe"
       VALUE "ProductName", "{name}"
       VALUE "ProductVersion", "{text}"
     END
@@ -173,7 +173,7 @@ fn main() {
     };
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let out = out_dir.join("lemonstudio.res");
-    let (ico, name) = if nightly { ("assets/lemonstudio-nightly.ico", "AQUILA Nightly") } else { ("assets/lemonstudio.ico", "AQUILA") };
+    let (ico, name) = if nightly { ("assets/lemonstudio-nightly.ico", "Skell Studio Nightly") } else { ("assets/lemonstudio.ico", "Skell Studio") };
     let ico = std::path::absolute(ico).expect("icon path");
     let script = out_dir.join("lemonstudio.rc");
     std::fs::write(&script, resource_script(&ico, &version, name)).expect("resource script");

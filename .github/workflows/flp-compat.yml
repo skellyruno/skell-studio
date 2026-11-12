@@ -1,0 +1,25 @@
+name: Skell Studio FLP compatibility regression
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/flp-compat.yml"
+      - "crates/os-flp/**"
+      - "crates/os-model/**"
+      - "crates/os-app/src/project_files.rs"
+      - "crates/os-app/src/zipped.rs"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  flp-roundtrip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify lossless FLP container and typed project tests
+        run: cargo test --locked -p os-flp --lib
+      - name: Compile all FLP integration tests
+        run: cargo test --locked -p os-flp --tests --no-run

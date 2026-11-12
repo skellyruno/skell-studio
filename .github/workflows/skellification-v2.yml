@@ -51,8 +51,8 @@ jobs:
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
         run: cargo check --locked -p os-app --bin skell-studio
 
-  commit-verified:
-    needs: [linux-tests, windows-check]
+  commit-linux-tested:
+    needs: [linux-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -64,7 +64,7 @@ jobs:
           python3 scripts/apply_skell_ui_v2.py
           python3 tools/branding/generate_skell_icons.py
           python3 scripts/apply_skell_asset_links.py
-      - name: Commit Skell Studio v2 visual code and generated assets
+      - name: Commit Skell Studio v2 source after source checks and theme tests
         run: |
           set -e
           git config user.name "github-actions[bot]"

@@ -24,7 +24,7 @@ pub fn paint(ui:&mut Ui,s:&State,f:&FrameInfo) {
     crate::vintage::recess(ui.c,Rect::new(9.,4.,244.,20.),Color::rgb(0x344c4f));
     ui.c.fill_rect_gradient(Rect::new(10.,5.,242.,18.),Color::rgb(0x344c4f),Color::rgb(0x142528),0.);
     studio_title(ui, s, f, Rect::new(13.0, 7.0, 236.0, 14.0), Font::vintage(11).bold());
-    for (x,action,hint) in [(256.,Action::Minimize,"Minimize"),(270.,Action::Maximize,"Restore / maximize"),(284.,Action::Close,"Exit AQUILA")] {
+    for (x,action,hint) in [(256.,Action::Minimize,"Minimize"),(270.,Action::Maximize,"Restore / maximize"),(284.,Action::Close,"Exit Skell Studio")] {
         let bounds = Rect::new(x, 4.0, 14.0, 15.0);
         let down = ui.down(bounds, &action);
         ui.hit(bounds, action, hint);
@@ -304,7 +304,7 @@ fn record_additions(ui: &mut Ui, s: &State, panel: Rect) {
 
 fn studio_title(ui: &mut Ui, s: &State, f: &FrameInfo, area: Rect, font: Font) {
     let project = f.title.strip_prefix('[').and_then(|name| name.strip_suffix(']')).unwrap_or(&f.title);
-    let label = format!("AQUILA  -  {project}");
+    let label = format!("Skell Studio  -  {project}");
     let width = ui.c.text_width(font, &label).ceil();
     if width <= area.w {
         ui.c.text_clip(font, area.x, area.y, area.w, ui.t.text, &label);

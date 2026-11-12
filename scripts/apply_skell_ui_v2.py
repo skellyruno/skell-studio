@@ -22,8 +22,8 @@ def patch(rel, pairs):
 
 def main():
     patch("crates/os-theme/src/design.rs", [
-        ('("note_bottom", c(0x1685dc))', '("note_bottom", c(0x3e9b3c))'),
-        ('("key_black_lit_left", c(0xa88f25))', '("key_black_lit_left", c(0x357c21))'),
+        ('("note_bottom", c(0x66bc38))', '("note_bottom", c(0x3e9b3c))'),
+        ('("key_black_lit_left", c(0x63a630))', '("key_black_lit_left", c(0x357c21))'),
         ('("key_white", c(0xededed))', '("key_white", c(0xcddaca))'),
         ('("key_white_left", c(0xd2d2d2))', '("key_white_left", c(0xa5b4a3))'),
         ('("key_black", c(0x414141))', '("key_black", c(0x152017))'),

@@ -802,7 +802,7 @@ fn paint_identity(ui: &mut Ui, s: &State, row: IdentityRow, r: Rect) {
                 box_.y + 87.0,
                 box_.w - 28.0,
                 theme.text,
-                "AQUILA   01:23   Mixer",
+                "SKELL   01:23   Mixer",
             );
             ui.c.text_clip(
                 Font::new(13),
@@ -1407,7 +1407,7 @@ impl App {
                 Then::ExportTheme,
             )
             .name("My Theme.flstheme")
-            .filter("AQUILA theme", &["flstheme"])
+            .filter("Skell Studio theme", &["flstheme"])
         } else {
             FileDlg::new(
                 Mode::Open,

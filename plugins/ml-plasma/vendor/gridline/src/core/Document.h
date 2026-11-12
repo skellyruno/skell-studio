@@ -1,0 +1,265 @@
+// Gridline — Document: a Song plus its undo history. This is the only way to
+// edit a project; every method below records one undoable Command (UN-01).
+#pragma once
+#include <functional>
+#include <string>
+#include <vector>
+#include "Automation.h"
+#include "Params.h"
+#include "Song.h"
+#include "Undo.h"
+
+namespace gl {
+
+// J-213: whether a channel's name was given automatically, so replacing its
+// instrument renames it: empty, the instrument's name (numbered or not, as new
+// and cloned channels are named), one of the instrument's factory preset names,
+// or the stem of its sample. Anything else is a name the user typed.
+bool channelNameIsAutomatic(const Channel& c);
+
+class Document {
+ public:
+  Document() = default;
+  explicit Document(Song song) : song_(std::move(song)) {}
+
+  const Song& song() const { return song_; }
+  // Replaces the whole song (open/new project): history is cleared, state is "saved".
+  void reset(Song song);
+  // Increments on every change of the song (edit, undo, redo, reset).
+  uint64_t revision() const { return revision_; }
+  // J-196: true when every change since revision `rev` was a clip level edit
+  // (editClip / editClips that changed only gains, fade lengths, curves or
+  // declick modes of clips: clipLevelsOnly), so a player can patch those
+  // values into what it built at `rev` instead of rebuilding. False after any
+  // other change (undo / redo included) and when nothing changed.
+  bool clipLevelsOnlySince(uint64_t rev) const {
+    return revision_ != rev && revision_ == levelTail_ && rev >= levelRunStart_ && rev <= revision_;
+  }
+
+  // --- generic object edits ------------------------------------------------
+  // `fn` mutates a copy of the object; the change is recorded with `label`.
+  // A non-zero mergeKey folds consecutive edits with the same key (drags).
+  bool editChannel(ObjectId id, const std::string& label, const std::function<void(Channel&)>& fn, uint64_t mergeKey = 0);
+  bool editPattern(ObjectId id, const std::string& label, const std::function<void(Pattern&)>& fn, uint64_t mergeKey = 0);
+  bool editClip(ObjectId id, const std::string& label, const std::function<void(Clip&)>& fn, uint64_t mergeKey = 0);
+  bool editMixerTrack(ObjectId id, const std::string& label, const std::function<void(MixerTrack&)>& fn, uint64_t mergeKey = 0);
+  // Automation clip contents (Song::automations), e.g. point edits (J-5).
+  bool editAutomation(ObjectId id, const std::string& label, const std::function<void(AutomationClip&)>& fn,
+                      uint64_t mergeKey = 0);
+  bool editPlaylistTrack(int index, const std::string& label, const std::function<void(PlaylistTrack&)>& fn);
+  // Whole-song edit (snapshot) for rare global operations.
+  void editSong(const std::string& label, const std::function<void(Song&)>& fn);
+  // K-18: records a ready-made command (applied now), e.g. one that also moves files on disk
+  // (fileops::FileMoveCommand). Never joined with a pointer gesture.
+  void execute(CommandPtr cmd) { exec(std::move(cmd), false); }
+
+  // --- channels -----------------------------------------------------------
+  ObjectId addChannel(const std::string& name, const std::string& pluginType, int index = -1);
+  bool removeChannel(ObjectId id);
+  bool moveChannel(ObjectId id, int newIndex);
+  bool renameChannel(ObjectId id, const std::string& name);
+  // Replaces the instrument (its default state). J-213: a channel whose name was
+  // automatic (channelNameIsAutomatic) takes the new instrument's name in the
+  // same undo step; a name the user typed stays.
+  bool setChannelPlugin(ObjectId id, const std::string& pluginType);
+  ObjectId cloneChannel(ObjectId id);  // copy placed after the original, with its pattern data
+  bool routeChannel(ObjectId id, ObjectId mixerTrack);
+
+  // --- parameters (AU-01) ---------------------------------------------------
+  // Consecutive changes to the same parameter merge into one undo step until
+  // endGesture() (e.g. mouse-up) unless merge is false.
+  bool setParam(ParamId id, double value, bool merge = true);
+  void endGesture() { undo_.breakMerge(); }
+  // One pointer gesture (mouse press .. release) = one undo step, whatever the editor under
+  // the pointer does: the first edit made during it starts a step and every later edit joins
+  // that step (a knob drag, a drawn shape, a drag that changes several parameters or the
+  // plugin's data each frame). An undo / redo during the gesture ends the joining. The UI
+  // opens it at the frame the press is seen and closes it after the frame of the release.
+  void beginPointerGesture();
+  void endPointerGesture();
+  bool inPointerGesture() const { return pointerGesture_; }
+  // Folds the edits `fn` makes into the newest history step when that step is still the one
+  // whose state serial is `serial` (nothing was edited, undone or redone since; serial 0 never
+  // matches); otherwise they are recorded as usual. True when folded. (A hosted plugin's state
+  // captured after its own edit gesture: one undo step for both.)
+  bool amendStep(uint64_t serial, const std::function<void()>& fn);
+  // The state serial right after the latest undo / redo / jump (0 before any): equal to
+  // history().stateSerial() while nothing was edited since.
+  uint64_t moveSerial() const { return moveSerial_; }
+  // Called after every successful setParam (automation recording listens here).
+  std::function<void(ParamId, double)> paramObserver;
+  // The parameter most recently changed through setParam and a counter that
+  // increases with every such change (MIDI multilink: "move a control, then a
+  // hardware knob").
+  ParamId lastTouchedParam() const { return lastTouched_; }
+  // The parameter changed before the last touched one (a different one; owner kNoId = none).
+  ParamId previousTouchedParam() const { return prevTouched_; }
+  uint64_t touchSerial() const { return touchSerial_; }
+
+  // --- patterns -----------------------------------------------------------
+  ObjectId addPattern(const std::string& name, int bars = 1, int stepsPerBar = 16, int index = -1);
+  bool removePattern(ObjectId id);  // also removes its playlist clips
+  ObjectId clonePattern(ObjectId id);
+  bool renamePattern(ObjectId id, const std::string& name);
+  bool setPatternLength(ObjectId id, int bars, int stepsPerBar);
+  bool setSteps(ObjectId pattern, ObjectId channel, std::vector<uint8_t> row);
+  bool setStep(ObjectId pattern, ObjectId channel, int step, uint8_t velocity);
+  bool setNotes(ObjectId pattern, ObjectId channel, std::vector<Note> notes, const std::string& label = "edit notes",
+                uint64_t mergeKey = 0);
+  bool addNote(ObjectId pattern, ObjectId channel, const Note& note);
+
+  // --- playlist -----------------------------------------------------------
+  ObjectId addClip(ObjectId pattern, int track, Tick start, Tick length = 0);
+  bool removeClip(ObjectId id);
+  bool moveClip(ObjectId id, int track, Tick start);
+  bool setClipLength(ObjectId id, Tick length);
+  bool setPlaylistTrackCount(int count);
+  // Edits clip positions/lengths/tracks in one (mergeable) step. `fn` must not
+  // add or remove clips or change their ids.
+  bool editClips(const std::string& label, const std::function<void(std::vector<Clip>&)>& fn, uint64_t mergeKey = 0);
+
+  // --- mixer --------------------------------------------------------------
+  ObjectId addMixerTrack();
+  bool removeMixerTrack(ObjectId id);  // reroutes its channels and senders to the master
+  // Sets (or adds) a send; refuses cycles. level <= 0 removes the send.
+  bool setSend(ObjectId from, ObjectId to, float level);
+  bool setSlotPlugin(ObjectId track, int slot, const std::string& pluginType);  // "" clears the slot
+  bool moveSlot(ObjectId track, int from, int to);
+  // Marks an existing send as sidechain-only (feeds the destination's
+  // sidechain input instead of its mix) or back to a normal send.
+  bool setSendSidechain(ObjectId from, ObjectId to, bool sidechainOnly);
+
+  // --- internal controller links --------------------------------------------
+  // Adds the link, replacing any link that already drives the same target.
+  // Refuses sources without controller outputs and unresolved targets.
+  bool setModLink(const ModLink& link);
+  bool removeModLink(ParamId target);
+  // Edits the link driving `target` (mapping, range, smoothing…); mergeable.
+  bool editModLink(ParamId target, const std::string& label, const std::function<void(ModLink&)>& fn,
+                   uint64_t mergeKey = 0);
+
+  // --- channel note processors (Channel::noteFx) -----------------------------
+  // Inserts a PluginKind::NoteFx plugin at `index` (-1 = end); false when full.
+  bool addNoteFx(ObjectId channel, const std::string& type, int index = -1);
+  bool removeNoteFx(ObjectId channel, int index);
+  bool moveNoteFx(ObjectId channel, int from, int to);
+  // Replaces a note processor's whole state (data edits, presets) as one step.
+  bool setNoteFxState(ObjectId channel, int index, const PluginState& state, const std::string& label,
+                      uint64_t mergeKey = 0);
+
+  // --- song ---------------------------------------------------------------
+  // Returns false for a PPQ outside kPpqChoices. `roundedOut` receives how many
+  // tick values did not fit the new grid exactly.
+  bool setPpq(int ppq, int* roundedOut = nullptr);
+  bool setTimeSignature(int num, int den);
+  void setInfo(const SongInfo& info);
+
+  // --- grouping -----------------------------------------------------------
+  // Edits between begin/end become one undo step. Groups nest; the outermost
+  // label wins. Empty groups record nothing.
+  void beginGroup(const std::string& label);
+  // `joinGesture` false: never folded into a pointer gesture's step (a recorded pass, J-159).
+  void endGroup(bool joinGesture = true);
+  // Drops the innermost open group: its edits are reverted and nothing is
+  // recorded (a script that failed halfway, SC-02).
+  void cancelGroup();
+  // Number of open groups.
+  size_t groupDepth() const { return groups_.size(); }
+
+  // --- history (UN-02) ----------------------------------------------------
+  bool undo();
+  bool redo();
+  void jumpTo(size_t position);
+  const UndoStack& history() const { return undo_; }
+  void setMaxUndoLevels(size_t n) { undo_.setMaxLevels(n); }
+  // K-141: the history's memory budget (UndoStack::setMaxBytes).
+  void setMaxUndoBytes(size_t n) { undo_.setMaxBytes(n); }
+  // K-141: per-step data (UndoStack::note); `i` indexes history().labels().
+  StepNote* stepNote(size_t i, NoteSlot slot) const { return undo_.note(i, slot); }
+  void setStepNote(size_t i, NoteSlot slot, StepNotePtr n) { undo_.setNote(i, slot, std::move(n)); }
+  void touchStepNote(size_t i) { undo_.touchBytes(i); }
+  // K-141: forgets the history (the song stays; modified stays as it was). A project that starts
+  // being shared: its solo steps cannot be undone safely for collaborators.
+  void clearHistory();
+  // K-141: drops the steps from index `n` on without touching the song (edits that were never kept).
+  void discardStepsFrom(size_t n) { undo_.truncate(n); }
+  // K-141: rebuilds a history that was saved (collaboration projects): one step per label whose
+  // command does nothing (the session undoes them), the position at `position`, notes in place.
+  // Not marked modified.
+  void restoreHistory(const std::vector<std::string>& labels, size_t position, std::vector<StepNotePtr> collabNotes);
+  // K-141: called after every undo / redo step taken (-1 / +1) with the index of the step it
+  // moved over (the interface restores the selection kept with it).
+  std::function<void(int dir, size_t index)> onHistoryMove;
+
+  // --- collaboration (J-111) -------------------------------------------------
+  // While a collaboration session is attached: `historyHook(-1 / +1)` replaces
+  // undo / redo (the session moves the history position with stepHistory() and
+  // changes the song itself, so only the user's own changes are undone), and
+  // `beforeChange` runs before an edit that starts a new history step (so the
+  // session can file the changes made so far under the previous step).
+  std::function<bool(int dir)> historyHook;
+  std::function<void()> beforeChange;
+  // Moves the history position without applying commands (see historyHook). K-141: with
+  // `scratch`, the step's command is reverted / applied there (UndoStack::stepPosition).
+  bool stepHistory(int dir, Song* scratch = nullptr);
+  // Replaces the song with a merged state from collaborators: not recorded,
+  // the history is kept (its steps are undone through historyHook).
+  void replaceSong(Song song);
+  // A history step that changes nothing in the song, for a change the
+  // session's historyHook undoes itself (J-111f: the collaborative project's
+  // shared name). Without a session, its undo / redo do nothing.
+  void recordMark(const std::string& label);
+  // Changes the song in place without recording (session housekeeping).
+  void patchSong(const std::function<void(Song&)>& fn) {
+    fn(song_);
+    ++revision_;
+  }
+  // Number of edits made outside groups that started a new history step.
+  uint64_t pushCount() const { return undo_.pushCount(); }
+  // K-64 (tests): tempo map builds the edits have done so far.
+  uint64_t tempoMapBuilds() const { return tempoMapBuilds_; }
+
+  // --- saved state --------------------------------------------------------
+  bool modified() const { return undo_.stateSerial() != savedSerial_; }
+  void markSaved() { savedSerial_ = undo_.stateSerial(); }
+  // K-47: a save that runs in the background writes the song as it was when it started: edits made
+  // since stay unsaved. `projectEpoch` tells whether the same project is still open by then.
+  uint64_t saveSerial() const { return undo_.stateSerial(); }
+  void markSavedAt(uint64_t serial) { savedSerial_ = serial; }
+  uint64_t projectEpoch() const { return projectEpoch_; }
+  void markUnsaved() { savedSerial_ = ~uint64_t{0}; }  // K-39: a recovered project is not on disk yet
+
+ private:
+  void exec(CommandPtr cmd, bool mayJoin = true, bool clipLevels = false);
+  // J-193: applies `cmd`; when it changed the tempo map, the audio clips that
+  // do not follow the tempo keep their audio (refitClipsToTempo) in the same
+  // command. Returns the (applied) command to record.
+  CommandPtr applyWithTempoRefit(CommandPtr cmd);
+  // Records a change of song.modLinks (no-op when equal).
+  void setModLinks(std::vector<ModLink> after, const std::string& label);
+  Song song_;
+  UndoStack undo_;
+  std::vector<std::unique_ptr<GroupCommand>> groups_;
+  uint64_t savedSerial_ = 0;
+  uint64_t revision_ = 0;
+  uint64_t tempoMapBuilds_ = 0;
+  uint64_t projectEpoch_ = 0;
+  ParamId lastTouched_;
+  ParamId prevTouched_;
+  uint64_t touchSerial_ = 0;
+  bool pointerGesture_ = false;
+  uint64_t gestureSerial_ = 0;  // state serial of the step the current pointer gesture made (0: none yet)
+  uint64_t moveSerial_ = 0;
+  TempoMap tempoMap_;  // J-193: the song's tempo map at revision tempoMapRev_ (when tempoMapOk_)
+  uint64_t tempoMapRev_ = 0;
+  bool tempoMapOk_ = false;
+  // J-196: the current run of clip level edits: revisions (levelRunStart_, levelTail_].
+  uint64_t levelRunStart_ = 0, levelTail_ = ~uint64_t{0};
+};
+
+// J-196: `a` and `b` differ at most in their levels: gain, fade lengths (and
+// whether they were set by hand), fade shapes, curves and declick modes. Such
+// a change never moves audio in time, changes a render or the tempo map.
+bool clipLevelsOnly(const Clip& a, const Clip& b);
+
+}  // namespace gl

@@ -1,0 +1,5 @@
+Dragonfly Reverb https://github.com/michaelwillis/dragonfly-reverb
+Revision 440ec7b3b3db2fec34b9f80cf4890102ca14d1c3
+Freeverb3 DSP subset, original files unchanged. Freeverb3 copyright Teru Kamogashira; zrev/zrev2 also Fons Adriaensen. GPL-2.0-or-later; used under GPL-3.0-or-later. Dragonfly routing/initialization copyright Michael Willis and Rob van den Berg, GPL-3.0-or-later.
+Lemon adapter is outside this folder. No upstream UI or DPF SDK bundled.
+Compiled with upstream LIBFV3_DOUBLE to avoid high-rate filter instability observed with float precision. Width is applied to the combined wet signal. Wet pre-delay uses a preallocated Lemon delay, avoiding upstream buffer reallocations on automation.

@@ -1,0 +1,809 @@
+// AQUILA adaptation; modified 11 November 2026. See the ML Plasma adapter README.md and UPSTREAM.json.
+// Gridline — realtime engine (EN-03/EN-04): transport, sample-accurate event
+// dispatch, generators, mixer graph, metering. process() runs on the audio
+// thread; everything else is called from the UI thread. The same code renders
+// offline, so exports match playback exactly.
+#pragma once
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <memory>
+#include <vector>
+#include "../core/MidiSync.h"
+#include "AudioLogger.h"
+#include "Program.h"
+#include "WorkerPool.h"
+
+namespace gl {
+
+// Pattern: loops the selected pattern. Song: plays the arrangement. Live:
+// the transport runs freely and plays only clips launched from the live area.
+enum class PlayMode { Pattern, Song, Live };
+
+// J-61: the audio load meter. Load is processing time over the audio time it
+// produced, weighted by time (not by call: a burst of tiny blocks, e.g. the
+// fixed-block grid split at barriers, must not count as much as a whole
+// buffer), measured over windows of `kWindow` seconds of audio and smoothed
+// across windows. One stalled block (a page fault in a cold binary, the
+// thread descheduled on a busy machine) moves the meter by its share of the
+// window only; the worst single block goes to the peak instead.
+struct CpuMeter {
+  static constexpr double kWindow = 0.1;  // seconds of audio per reading
+  // Audio thread: one processed block. Returns the block's own load.
+  float add(double busySeconds, double audioSeconds) {
+    if (!(audioSeconds > 0) || !(busySeconds >= 0)) return 0.f;
+    busy_ += busySeconds;
+    audio_ += audioSeconds;
+    if (audio_ >= kWindow) {
+      const double w = busy_ / audio_;
+      load_ = static_cast<float>(seeded_ ? load_ * 0.6 + w * 0.4 : w);
+      seeded_ = true;
+      busy_ = audio_ = 0;
+    }
+    return static_cast<float>(busySeconds / audioSeconds);
+  }
+  float load() const { return load_; }
+  // Percentage shown on meters: 0..100 (overloads read as a full meter).
+  static int displayPercent(float load) {
+    if (!std::isfinite(load) || load <= 0.f) return 0;
+    return static_cast<int>(std::lround(std::min(load, 1.0f) * 100.0f));
+  }
+
+ private:
+  double busy_ = 0, audio_ = 0;
+  float load_ = 0;
+  bool seeded_ = false;
+};
+
+class AudioEngine {
+ public:
+  static constexpr int kMaxBlock = kEngineMaxBlock;
+  // Blocks shorter than this always run on the audio thread alone (the
+  // hand-off would cost more than it saves).
+  static constexpr int kParallelMinFrames = 32;
+
+  explicit AudioEngine(double sampleRate = 44100.0);
+  ~AudioEngine();
+
+  // ---- UI thread ----
+  void setSampleRate(double sr);  // only while the stream is stopped
+  double sampleRate() const { return sr_; }
+  void setProgram(std::shared_ptr<const Program> p);
+  void collectGarbage();  // frees retired programs once the audio thread is done with them
+  const std::shared_ptr<const Program>& program() const { return current_; }
+
+  void play();
+  // J-49 transport position rules (FL-like song position marker):
+  //  - setPosition / jumpTo with seek = true (ruler clicks, scrubbing, time
+  //    selections, marker jumps, MIDI song position) also set the *seek
+  //    position*: where Stop returns. Automatic moves pass seek = false.
+  //  - stop(): stops and returns to the seek position (0 when none was set);
+  //    with setReturnToSeek(false) it returns to the start of the time
+  //    selection (song mode) or 0 instead. Repeated play / stop cycles keep
+  //    returning to the same seek position until a new one is set.
+  //  - pause(): stops where playback is (the seek position is kept).
+  //  - stopToStart(): stops, returns to 0 and clears the seek position (new
+  //    project, offline renders).
+  //  - a mode change (pattern / song / live) clears the seek position (the
+  //    transport starts over at 0 in the new mode).
+  void stop();
+  void stopToStart();
+  void pause();
+  void togglePlay();
+  void setMode(PlayMode m);
+  void setPattern(ObjectId pattern);
+  void setPosition(Tick tick, bool seek = true);
+  void setReturnToSeek(bool on) { returnToSeek_.store(on, std::memory_order_relaxed); }
+  bool returnToSeek() const { return returnToSeek_.load(std::memory_order_relaxed); }
+  double seekPosition() const { return seekTick_.load(std::memory_order_relaxed); }
+  // Where stop() lands now (UI thread).
+  double stopTarget() const;
+  void setLooping(bool loop);  // offline renders turn looping off
+  // Offline render (export): hosted plugins are told (time info / process
+  // mode). Set before processing starts.
+  void setOffline(bool on) { offline_ = on; }
+  // Offline renders (J-30): the engine renders blocks of `frames` (<= kMaxBlock)
+  // on its own absolute sample grid, buffered, whatever chunk sizes the caller
+  // asks for — so the output is identical for any caller block size, hosted
+  // plugins included. 0 = off: host blocks are processed as given (realtime).
+  // Set before processing starts.
+  void setFixedBlock(int frames);
+  // Fixed-block mode: no internal block crosses absolute sample `sample`
+  // (frames since construction), so a command sent when the caller reaches it
+  // (e.g. stop at the end of an export's body) takes effect exactly there.
+  void addBlockBarrier(int64_t sample);
+  // Offline render: sampler interpolation quality (RenderInterp, 0 = linear).
+  // Builds the interpolation tables (call before processing starts).
+  void setInterpolation(int quality);
+  // Song-mode time selection: playback wraps from `end` back to `start`.
+  // end <= start clears it (the song loops over its full length again).
+  void setLoopRange(Tick start, Tick end);
+  void noteOn(ObjectId channel, int pitch, float velocity);
+  void noteOff(ObjectId channel, int pitch);
+  // K-87: the channel the last live note (noteOn / ownNoteOn, any thread) went to and how many live
+  // notes there were so far: the app wakes a frozen or hibernating channel that is played by hand.
+  ObjectId lastLiveNoteChannel() const { return lastLiveChannel_.load(std::memory_order_relaxed); }
+  uint64_t liveNoteCount() const { return liveNotes_.load(std::memory_order_relaxed); }
+  // J-112: a key an editor's own Play holds (Seltmann's pattern button, Kerf's
+  // region play, the chord editor's progression preview): a live note like
+  // noteOn(), released by noteOff() as usual, that also counts as plugin
+  // playback (see pluginPlaybackActive()) while its channel sounds, and is
+  // released by stopPluginPlayback(). `source`: OwnPlay::EditorKey or
+  // OwnPlay::ChordPreview (what the hint names).
+  enum class OwnPlay : uint8_t { None = 0, Instrument, Effect, EditorKey, ChordPreview, EditorPreview };
+  void ownNoteOn(ObjectId channel, int pitch, float velocity, OwnPlay source = OwnPlay::EditorKey);
+  // J-109: the Stop the user presses (transport button, Space, the stop
+  // shortcut, a MIDI controller / remote stop). FL-style, in two stages:
+  //  - first press (while playing, or after anything new started sounding):
+  //    stop() plus releaseAllNotes() and the sample preview stopped;
+  //  - pressed again with nothing new since (the transport already stopped):
+  //    panic(). Returns true when it panicked.
+  bool stopPressed();
+  // Releases every sounding note on every channel with its normal release
+  // (sequenced, live / preview keys, pads, MIDI input, note processors and the
+  // notes they hold); hosted instruments get note-offs for every note they
+  // were sent, sustain off and All Notes Off (CC 123) on all MIDI channels.
+  void releaseAllNotes();
+  // Releases only the notes played from Gridline's own interface (clicked /
+  // typed keys, pads, auditions): the window lost focus, a key-up went
+  // elsewhere. Notes held on a MIDI controller keep sounding.
+  void releaseLiveNotes();
+  // All sound off: the output fades out over a few milliseconds (no click),
+  // then every voice is killed, every effect's state (delay / reverb tails)
+  // is cleared on every mixer track, hosted plugins get All Sound Off
+  // (CC 120) and the sample preview stops. declick = false: at once, with
+  // the next block (a project being replaced).
+  void panic(bool declick = true);
+  // ML host reset: audio-thread only, between process calls. No queues,
+  // allocation or fade: discard old events, voices, tails and buffered audio.
+  void resetForHost();
+  bool panicking() const { return panicUi_.load(std::memory_order_relaxed); }
+  // J-110: the stop epoch. Bumped by every silencing Stop: releaseAllNotes()
+  // (so the first Stop), releaseLiveNotes() (a focus loss), panic() and a
+  // host's Stop (plugin build). An editor with its own Play / preview / run
+  // toggle keeps the value it saw when it started (RunLatch, app/RunLatch.h);
+  // a different value now means its sound was stopped: it shows stopped.
+  uint32_t stopEpoch() const { return stopEpoch_.load(std::memory_order_acquire); }
+  // J-112: plugin playback = a plugin making sound through its own playback,
+  // not the transport's: an instrument running its own sequence
+  // (Generator::ownPlayback(): Seltmann's pattern), an effect playing on its
+  // own (Effect::ownPlayback(): Loupe's Play in a mixer slot, Shuttle's
+  // free-running bar repeat), a key held by an editor's own Play (ownNoteOn,
+  // while its channel sounds: Kerf's region, the chord preview) or an editor's
+  // own sample preview (preview(s, true): Loupe standalone). NOT: keys played
+  // live (typed, clicked, pads, a MIDI keyboard), the browser's preview
+  // (preview(s)), effect tails, the transport itself. The audio thread
+  // publishes it after every block; lock-free, UI thread. False while a
+  // stopPluginPlayback() is on its way to the audio thread.
+  struct OwnPlayback {
+    OwnPlay kind = OwnPlay::None;
+    ObjectId id = kNoId;  // the channel (Instrument, EditorKey, ChordPreview) or the mixer track (Effect)
+    int slot = -1;        // Effect: the mixer slot
+  };
+  bool pluginPlaybackActive() const { return pluginPlayback().kind != OwnPlay::None; }
+  OwnPlayback pluginPlayback() const;
+  // J-112 (UI thread): stops every plugin playback, with normal releases
+  // and tails (the first Stop's way, nothing else): the editors' own keys and
+  // the live keys on an instrument running its own sequence are released,
+  // the instrument's sequence stops (Generator::stopOwnPlayback), an effect
+  // playing on its own gets Effect::stopSound(), an editor's own preview
+  // stops. The stop epoch moves, so every editor's Play button (RunLatch)
+  // shows stopped. The transport, live keys elsewhere, the browser's preview
+  // and the two-stage Stop (J-109) are left as they are.
+  void stopPluginPlayback();
+  // UI thread: the sample preview playing now is `s` (an editor's own preview,
+  // not one started since by the browser or another editor).
+  bool previewingSample(const Sample* s) const { return s && previewing_.load() && previewOwner_.get() == s; }
+  uint32_t panicsDone() const { return panicsDone_.load(std::memory_order_relaxed); }
+  // Peak of the output since the last call (dev checks).
+  float takeOutputPeak() { return outPeakRecent_.exchange(0.f, std::memory_order_relaxed); }
+  // Notes held from the interface (live notes) right now (audio thread count; tests / dev checks).
+  int liveHeld() const { return liveHeldUi_.load(std::memory_order_relaxed); }
+  // Live mode: launch / release (gate pads) a live-area clip, stop a track or
+  // every track. Launches start on the track's launch grid; a launch while
+  // stopped starts the transport.
+  void launchClip(ObjectId clip);
+  void releaseClip(ObjectId clip);
+  void stopLiveTrack(int track);
+  void stopAllLive();
+  // Clip playing / waiting to start on a playlist track (kNoId = none).
+  ObjectId liveActive(int track) const;
+  ObjectId liveQueued(int track) const;
+  // Plays a sample directly to the output (browser preview); nullptr stops it.
+  // J-112: `own` = an editor's own Play (Loupe standalone), plugin playback.
+  // `loopFrom` >= 0 (an editor's own loop): at the end the preview goes on from that frame,
+  // with no gap, until it is stopped or replaced.
+  void preview(SamplePtr sample, bool own = false, int64_t loopFrom = -1);
+  bool previewing() const { return previewing_.load(); }
+  void setMetronome(bool on) { metronome_.store(on); }
+  // MIDI input (called from the MIDI driver thread; single producer).
+  void midiEvent(uint8_t status, uint8_t d1, uint8_t d2);
+  // Channel that MIDI input plays (UI thread).
+  void setMidiTarget(ObjectId channel) { midiTarget_.store(channel); }
+  // Notes on MIDI channel `midiCh` (0..15) play `channel`; kNoId = the
+  // channel set by setMidiTarget (the selected one). UI thread.
+  void setMidiChannelRoute(int midiCh, ObjectId channel) {
+    if (midiCh >= 0 && midiCh < 16) midiRoute_[midiCh].store(channel);
+  }
+  ObjectId midiChannelRoute(int midiCh) const { return midiCh >= 0 && midiCh < 16 ? midiRoute_[midiCh].load() : kNoId; }
+  // Pitch bend range (semitones) applied to built-in instruments for notes from
+  // MIDI channel `midiCh` (hosted plugins get the raw pitch bend).
+  void setBendRange(int midiCh, float semitones) {
+    if (midiCh >= 0 && midiCh < 16) bendRange_[midiCh].store(semitones);
+  }
+  // Pedals: CC 64 sustain, CC 66 sostenuto, CC 67 soft (velocity × factor).
+  void setPedals(bool sostenuto, bool soft, float softFactor) {
+    sostenutoOn_.store(sostenuto);
+    softOn_.store(soft);
+    softFactor_.store(softFactor);
+  }
+  // Starts playback after a count-in of `ticks` (metronome clicks while the
+  // transport waits at its position).
+  void playWithCountIn(double ticks);
+  bool countingIn() const { return countingIn_.load(); }
+  // MIDI sync output (clock / MTC) for the transport, sample-accurate.
+  void setSyncOut(SyncOut mode) { syncMode_.store(static_cast<int>(mode)); }
+  MidiEventRing& syncEvents() { return syncRing_; }
+  // Absolute sample counter at the start of the last processed block, and the
+  // steady-clock time (seconds) when that block was processed (MIDI out timing).
+  int64_t blockSample() const { return blockSampleUi_.load(); }
+  double blockTime() const { return blockTimeUi_.load(); }
+
+  bool playing() const { return playing_.load(); }
+  PlayMode mode() const { return mode_.load(); }
+  ObjectId pattern() const { return pattern_.load(); }
+  double position() const { return posTick_.load(); }  // current tick
+  float cpuLoad() const { return cpu_.load(); }  // time-weighted average (CpuMeter)
+  // Worst block load (fraction of real time) since the UI last read it.
+  float takeCpuPeak() { return cpuPeak_.exchange(0.f, std::memory_order_relaxed); }
+
+  // Processing threads for the mixer graph, including the audio thread
+  // (1 = single-threaded). UI thread; starts pool threads as needed. The
+  // output is bit-identical for any thread count.
+  void setThreads(int n);
+  int threads() const { return threads_.load(std::memory_order_relaxed); }
+  // Worker threads that run with real-time scheduling (the others can be
+  // preempted mid-block and stall the audio thread waiting for their tasks).
+  int realtimeWorkers() const { return pool_.realtimeThreads(); }
+  int workerThreads() const { return pool_.threads(); }
+  // Per channel / insert / slot CPU time (CpuStat in the runtimes). Off by
+  // default; costs two clock reads per object per block when on.
+  void setProfiling(bool on) { profiling_.store(on, std::memory_order_relaxed); }
+  bool profiling() const { return profiling_.load(std::memory_order_relaxed); }
+  // Samples between the transport and the master output (plugin delay
+  // compensation) for the current program.
+  int outputLatency() const;
+  // J-143: peak of the master bus (post master effects and fader, the level
+  // the mixer's master meter shows) since the UI last read it. A "take": each
+  // read resets it, so it never sticks at the loudest moment ever played.
+  float takeMasterPeakL() { return outPeakL_.exchange(0.f, std::memory_order_relaxed); }
+  float takeMasterPeakR() { return outPeakR_.exchange(0.f, std::memory_order_relaxed); }
+
+  // ---- audio input & recording (J-8) ----
+  // Device input: the capture callback pushes interleaved frames (single
+  // producer: the device thread); each processed block takes the same number
+  // of frames from the queue (missing frames are silence). UI thread:
+  // setInputChannels while the stream is stopped.
+  void setInputChannels(int channels);
+  int inputChannels() const { return inChannels_.load(std::memory_order_relaxed); }
+  void pushInput(const float* interleaved, int frames);
+  void clearInput();  // drops queued input (UI thread, stream stopped)
+  // Frames kept queued as a jitter buffer between the capture and playback
+  // callbacks (adds to the input latency).
+  void setInputPrefill(int frames) { inPrefill_.store(std::max(0, frames)); }
+  // Peak of a device input channel since the UI last read it.
+  float takeInputPeak(int channel);
+  // J-218: input tap. While on, every block's device input (channel `first`,
+  // plus `first + 1` when stereo; a mono input feeds both sides) goes into one
+  // capture ring, whatever the program and the transport do: an instrument
+  // recording from its own editor. UI thread: inputTap() creates the ring on
+  // first use (it lives as long as the engine) and the caller drains it.
+  const packs::edison::CaptureRing& inputTap();
+  void setInputTap(int first, bool stereo);  // first < 0: off
+  bool inputTapOn() const { return tapFirst_.load(std::memory_order_relaxed) >= 0; }
+  int inputUnderruns() const { return inUnderruns_.load(std::memory_order_relaxed); }
+  // Disk recording: armed mixer tracks capture their input while recording is
+  // on and the transport plays (not during a count-in). `latency` = samples by
+  // which the input lags the music the performer hears (device input + output
+  // latency + manual offset); captured frames are placed that much earlier.
+  void setRecording(bool on) { recordOn_.store(on); }
+  bool recordingOn() const { return recordOn_.load(); }
+  void setRecordLatency(int samples);
+  int recordLatency() const { return recLatency_.load(std::memory_order_relaxed); }
+  // Punch range (song ticks): only frames inside it are captured. end <= start: none.
+  void setPunch(double start, double end) {
+    punchA_.store(start);
+    punchB_.store(end);
+  }
+  // Take boundaries, in the order the audio thread produced them. A Start
+  // event comes before the take's first frame enters the track's capture
+  // ring; an End event after its last frame.
+  struct RecEvent {
+    enum Kind : uint8_t { Start, End } kind = Start;
+    ObjectId mixer = kNoId;
+    size_t ringPos = 0;  // absolute frame index in the track's capture ring
+    double tick = 0;     // Start: song position of the take's first frame
+  };
+  bool popRecEvent(RecEvent& e);
+
+  // ---- J-31 ----
+  // Song position jump that waits for the next multiple of `grid` ticks while
+  // the transport plays (quantized jumps); grid <= 0 or stopped: at once.
+  void jumpTo(Tick tick, Tick grid);
+  bool jumpPending() const { return jumpPendingUi_.load(std::memory_order_relaxed); }
+  // Incoming MIDI notes land on the scale: `mask` bit k = pitch class
+  // (root + k) is in the scale; mask 0 = off. Ties snap down.
+  void setMidiScaleSnap(int root, uint16_t mask) {
+    midiSnap_.store(mask ? (static_cast<uint32_t>(mask & 0xFFF) | (static_cast<uint32_t>(((root % 12) + 12) % 12) << 12)) : 0u,
+                    std::memory_order_relaxed);
+  }
+  static int snapToScaleMask(int pitch, int root, uint16_t mask);
+  // Audio logger (nullptr = off). UI thread; the previous logger is freed once
+  // the audio thread can no longer use it.
+  void setLogger(std::shared_ptr<AudioLogger> logger);
+  const std::shared_ptr<AudioLogger>& logger() const { return loggerOwner_; }
+
+  // ---- PH-09: running as a plugin inside another application ----
+  // Host transport for the next process() call (audio thread, right before
+  // process()). While `follow` is set the transport follows the host: it
+  // starts and stops with it, relocates when the host position differs from
+  // its own (pattern mode: the position within the pattern; song mode: the
+  // song position, wrapped at the song end, time selection ignored) and runs
+  // at the host tempo. follow = false: the engine runs its own transport.
+  struct HostTransport {
+    bool follow = false;
+    bool playing = false;
+    bool hasPosition = false;
+    double beats = 0;  // host position in quarter notes
+    double bpm = 0;    // host tempo; 0 = keep the project tempo
+  };
+  void setHostTransport(const HostTransport& t) {
+    hostIn_ = t;
+    hostNew_ = true;
+  }
+  bool followingHost() const { return hostFollowUi_.load(std::memory_order_relaxed); }
+  // Host macros: normalized value (0..1) of host parameter k, applied every
+  // control block to the parameter it is linked to (ProgramBuilder::setHostMacros).
+  // A negative value = not set yet (the parameter keeps its own value). Any thread.
+  void setHostMacro(int k, float v) {
+    if (k >= 0 && k < kHostMacros) macro_[k].store(v, std::memory_order_relaxed);
+  }
+  float hostMacro(int k) const { return k >= 0 && k < kHostMacros ? macro_[k].load(std::memory_order_relaxed) : -1.f; }
+  // J-131: host parameter k of a single-plugin build (normalized 0..1; negative = not
+  // set): applied to parameter k of the bank's plugin at the next control block when
+  // it changes, and to every set parameter when a new Program starts. Any thread.
+  void setHostParam(int k, float v) {
+    if (k < 0 || k >= kMaxHostParams) return;
+    hostParam_[k].store(v, std::memory_order_relaxed);
+    hostDirty_[k >> 6].fetch_or(uint64_t{1} << (k & 63), std::memory_order_release);
+  }
+  float hostParam(int k) const { return k >= 0 && k < kMaxHostParams ? hostParam_[k].load(std::memory_order_relaxed) : -1.f; }
+  // Extra outputs: copies of mixer tracks' output (post fader) for each frame
+  // process() renders. mixer[k] = mixer track index (out of range: silence).
+  struct OutputTaps {
+    int count = 0;
+    const int* mixer = nullptr;
+    float* const* L = nullptr;
+    float* const* R = nullptr;
+  };
+
+  // ---- audio thread ----
+  // Writes n interleaved stereo frames.
+  void processInterleaved(float* out, int frames);
+  // Writes n frames to separate buffers (overwrites). `taps`: extra outputs
+  // (direct mode only; with a fixed block they are silent).
+  void process(float* L, float* R, int frames, const OutputTaps* taps = nullptr);
+  static constexpr int kOfflineBlock = 512;  // fixed block of offline renders
+
+ private:
+  struct Cmd {
+    enum Kind { Play, Stop, Pause, Mode, Pattern, Position, NoteOn, NoteOff, Panic, Loop, Preview, LoopRange,
+                Launch, Release, LiveStop, LiveStopAll, Jump, ReleaseAll, ReleaseLive, StopOwn } kind;
+    ObjectId id = kNoId;
+    int pitch = 0;
+    float value = 0;
+    double tick = 0, tick2 = 0;
+    const Sample* sample = nullptr;
+  };
+  void send(const Cmd& c);
+  void processDirect(float* L, float* R, int frames);  // host blocks as given
+  void copyTaps(const Program* p, int offset, int n);   // extra outputs of one block
+  void drain(const Program* p);
+  void processBlock(const Program* p, float* L, float* R, int n);
+  void dispatch(const Program* p, int from, int to);  // sequenced events for block samples [from, to)
+  // J-170: sequenced notes due after [c0, c1), announced to the instruments that prepare them (Generator::noteAhead).
+  void announceAhead(const Program* p, int from, int64_t c0, int64_t c1, const ProgPattern* pat);
+  // Releases every sequenced note; `hard` (stop/pause) also clears latched note processors.
+  void releaseAll(const Program* p, int offset, bool hard = false);
+  // Note-on/off for a channel: straight to its instrument, or into its note processor chain.
+  void sendOn(const ProgChannel& ch, uint32_t id, float pitch, float velocity, int offset, int color,
+              const NoteProps* props = nullptr);
+  void sendOff(const ProgChannel& ch, uint32_t id, int offset);
+  float routedPitch(const ProgChannel& dst, float pitch, int offset, int mch);  // K-170
+  void glideRouted(const ProgChannel& dst, uint32_t id, int key, int velocity, float pitch, float seconds, int offset, int mch);  // K-170
+  // Hosted instruments' MIDI output → channels on the same MIDI port.
+  void routePluginMidi(const Program* p, int n);
+  // Live note on/off (keyboard, MIDI): also plays a layer channel's children.
+  void liveOn(const Program* p, const ProgChannel& ch, uint32_t id, float pitch, float velocity, int color);
+  void liveOff(const Program* p, const ProgChannel& ch, uint32_t id);
+  // K-87: notes for an unloaded instrument (ProgChannel::unloaded) wait here until a Program with
+  // it loaded arrives, then play on it (audio thread; fixed size, nothing allocated).
+  struct HeldNote {
+    ObjectId ch = kNoId;
+    uint32_t id = 0;
+    float pitch = 0, velocity = 0;
+    int color = 0;
+    bool live = false;      // played by hand / MIDI (else a song note, with its end in `pd`)
+    bool released = false;  // its key came up before the instrument was there
+    int64_t at = 0;         // engine clock when it came in
+    ChannelRuntime::Pending pd{};
+    NoteProps props;
+    bool hasProps = false;
+    // K-144: a slide that moved it while it waited: its pitch then, and the engine clock where the
+    // slide ends (slideTo < 0: none).
+    float slideTo = -1;
+    int64_t slideEnd = 0;
+  };
+  struct HeldOff {
+    ObjectId ch = kNoId;
+    uint32_t id = 0;
+    int64_t due = 0;
+  };
+  static constexpr int kMaxHeld = 64;
+  HeldNote held_[kMaxHeld];
+  int heldCount_ = 0;
+  HeldOff heldOffs_[kMaxHeld];
+  int heldOffCount_ = 0;
+  const Program* heldProg_ = nullptr;
+  std::atomic<uint64_t> heldDelivered_{0};
+  void holdNote(const HeldNote& n);
+  void releaseHeld(ObjectId ch, uint32_t id);
+  void deliverHeld(const Program* p);
+
+ public:
+  // K-87 (tests): notes that waited for an unloaded instrument and were played once it loaded.
+  uint64_t heldNotesDelivered() const { return heldDelivered_.load(std::memory_order_relaxed); }
+  int heldNotesWaiting() const { return heldCount_; }
+
+ private:
+  // Sequenced note start with the channel's note settings (cut groups, mono,
+  // porta, polyphony) and slide notes. `at` = absolute start sample.
+  // `shift`: ticks added to the event's times (live clips play content ticks from their origin).
+  void startNote(const Program* p, const ProgChannel& ch, const NoteEv& e, int offset, int64_t at, double spt, Tick shift = 0);
+  // K-25: every sounding note with a bend line follows it to the end of block samples [from, to).
+  void applyBends(const Program* p, int from, int to);
+  void cutPending(const ProgChannel& ch, int index, int offset);  // cuts and forgets pending note `index`
+  // K-165: cut groups, mono and the voice limit for every kind of note (sequenced, live, let go).
+  void liveStart(const Program* p, const ProgChannel& ch, uint32_t id, float pitch, float velocity, int color);
+  void cutLive(const ProgChannel& ch, int index, int offset);  // cuts and forgets held live note `index`
+  // Cuts the channel's notes that started before sample `before` and every note it let go.
+  void chokeChannel(const ProgChannel& ch, int64_t before, int offset);
+  void cutGroupsOf(const Program* p, const ProgChannel& ch, int64_t at, int offset);  // a note of `ch` starts at `at`
+  void limitVoices(const ProgChannel& ch, int offset);  // room for one more note under the voice limit
+  static void forgetGone(ChannelRuntime& rt, uint32_t id);
+  static void addGone(ChannelRuntime& rt, uint32_t id);
+  void runNoteFx(const Program* p, int n);  // note processor chains for this block
+  // Internal controller links + automation (`eventTick`: J-210, where lanes of
+  // recorded events read, the block's first frame after a loop wrap at its start).
+  void evaluateLinks(const Program* p, int n, double blockTick, double eventTick);
+  // J-210: the automation lanes of the playing mode at `blockTick` (`eventsOnly`: only
+  // lanes of recorded events, applied between control blocks on their steps).
+  void applyAutomation(const Program* p, double blockTick, double eventTick, bool eventsOnly);
+  void updateStripGains(const Program* p);
+  // J-210: frames until the next step of a recorded-events lane or the loop end
+  // (at most n), so that the block after it starts on that sample.
+  int untilEventStep(const Program* p, int n) const;
+  // Live mode: clip launching, follow actions and the launched clips' notes for block samples [from, to).
+  void dispatchLive(const Program* p, int from, int to);
+  void liveCommand(const Program* p, const Cmd& c);
+  void clearLive();
+  void applyLinkValue(const Program* p, const ProgLink& l, double normalized);
+  // Transport clock through the tempo map (song mode: tempo automation;
+  // pattern mode: constant). `clk` samples after the tick `anchor`.
+  // Following a host (PH-09): its tempo, constant.
+  const TempoMap& clockMap(const Program* p) const {
+    return hostTempo() ? hostMap_ : tMode_ == PlayMode::Song ? p->tempoMap : p->flatMap;
+  }
+  bool hostTempo() const { return hostFollow_ && hostBpm_ > 0; }
+  const TempoMap& songMap(const Program* p) const { return hostTempo() ? hostMap_ : p->tempoMap; }
+  const TempoMap& flatMap(const Program* p) const { return hostTempo() ? hostMap_ : p->flatMap; }
+  double flatBpm(const Program* p) const { return hostTempo() ? hostBpm_ : p->tempo; }
+  void followHost(const Program* p);  // applies hostIn_ (start of a process() call)
+  double tickAt(const Program* p, double anchor, double clk) const { return clockMap(p).tickAfterSamples(anchor, clk, sr_); }
+  // First sample (counted from the anchor) at or after `tick`. A position within a millionth of a
+  // sample after a frame is that frame: the tempo map's sums over many tempo changes carry rounding
+  // that size, and an event exactly on a frame (an imported song's rows) must not slip to the next.
+  int64_t sampleAt(const Program* p, double anchor, double tick) const {
+    return static_cast<int64_t>(std::ceil(clockMap(p).samplesBetween(anchor, tick, sr_) - 1e-6));
+  }
+  void drainMidi(const Program* p);
+  // J-109 (audio thread): releaseAllNotes / releaseLiveNotes / the panic.
+  void releaseEverything(const Program* p);
+  void releaseLive(const Program* p);
+  // J-112 (audio thread): Cmd::StopOwn, and what pluginPlayback() reads.
+  void stopOwn(const Program* p);
+  void publishOwn(const Program* p);
+  void resetMidiState();
+  void beginPanic();
+  void applyPanicFade(const Program* p, float* L, float* R, int n);
+  void killEverything(const Program* p);
+  // Mixer graph of one block (AudioEngineGraph.cpp).
+  void runGraph(const Program* p, int n);
+  static void graphJob(void* self, int worker);
+  void claimTasks(int worker);
+  void runTask(int task, int worker);
+  void runChannel(size_t channel, int worker);
+  void runMixer(size_t mixer, int worker);
+  void pullInput(const ProgInput& in, float* accL, float* accR) const;
+  void readDeviceInput(int n);                        // input queue → inBuf_ (start of a block)
+  // Armed tracks → capture rings: before the graph (inputs) or after it (post = tracks recording their output).
+  void captureRecording(const Program* p, int n, bool post = false);
+  void logAudio(const Program* p, const float* mL, const float* mR, int n);  // J-31 audio logger
+  void pushRecEvent(const RecEvent& e);
+  // Input block of a mixer track (mono tracks duplicate their channel).
+  const float* inputL(const ProgMixer& m) const;
+  const float* inputR(const ProgMixer& m) const;
+  double loopEnd(const Program* p) const;
+  // Where a wrap lands: the time selection start, else the song loop marker
+  // (J-85), else 0.
+  double loopStart(const Program* p) const;
+  // J-85: marker actions run (song mode, realtime, no time selection, not
+  // following a host transport).
+  bool markerActions(const Program* p) const;
+  // The first marker event playback reaches after `tick` (nullptr: none).
+  const ProgMarkerEvent* nextMarkerEvent(const Program* p, double tick) const;
+  // Runs a marker event reached at block offset `at`; false when playback stopped.
+  bool fireMarker(const Program* p, const ProgMarkerEvent& e, int at);
+  // Where the transport wraps now: loopEnd, or the song end while pastLoop_.
+  double transportEnd(const Program* p) const;
+  // Moves the transport to `tick` (sample clock 0) and updates pastLoop_.
+  void landAt(double tick);
+
+  double sr_;
+  // Programs: owned on the UI thread, published to the audio thread.
+  std::shared_ptr<const Program> current_;
+  std::vector<std::pair<std::shared_ptr<const Program>, uint64_t>> retired_;
+  SamplePtr previewOwner_;
+  std::vector<std::pair<SamplePtr, uint64_t>> retiredSamples_;
+  const Sample* pvSample_ = nullptr;  // audio thread
+  double pvPos_ = 0;
+  double pvLoop_ = -1;  // frame the preview loops back to (-1 = plays once)
+  std::atomic<bool> previewing_{false};
+  std::atomic<bool> metronome_{false};
+  // MIDI queue (single producer: MIDI thread, single consumer: audio).
+  struct MidiMsg {
+    uint8_t s, a, b;
+  };
+  static constexpr size_t kMidiQueue = 1024;
+  std::vector<MidiMsg> mqueue_ = std::vector<MidiMsg>(kMidiQueue);
+  std::atomic<size_t> mHead_{0}, mTail_{0};
+  std::atomic<ObjectId> midiTarget_{kNoId};
+  ObjectId midiNoteCh_[128] = {};  // channel each sounding MIDI note was sent to
+  bool sustain_ = false;
+  bool sustained_[128] = {};
+  std::atomic<ObjectId> midiRoute_[16] = {};
+  std::atomic<float> bendRange_[16] = {};
+  std::atomic<bool> sostenutoOn_{true}, softOn_{true};
+  std::atomic<float> softFactor_{0.6f};
+  bool sostenuto_ = false, soft_ = false;
+  bool sostenutoHeld_[128] = {};  // notes caught by the sostenuto pedal
+  bool sostenutoOff_[128] = {};   // their key was released while the pedal was down
+  uint8_t midiNoteSrc_[128] = {}; // MIDI channel each sounding MIDI note came from
+  float bend_[16] = {};           // current pitch bend per MIDI channel (semitones)
+  // J-109: notes held from the interface (Cmd::NoteOn / NoteOff), by channel
+  // id and key, so they can be released together (audio thread).
+  struct LiveKey {
+    ObjectId ch;
+    int16_t pitch;
+    OwnPlay own;  // J-112: held by an editor's own Play (None: a live key)
+  };
+  static constexpr int kMaxLiveKeys = 256;
+  LiveKey liveKeys_[kMaxLiveKeys] = {};
+  int liveKeyCount_ = 0;
+  std::atomic<int> liveHeldUi_{0};
+  // The panic's declick fade (audio thread) and its state for the UI.
+  int panicLeft_ = 0, panicTotal_ = 0;
+  std::atomic<bool> panicUi_{false};
+  std::atomic<uint32_t> panicsDone_{0};
+  std::atomic<uint32_t> stopEpoch_{0};  // J-110 (UI thread and the audio thread's host Stop)
+  // J-112: plugin playback published by the audio thread (kind << 40 | slot << 32 | id),
+  // the stops asked for (UI) and done (audio thread), the preview's owner.
+  std::atomic<uint64_t> ownPlay_{0};
+  std::atomic<uint32_t> ownStopReq_{0}, ownStopDone_{0};
+  std::atomic<bool> previewOwn_{false};
+  std::atomic<float> outPeakRecent_{0};
+  // Two-stage Stop (UI thread): anything that may start sound bumps
+  // activity_ (also from the MIDI thread); a Stop with no activity since the
+  // previous one while stopped is the second press.
+  std::atomic<uint32_t> activity_{0};
+  std::atomic<ObjectId> lastLiveChannel_{kNoId};  // K-87
+  std::atomic<uint64_t> liveNotes_{0};
+  uint32_t stopActivity_ = 0;
+  bool stopArmed_ = false;
+  // Count-in and sync output.
+  int64_t countInLeft_ = 0, countInTotal_ = 0, countInBeat_ = 1;
+  std::atomic<bool> countingIn_{false};
+  std::atomic<int> syncMode_{0};
+  MidiClockOut clockOut_;
+  MidiEventRing syncRing_;
+  std::atomic<int64_t> blockSampleUi_{0};
+  std::atomic<double> blockTimeUi_{0};
+  double clickPhase_ = 0, clickFreq_ = 0;
+  int clickLeft_ = 0, clickStart_ = -1;
+  std::atomic<const Program*> live_{nullptr};
+  std::atomic<const Program*> running_{nullptr};  // the Program of the block in progress (audio thread); nullptr between blocks
+  std::atomic<uint64_t> blocks_{0};
+
+  // Command queue (single producer: UI, single consumer: audio).
+  static constexpr size_t kQueue = 4096;
+  std::vector<Cmd> queue_;
+  std::atomic<size_t> qHead_{0}, qTail_{0};
+
+  // Transport (audio thread), published through atomics.
+  bool tPlaying_ = false, tLoop_ = true;
+  bool offline_ = false;         // offline render (see setOffline)
+  // Fixed-block mode (setFixedBlock): rendered frames not handed out yet.
+  int fixed_ = 0;
+  std::vector<float> fifoL_, fifoR_;
+  int fifoPos_ = 0, fifoLen_ = 0;
+  static constexpr int kMaxBarriers = 16;
+  int64_t barriers_[kMaxBarriers] = {};
+  int barrierCount_ = 0;
+  int interp_ = 0;               // offline render interpolation (see setInterpolation)
+  bool ctxWasPlaying_ = false;   // transport state of the previous block (ProcessContext::jumped)
+  double ctxNextTick_ = 0;
+  double loopA_ = 0, loopB_ = 0;  // song-mode time selection (audio thread)
+  // J-40: the position was moved past the time selection (ruler click, marker
+  // or quantized jump): playback plays on from there to the song end, and only
+  // then wraps into the selection, instead of bouncing straight back.
+  bool pastLoop_ = false;
+  PlayMode tMode_ = PlayMode::Pattern;
+  ObjectId tPattern_ = kNoId;
+  double anchorTick_ = 0;   // tick at sample clock 0
+  int64_t clock_ = 0;       // samples since the anchor
+  uint64_t lastMapSig_ = 0;  // tempo map of the last block (re-anchor when it changes)
+  double curTick_ = 0;       // position at the end of the last block
+  double startTick_ = 0;    // where Play started (Stop returns here)
+  std::atomic<bool> playing_{false};
+  std::atomic<PlayMode> mode_{PlayMode::Pattern};
+  std::atomic<ObjectId> pattern_{kNoId};
+  std::atomic<double> posTick_{0};
+  std::atomic<double> seekTick_{0};        // J-49: the song position marker (where Stop returns)
+  std::atomic<bool> returnToSeek_{true};
+  double uiLoopA_ = 0, uiLoopB_ = 0;       // UI-thread copy of the time selection
+  std::atomic<float> cpu_{0}, outPeakL_{0}, outPeakR_{0};
+
+  // Note processor timing: transport segments of the current block.
+  struct Segment {
+    int from, len;
+    double anchor;
+    int64_t clock;
+  };
+  static constexpr int kMaxSegments = 72;
+  Segment segs_[kMaxSegments];
+  double segT0_[kMaxSegments] = {}, segTA_[kMaxSegments] = {};  // K-64: ticks each segment's clips are looked for in
+  int segCount_ = 0;
+  int64_t absClock_ = 0;      // samples rendered since construction (control-block grid)
+  // Note starts of the current block, in time order (dispatch).
+  struct BlockStart {
+    int64_t at;  // clock sample
+    int ch;
+    const NoteEv* ev;
+  };
+  static constexpr int kMaxBlockStarts = 4096;
+  std::vector<BlockStart> starts_ = std::vector<BlockStart>(kMaxBlockStarts);
+  NoteBuffer fxA_, fxB_;      // chain scratch
+
+  // Live mode (audio thread): per playlist track, the clip playing and the
+  // clip / stop waiting for its launch grid. Clips are kept by id so program
+  // rebuilds do not disturb them.
+  struct LiveTrack {
+    ObjectId active = kNoId;
+    Tick origin = 0;  // transport tick of the active clip's content tick 0
+    ObjectId queued = kNoId;
+    Tick queuedAt = 0, queuedOrigin = 0;
+    bool stopQueued = false;
+    Tick stopAt = 0;
+  };
+  LiveTrack liveTracks_[kMaxPlaylistTracks];
+  std::atomic<ObjectId> liveActiveUi_[kMaxPlaylistTracks] = {};
+  std::atomic<ObjectId> liveQueuedUi_[kMaxPlaylistTracks] = {};
+  uint32_t liveRng_ = 0x9E3779B9u;
+  // Audio of launched audio clips, rendered with the channels (this block).
+  struct LivePiece {
+    int clip, from, len;
+    double anchor;  // content tick at the piece's clock 0
+    int64_t clock;
+  };
+  static constexpr int kMaxLivePieces = 256;
+  LivePiece livePieces_[kMaxLivePieces];
+  int livePieceCount_ = 0;
+
+  // Scratch buses (audio thread).
+  std::vector<std::vector<float>> busL_, busR_;
+  std::vector<std::vector<float>> scL_, scR_;    // per mixer track sidechain inputs
+  std::vector<std::vector<float>> preL_, preR_;  // per mixer track pre-fader signal (tracks with pre-fader sends)
+  MidiPortBus ports_;  // notes MIDI Out channels hold per port (read by MIDI-input effects)
+  NoteHitBus hits_;    // J-165: notes / clip starts / MIDI input notes of the current block (note triggers)
+  std::vector<float> tmpL_, tmpR_;
+  // Per-thread scratch for tasks (index = worker; 0 = audio thread).
+  struct Scratch {
+    float chL[kEngineMaxBlock], chR[kEngineMaxBlock];
+    float dryL[kEngineMaxBlock], dryR[kEngineMaxBlock];
+    float auxL[kEngineMaxBlock], auxR[kEngineMaxBlock];
+    float sideL[kEngineMaxBlock], sideR[kEngineMaxBlock];  // J-45 slot side inputs
+  };
+  std::vector<Scratch> scratch_;
+  // The block the graph tasks render (set by processBlock before runGraph).
+  struct BlockCtx {
+    const Program* p = nullptr;
+    int n = 0;
+    bool grid = false;
+    int gpos = 0;
+    size_t nb = 0;
+    bool profile = false;
+    bool rest = false;  // K-64: realtime playback: idle channels and effects are left out
+    ProcessContext ctx;
+  } bc_;
+  WorkerPool pool_;
+  std::atomic<int> threads_{1};
+  std::atomic<bool> profiling_{false};
+  std::atomic<float> cpuPeak_{0};
+  CpuMeter cpuMeter_;  // audio thread only
+  // Audio input (J-8).
+  static constexpr size_t kInputQueueFrames = size_t{1} << 15;
+  std::vector<float> inQueue_;  // interleaved, kInputQueueFrames * kMaxInputChannels
+  std::atomic<size_t> inHead_{0}, inTail_{0};  // frames written / read
+  std::atomic<int> inChannels_{2};
+  std::atomic<int> inUnderruns_{0};
+  std::atomic<int> inPrefill_{0};
+  bool inPrimed_ = false;  // (audio thread) the jitter buffer has filled
+  std::vector<std::vector<float>> inBuf_;  // per input channel, this block
+  const float* inPtrs_[kMaxInputChannels] = {};  // K-170: inBuf_ for ProcessContext::deviceIn
+  std::vector<float> silence_;
+  std::atomic<float> inPeak_[kMaxInputChannels] = {};
+  std::shared_ptr<packs::edison::CaptureRing> tapOwn_;  // J-218 input tap (the UI thread creates it)
+  std::atomic<packs::edison::CaptureRing*> tap_{nullptr};
+  std::atomic<int> tapFirst_{-1};
+  std::atomic<bool> tapStereo_{true};
+  std::atomic<bool> recordOn_{false};
+  std::atomic<int> recLatency_{0};
+  std::atomic<double> punchA_{0}, punchB_{0};
+  static constexpr size_t kTickHistory = size_t{1} << 17;  // delayed timeline for latency compensation
+  std::vector<double> tickHist_;
+  size_t tickHistPos_ = 0;
+  size_t tickHistLat_ = 0;  // latency the history was last read with (audio thread)
+  std::vector<double> recTick_;  // delayed position of each frame of this block (-1 = not recording)
+  static constexpr size_t kRecEvents = 1024;
+  std::vector<RecEvent> recEvents_ = std::vector<RecEvent>(kRecEvents);
+  std::atomic<size_t> reHead_{0}, reTail_{0};
+
+  // J-31: quantized position jump (audio thread) and the audio logger.
+  bool pendJump_ = false;
+  double pendJumpAt_ = 0, pendJumpTo_ = 0;
+  std::atomic<bool> jumpPendingUi_{false};
+  std::atomic<uint32_t> midiSnap_{0};
+  std::shared_ptr<AudioLogger> loggerOwner_;
+  std::vector<std::pair<std::shared_ptr<AudioLogger>, uint64_t>> retiredLoggers_;
+  std::atomic<AudioLogger*> logger_{nullptr};
+  float logL_[kEngineMaxBlock] = {}, logR_[kEngineMaxBlock] = {};
+
+  // Task hand-out (see claimTasks).
+  std::atomic<int> head_{0}, readyTail_{0}, done_{0};
+
+  // PH-09: host transport, macros and extra outputs (audio thread).
+  HostTransport hostIn_;
+  bool hostNew_ = false, hostFollow_ = false;
+  double hostBpm_ = 0;
+  TempoMap hostMap_;
+  std::atomic<bool> hostFollowUi_{false};
+  std::atomic<float> macro_[kHostMacros];
+  // J-131: host parameter bank.
+  std::atomic<float> hostParam_[kMaxHostParams];
+  std::atomic<uint64_t> hostDirty_[kMaxHostParams / 64];
+  const Program* bankProg_ = nullptr;
+  void applyHostBank(const Program* p);
+  const OutputTaps* taps_ = nullptr;
+};
+
+}  // namespace gl

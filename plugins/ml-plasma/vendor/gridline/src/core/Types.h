@@ -1,0 +1,215 @@
+// Gridline — clean-room DAW core. Types & timeline constants.
+// Reimplements the *workflow model* of a pattern-based DAW (patterns, channel
+// rack, playlist clips, per-project PPQ) from scratch. No Image-Line code or assets.
+#pragma once
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <string>
+#include <vector>
+#include "TimeWarp.h"
+
+namespace gl {
+
+using Tick = int64_t;
+
+// Every model object (channel, pattern, clip, …) has an ID that is unique within
+// its project and never reused, so commands and links survive reordering/deletion.
+using ObjectId = uint32_t;
+inline constexpr ObjectId kNoId = 0;
+inline constexpr ObjectId kSongId = 1;      // the song itself (owner of song params)
+inline constexpr ObjectId kFirstObjectId = 2;
+
+// Time resolution is chosen per project (CORE-01). The selectable set matches
+// what users of pattern DAWs expect; 96 is the default.
+inline constexpr int kDefaultPpq = 96;
+inline constexpr std::array<int, 11> kPpqChoices = {24, 48, 72, 96, 120, 144, 168, 192, 384, 768, 960};
+inline bool isValidPpq(int ppq) {
+  for (int p : kPpqChoices)
+    if (p == ppq) return true;
+  return false;
+}
+
+// Rescales a tick value between resolutions, rounding to the nearest tick.
+inline Tick rescaleTick(Tick t, int fromPpq, int toPpq) {
+  if (fromPpq == toPpq) return t;
+  long double v = static_cast<long double>(t) * toPpq / fromPpq;
+  return static_cast<Tick>(std::llround(v));
+}
+
+// Per-note property ranges (the piano roll's property lane edits these).
+inline constexpr int kNotePanMax = 64;        // pan -64 (left) .. 64 (right), 0 = centre
+inline constexpr int kNoteFineMax = 1200;     // fine pitch, cents -1200 .. 1200
+inline constexpr int kNoteModMax = 255;       // mod X / mod Y 0..255, 128 = neutral
+inline constexpr int kNoteModCentre = 128;
+inline constexpr int kNoteReleaseDefault = 64;  // release velocity 0..127
+inline constexpr int kNoteColors = 16;
+
+// K-25: one point of a note's pitch bend line. `tick` counts from the note's start (fractions
+// allowed), `semis` is the offset from the note's pitch, `curve` shapes the segment that ends at
+// this point (BendCurve in core/NoteBend.h). Before the first point the line starts at 0.
+// K-28: `tension` (-1..1, 0 = the shape as named) bends or softens that segment's curve.
+struct BendPoint {
+  float tick = 0;
+  float semis = 0;
+  uint8_t curve = 0;
+  float tension = 0;
+  BendPoint() = default;
+  BendPoint(float t, float v, uint8_t c = 0, float k = 0) : tick(t), semis(v), curve(c), tension(k) {}
+  bool operator==(const BendPoint& o) const { return tick == o.tick && semis == o.semis && curve == o.curve && tension == o.tension; }
+};
+
+// One piano-roll note.
+struct Note {
+  Tick start = 0;               // ticks from pattern/clip start
+  Tick length = kDefaultPpq;    // ticks
+  int pitch = 60;               // MIDI note number (60 = middle C)
+  int velocity = 100;           // 0..127
+  // Per-note properties. Defaults are neutral, so notes without them play as
+  // before and old projects load unchanged.
+  int pan = 0;                          // -64..64
+  int fine = 0;                         // cents -1200..1200 (added to the pitch)
+  int release = kNoteReleaseDefault;    // release velocity 0..127
+  int modX = kNoteModCentre;            // instrument-defined modulation 0..255 (sampler: cutoff)
+  int modY = kNoteModCentre;            // instrument-defined modulation 0..255 (sampler: resonance)
+  int color = 0;                        // colour group 0..15
+  bool slide = false;  // glides the channel's sounding notes to this pitch over its length (no new note)
+  bool porta = false;  // starts at the previous note's pitch and glides to its own (channel porta time)
+  bool muted = false;  // J-11: kept in the pattern but not played (mute tool)
+  int group = 0;       // J-31: note group (0 = none); grouped notes are selected together
+  // J-159: sub-tick timing (recorded performances keep their exact sample): the note starts
+  // at start + frac (0 <= frac < 1) and ends at start + length + endFrac (-1 < endFrac < 1).
+  // Edits that move or copy notes keep them; 0 for every ordinary note.
+  float frac = 0, endFrac = 0;
+  // K-25: the note's pitch bend line (core/NoteBend.h), empty = none. Point times count from the
+  // note's start, so moves, transposes and copies carry it and a resize keeps its timing.
+  std::vector<BendPoint> bend;
+  // K-22: a channel rack step shown in (or moved into) the piano roll, FL's step note (stored with
+  // length 0 in .flp files). While it lasts one step of its pattern it plays exactly as the step
+  // did: its step's swing, its offset inside the step, one step long (or truncated by the channel's
+  // swing truncation), whatever Song::swingNotes says. Given another length it is an ordinary note.
+  bool step = false;
+  // K-76: a note imported from a tracker module carries its voice's tracker cells (the channel
+  // state it starts with and the volume column / effect of every row it sounds through:
+  // core/TrackerStream.h). The Tracker Sampler plays them exactly; every other instrument and
+  // edit treats the note as an ordinary one (moves, copies and transposes carry the data). Empty
+  // for every other note.
+  std::vector<uint8_t> tracker;
+
+  // {start, length, pitch, velocity} keeps working everywhere (without
+  // missing-initializer warnings for the property fields).
+  Note() = default;
+  Note(Tick start_, Tick length_, int pitch_, int velocity_)
+      : start(start_), length(length_), pitch(pitch_), velocity(velocity_) {}
+
+  bool hasProps() const {
+    return pan != 0 || fine != 0 || release != kNoteReleaseDefault || modX != kNoteModCentre || modY != kNoteModCentre ||
+           color != 0 || slide || porta || muted || group != 0 || !bend.empty() || step || !tracker.empty();
+  }
+  bool operator==(const Note& o) const {
+    return start == o.start && length == o.length && pitch == o.pitch && velocity == o.velocity && pan == o.pan &&
+           fine == o.fine && release == o.release && modX == o.modX && modY == o.modY && color == o.color &&
+           slide == o.slide && porta == o.porta && muted == o.muted && group == o.group && frac == o.frac && endFrac == o.endFrac &&
+           bend == o.bend && step == o.step && tracker == o.tracker;
+  }
+};
+
+// What a playlist clip plays (arrangement).
+enum class ClipKind : uint8_t {
+  Pattern = 0,     // a pattern (Clip::pattern)
+  Audio = 1,       // a sample, played through a channel's strip and mixer insert (Clip::source = Channel::id)
+  Automation = 2,  // an automation curve (Clip::source = AutomationClip::id)
+};
+
+// One arrangement clip: a pattern, audio or automation clip placed on a playlist track.
+struct Clip {
+  ObjectId id = kNoId;
+  ObjectId pattern = kNoId;  // Pattern::id
+  int track = 0;             // playlist track lane
+  Tick start = 0;            // ticks from song start
+  Tick length = 0;           // ticks (0 = pattern natural length)
+  // --- arrangement: clip kinds, offsets, mute, audio clip settings ---
+  ClipKind kind = ClipKind::Pattern;
+  ObjectId source = kNoId;   // Audio: Channel::id (sample + strip + insert); Automation: AutomationClip::id
+  Tick offset = 0;           // pattern / automation clips: content ticks skipped at the clip start
+  // K-114: the clip repeats its content past the content's end (core/ClipLoop.h):
+  // a pattern clip its pattern, an audio clip its audio window [audioStart,
+  // audioEnd) (`offset` is then where the first pass starts inside the window),
+  // an automation clip its curve every AutomationClip::loop ticks. Off, the
+  // content plays once: an empty pattern past its end, audio up to the end of
+  // its window, automation holding its last value.
+  bool loop = false;
+  // K-140: a looping pattern or automation clip that was cut short (it showed
+  // less than its pattern or curve) repeats what it showed: content ticks
+  // [loopStart, loopStart + loopLength). loopLength 0: the content's own loop
+  // (the pattern's length, the curve's loop length). Audio clips keep 0 (their
+  // loop is their audio window). Only meaningful while `loop` is on.
+  Tick loopStart = 0;
+  Tick loopLength = 0;
+  bool muted = false;
+  // Audio clips (source times in seconds of the sample).
+  double audioStart = 0;     // source position at the clip start
+  double audioEnd = 0;       // source position where playback stops (0 = sample end)
+  double fadeIn = 0, fadeOut = 0;  // fade lengths, seconds of playback time
+  float gain = 1.0f;         // linear clip gain
+  float pitch = 0.0f;        // cents, added to the channel's pitch shift
+  double stretch = 1.0;      // time factor (2 = plays half as fast)
+  // J-164: the cents of the clip's whole pitch (channel pitch shift + `pitch`)
+  // that also set its speed in Resample mode (core/ClipRate.h). Gridline's
+  // own clips keep 0: no pitch edit changes their timing. FL projects: the
+  // pitch at import (FL plays a resampled pitch faster or slower).
+  float speedPitch = 0.0f;
+  // FL projects under tempo automation, on a channel that resamples: a factor on
+  // the clip's time (core/ClipRate.h) for the rate the channel's time and the
+  // clip's stretch cannot say (the tempo where the clip starts, a stored window
+  // that disagrees with the time, a time beyond the sampler's range). The clip
+  // holds that rate while it plays. 1 everywhere else. Not the clip's stretch,
+  // which is FL's own value and goes back to FL as it was.
+  double rateFit = 1.0;
+  double syncBpm = 0;        // > 0: follows the song tempo, natural speed at this tempo
+  // J-193: tempo-locked by the user (a stretch, Fit to tempo or "Follow the
+  // project tempo"): follows the tempo through syncBpm like any synced clip
+  // and, when its channel resamples, its pitch follows its speed (a record
+  // played faster or slower). Synced clips without it keep their pitch.
+  bool tempoLock = false;
+  bool reverse = false;
+  // Recording takes (J-8): clips recorded in the same loop-recording session
+  // share a take group; `take` is the pass number (0 = first). kNoId = none.
+  ObjectId takeGroup = kNoId;
+  int take = 0;
+  // Live area (J-32): the clip was playing when the project was saved (FL's
+  // performance state); offline renders launch it at the song start.
+  bool launched = false;
+  // J-31: clip group (kNoId = none); grouped clips are selected together.
+  ObjectId group = kNoId;
+  // J-38: fade curves and automatic crossfades (core/Fades.h). An edge whose
+  // fade was set by hand (or fadeIn / fadeOut > 0) keeps it; otherwise an
+  // overlapping audio clip on the same track crossfades automatically.
+  uint8_t fadeInShape = 0, fadeOutShape = 0;     // FadeShape (0 = smooth, 1 = straight)
+  float fadeInTension = 0, fadeOutTension = 0;   // FL tension unit (core/Fades.h), 0 = plain curve
+  uint8_t fadeInDeclick = 0, fadeOutDeclick = 0; // J-43: FL edge declicker mode (0 auto, 1 on, 2 off; kept as read)
+  bool fadeInManual = false, fadeOutManual = false;  // set by hand (a zero length then means "no fade")
+  // K-85: warp markers (core/TimeWarp.h): audio clips only; sections between
+  // markers play at their own speed, pitch kept. Empty: not warped.
+  std::vector<WarpMarker> warp;
+
+  bool operator==(const Clip& o) const {
+    return id == o.id && pattern == o.pattern && track == o.track && start == o.start && length == o.length &&
+           kind == o.kind && source == o.source && offset == o.offset && loop == o.loop && loopStart == o.loopStart &&
+           loopLength == o.loopLength && muted == o.muted && audioStart == o.audioStart &&
+           audioEnd == o.audioEnd && fadeIn == o.fadeIn && fadeOut == o.fadeOut && gain == o.gain && pitch == o.pitch &&
+           speedPitch == o.speedPitch && rateFit == o.rateFit &&
+           stretch == o.stretch && syncBpm == o.syncBpm && tempoLock == o.tempoLock && reverse == o.reverse && takeGroup == o.takeGroup &&
+           take == o.take && launched == o.launched && group == o.group && fadeInShape == o.fadeInShape &&
+           fadeOutShape == o.fadeOutShape && fadeInTension == o.fadeInTension && fadeOutTension == o.fadeOutTension &&
+           fadeInManual == o.fadeInManual && fadeOutManual == o.fadeOutManual &&
+           fadeInDeclick == o.fadeInDeclick && fadeOutDeclick == o.fadeOutDeclick && warp == o.warp;
+  }
+};
+
+inline double midiToFreq(int note) {
+  // Equal temperament, A4 = 440 Hz at MIDI 69.
+  return 440.0 * std::pow(2.0, (note - 69) / 12.0);
+}
+
+}  // namespace gl

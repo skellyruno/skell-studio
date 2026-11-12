@@ -1,0 +1,11 @@
+[package]
+name = "os-smf"
+description = "Standard MIDI Files: reading and writing types 0 and 1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]

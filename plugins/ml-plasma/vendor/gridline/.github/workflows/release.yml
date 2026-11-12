@@ -1,0 +1,761 @@
+name: Release
+
+# Builds the downloads for every platform, checks them (version strings, the programs start and
+# render on their own system) and publishes them as the GitHub release "Gridline <version>".
+#   - a tag v<version> publishes; <version> is the full version from the top of CMakeLists.txt:
+#     project(VERSION 0.7.0) plus GRIDLINE_VERSION_PRE ("beta.1" gives 0.7.0-beta.1, "" gives 0.7.0);
+#   - with a prerelease label the release is a GitHub pre-release and never "Latest", so only
+#     people with "Include beta versions" ticked are offered it (docs/updates.md);
+#   - "Run workflow" with dry_run (the default) only uploads the files as workflow artifacts.
+# The version comes only from CMakeLists.txt (tools/release/version.sh); a tag that does not match
+# it fails the run. File names, --version and the tag use the full version; macOS bundle versions,
+# Windows version numbers and the rpm Version use the numbers only. How to cut a beta and the final
+# release: docs/releasing.md.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and check only: upload the files as workflow artifacts, publish nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  GRIDLINE_NO_PLUGIN_SCAN: "1"
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}            # 0.7.0-beta.1 / 0.7.0
+      numeric: ${{ steps.v.outputs.numeric }}            # 0.7.0
+      deb: ${{ steps.v.outputs.deb }}                    # 0.7.0~beta.1 / 0.7.0
+      rpm_release: ${{ steps.v.outputs.rpm_release }}    # 0.1.beta.1 / 1
+      prerelease: ${{ steps.v.outputs.prerelease }}      # true / false
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Version from CMakeLists.txt
+        run: |
+          forms="$(bash tools/release/version.sh)" || { echo "::error::no valid version at the top of CMakeLists.txt"; exit 1; }
+          eval "$forms"
+          ver="$full"
+          prerelease=false
+          if [ -n "$pre" ]; then prerelease=true; fi
+          {
+            echo "version=$full"
+            echo "numeric=$numeric"
+            echo "deb=$deb"
+            echo "rpm_release=$rpm_release"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          publish=false
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            if [ "${GITHUB_REF_NAME}" != "v$ver" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match the project version v$ver (CMakeLists.txt)"
+              exit 1
+            fi
+            if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.dry_run }}" = "false" ]; then publish=true; fi
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            publish=false  # a branch push: dry run
+          elif [ "${{ inputs.dry_run }}" = "false" ]; then
+            echo "::error::publishing needs a tag v$ver; run with dry_run on a branch"
+            exit 1
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "Gridline $ver (numbers $numeric, prerelease: $prerelease, publish: $publish)"
+      - name: The version agrees everywhere (README badge, CHANGELOG)
+        run: bash tools/ci/check-version.sh "${{ steps.v.outputs.version }}"
+      - name: Release notes (docs/releases/<version>.md, else the CHANGELOG.md section)
+        run: |
+          ver="${{ steps.v.outputs.version }}"
+          awk -v v="$ver" '
+            /^## / { if (on) exit; if ($2 == v) { on = 1; next } }
+            on { print }' CHANGELOG.md > changelog-section.md
+          test -s changelog-section.md || { echo "::error::CHANGELOG.md has no section ## $ver"; exit 1; }
+          if [ -s "docs/releases/$ver.md" ]; then
+            cp "docs/releases/$ver.md" notes.md
+          else
+            cp changelog-section.md notes.md
+          fi
+          if grep -q $'\xe2\x80\x94' notes.md; then echo "::error::em dash in the release notes"; exit 1; fi
+          if grep -q $'\xe2\x80\x93' notes.md; then echo "::error::en dash in the release notes"; exit 1; fi
+          cat notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: notes.md
+      - name: Source archive (K-1, for the AUR, FreeBSD port and COPR builds)
+        run: |
+          ver="${{ steps.v.outputs.version }}"
+          mkdir -p src-dist
+          git archive --format=tar.gz --prefix="Gridline-$ver/" -o "src-dist/Gridline-$ver-source.tar.gz" HEAD
+          # cmake/build-id.txt carries the commit (export-subst): builds from the archive get the
+          # same build id as these packages.
+          id="$(tar -xzOf "src-dist/Gridline-$ver-source.tar.gz" "Gridline-$ver/cmake/build-id.txt")"
+          echo "$id" | grep -Eqx '[0-9a-f]{40}' || { echo "::error::cmake/build-id.txt in the archive is '$id', not a commit"; exit 1; }
+          tar -tzf "src-dist/Gridline-$ver-source.tar.gz" "Gridline-$ver/LICENSE" "Gridline-$ver/CMakeLists.txt" > /dev/null
+          ls -l src-dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridline-source
+          path: src-dist/Gridline-*-source.tar.gz
+
+  media-tools:
+    # J-192: yt-dlp (its official binary) and ffmpeg (built from the official source: audio only,
+    # LGPL) for Import from URL, checked against the SHA-256 in tools/release/media-tools.json.
+    # The packages carry the folder; the zip (no yt-dlp) is a release file of its own, which
+    # Gridline installs on first use where a package has none (docs/import-url.md).
+    name: Media tools ${{ matrix.target }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: macos-universal, os: macos-15 }
+          - { target: linux-x86_64, os: ubuntu-22.04 }
+          - { target: linux-aarch64, os: ubuntu-22.04-arm }
+          - { target: windows-x64, os: ubuntu-22.04 }
+          - { target: windows-arm64, os: ubuntu-22.04 }
+    env:
+      VER: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools
+        run: |
+          fetch=(python3 tools/release/fetch-media-tools.py --target "${{ matrix.target }}" --out media/tools --work media/work
+                 --zip "media/Gridline-$VER-media-tools-${{ matrix.target }}.zip")
+          case "${{ matrix.target }}" in
+            macos-*) brew install --quiet nasm || true; "${fetch[@]}" ;;
+            linux-*)
+              # Built on Debian 11 like the Linux packages (glibc 2.31), so they run wherever Gridline does.
+              docker run --rm -v "$PWD:/w" -w /w -e OWNER="$(id -u):$(id -g)" debian:11 bash -c '
+                set -e
+                sh tools/ci/debian-archive.sh
+                apt-get update -q
+                apt-get install -y -q --no-install-recommends build-essential nasm zlib1g-dev make xz-utils python3 ca-certificates
+                "$@"
+                chown -R "$OWNER" media' fetch "${fetch[@]}" ;;
+            *) sudo apt-get update -q && sudo apt-get install -y -q nasm zlib1g-dev make xz-utils; "${fetch[@]}" ;;
+          esac
+          rm -rf media/work
+          tar -C media -cf "media/tools-${{ matrix.target }}.tar" tools  # keeps the execute bits through the artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-tools-folder-${{ matrix.target }}
+          path: media/tools-${{ matrix.target }}.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridline-media-tools-${{ matrix.target }}
+          path: media/Gridline-*-media-tools-*.zip
+
+  macos:
+    name: macOS universal
+    needs: [version, media-tools]
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      VER: ${{ needs.version.outputs.version }}
+      VERNUM: ${{ needs.version.outputs.numeric }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install --quiet ninja || true
+      - name: Build (arm64 + x86_64, SDL2 built in)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGRIDLINE_BUNDLED_SDL2=ON -DGRIDLINE_DEV_ASSETS=OFF \
+            "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DGRIDLINE_GUI_TESTS=OFF -DGRIDLINE_RELEASE_SYMBOLS=ON
+          cmake --build build -j4 --target gridline gridline-app gridline_vst3 gridline_clap gridline_au gridline_suite_gridline gridline_suite_mini
+      - name: Disk image window tools (dmgbuild)
+        run: python3 -m venv "$RUNNER_TEMP/dmgvenv" && "$RUNNER_TEMP/dmgvenv/bin/pip" install --quiet dmgbuild==1.6.7
+      - uses: actions/download-artifact@v4
+        with:
+          name: media-tools-folder-macos-universal
+          path: media
+      - name: Disk image
+        env:
+          GRIDLINE_PYTHON: ${{ runner.temp }}/dmgvenv/bin/python
+          GRIDLINE_MEDIA_TOOLS: ${{ github.workspace }}/media/tools
+          GRIDLINE_DMG_REQUIRE_LAYOUT: "1"
+        run: |
+          tar -C media -xf media/tools-macos-universal.tar
+          bash tools/release/package-macos.sh build "$VER" dist universal
+      - name: Check
+        run: |
+          set -e
+          root=dist/dmgroot
+          for f in "$root/Gridline.app/Contents/MacOS/gridline-app" "$root/gridline" \
+                   "$root/Plugins/Gridline.vst3/Contents/MacOS/Gridline" "$root/Plugins/Gridline.component/Contents/MacOS/Gridline"; do
+            lipo -archs "$f" | grep -q arm64; lipo -archs "$f" | grep -q x86_64
+          done
+          for p in "$root/Gridline.app" "$root/Plugins/Gridline.vst3" "$root/Plugins/Gridline.clap" "$root/Plugins/Gridline.component"; do
+            v="$(plutil -extract CFBundleShortVersionString raw "$p/Contents/Info.plist")"
+            b="$(plutil -extract CFBundleVersion raw "$p/Contents/Info.plist")"
+            echo "$p: $v ($b)"; test "$v" = "$VERNUM"; test "$b" = "$VERNUM"  # numbers only (macOS)
+          done
+          # Gridline Suite inside the app (installed into ~/Library/Audio/Plug-Ins on first launch).
+          suite="$root/Gridline.app/Contents/Resources/Suite"
+          for p in "Gridline Suite.vst3" "Gridline Suite.clap" "Gridline Suite.component"; do
+            test "$(plutil -extract CFBundleShortVersionString raw "$suite/$p/Contents/Info.plist")" = "$VERNUM"
+            lipo -archs "$suite/$p/Contents/MacOS/Gridline Suite" | grep -q arm64
+            lipo -archs "$suite/$p/Contents/MacOS/Gridline Suite" | grep -q x86_64
+            grep -q "^Gridline Suite $VER " "$suite/$p/Contents/Resources/gridline-suite.txt"
+          done
+          plutil -extract AudioComponents raw "$suite/Gridline Suite.component/Contents/Info.plist"
+          # Gridline Suite Mini next to it (same checks).
+          for p in "Gridline Suite Mini.vst3" "Gridline Suite Mini.clap" "Gridline Suite Mini.component"; do
+            test "$(plutil -extract CFBundleShortVersionString raw "$suite/$p/Contents/Info.plist")" = "$VERNUM"
+            lipo -archs "$suite/$p/Contents/MacOS/Gridline Suite Mini" | grep -q arm64
+            lipo -archs "$suite/$p/Contents/MacOS/Gridline Suite Mini" | grep -q x86_64
+            grep -q "^Gridline Suite Mini $VER " "$suite/$p/Contents/Resources/gridline-suite.txt"
+          done
+          plutil -extract AudioComponents raw "$suite/Gridline Suite Mini.component/Contents/Info.plist"
+          "$root/Gridline.app/Contents/MacOS/gridline" suite status
+          # Import from URL's tools (J-192)
+          tools="$root/Gridline.app/Contents/Resources/tools"
+          for t in yt-dlp ffmpeg ffprobe; do lipo -archs "$tools/$t" | grep -q arm64; lipo -archs "$tools/$t" | grep -q x86_64; done
+          "$tools/ffmpeg" -hide_banner -version | head -1
+          test -f "$tools/SOURCES.txt" && test -d "$tools/LICENSES"
+          if otool -L "$root/Gridline.app/Contents/MacOS/gridline-app" | grep -q libSDL2; then echo "SDL2 must be built in"; exit 1; fi
+          test "$("$root/Gridline.app/Contents/MacOS/gridline-app" --version)" = "Gridline $VER"
+          test "$(arch -x86_64 "$root/gridline" --version)" = "Gridline $VER"
+          hdiutil attach -nobrowse -readonly -mountpoint /tmp/gldmg "dist/Gridline-$VER-macos-universal.dmg"
+          "$RUNNER_TEMP/dmgvenv/bin/python" tools/release/make_dmg.py --check /tmp/gldmg  # background, layout, volume icon
+          codesign --verify --deep --strict /tmp/gldmg/Gridline.app
+          bash tools/ci/smoke.sh /tmp/gldmg/gridline "$VER"
+          GRIDLINE_CONFIG_HOME="$RUNNER_TEMP/cfg" /tmp/gldmg/Gridline.app/Contents/MacOS/gridline-app --hidden --size 800x600 \
+            --screenshot "$RUNNER_TEMP/app.ppm" --frames 5 --no-ui-sounds && test -s "$RUNNER_TEMP/app.ppm" || echo "::warning::no window server for the app check"
+          hdiutil detach /tmp/gldmg
+      - name: Symbol files (a crash code resolves to functions and lines, tools/crash_symbolize.py)
+        run: |
+          mkdir -p symbols
+          dsymutil build/gridline-app -o symbols/gridline-app.dSYM
+          (cd symbols && python3 -m zipfile -c "Gridline-$VER-symbols-macos-universal.zip" gridline-app.dSYM)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridline-symbols-macos
+          path: symbols/Gridline-*-symbols-*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridline-macos
+          path: dist/Gridline-*.dmg
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    needs: [version, media-tools]
+    runs-on: windows-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, msvc: amd64, test: true }
+          - { arch: arm64, msvc: amd64_arm64, test: false }
+    env:
+      VER: ${{ needs.version.outputs.version }}
+      VERNUM: ${{ needs.version.outputs.numeric }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc }}
+      - name: Build
+        run: |
+          extra=""
+          if [ "${{ matrix.arch }}" = "arm64" ]; then extra="-DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=ARM64"; fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DGRIDLINE_BUNDLED_SDL2=ON \
+            -DGRIDLINE_DEV_ASSETS=OFF -DGRIDLINE_GUI_TESTS=OFF -DGRIDLINE_RELEASE_SYMBOLS=ON $extra
+          cmake --build build -j4 --target gridline gridline-app gridline_vst3 gridline_clap gridline_suite_gridline gridline_suite_mini
+      - uses: actions/download-artifact@v4
+        with:
+          name: media-tools-folder-windows-${{ matrix.arch }}
+          path: media
+      - name: Stage
+        run: |
+          name="Gridline-$VER-windows-${{ matrix.arch }}"
+          stage="dist/$name"
+          rm -rf dist && mkdir -p "$stage/plugins/VST3" "$stage/plugins/CLAP"
+          cp build/gridline-app.exe build/gridline.exe "$stage/"
+          cp -r assets "$stage/assets" && rm -rf "$stage/assets/sounds/src"
+          cp -r build/plugins/Gridline.vst3 "$stage/plugins/VST3/"
+          cp build/plugins/Gridline.clap "$stage/plugins/CLAP/"
+          cp -r build/plugins/Gridline-assets "$stage/plugins/CLAP/"
+          rm -rf "$stage/plugins/VST3/Gridline.vst3/Contents/Resources/assets/sounds/src" "$stage/plugins/CLAP/Gridline-assets/sounds/src"
+          # Gridline Suite (always installed into Common Files\VST3 and Common Files\CLAP)
+          cp -r "build/plugins/Gridline Suite.vst3" "$stage/plugins/VST3/"
+          cp "build/plugins/Gridline Suite.clap" "$stage/plugins/CLAP/"
+          cp -r "build/plugins/Gridline Suite-assets" "$stage/plugins/CLAP/"
+          rm -rf "$stage/plugins/VST3/Gridline Suite.vst3/Contents/Resources/assets/sounds/src" "$stage/plugins/CLAP/Gridline Suite-assets/sounds/src"
+          cp -r "build/plugins/Gridline Suite Mini.vst3" "$stage/plugins/VST3/"
+          cp "build/plugins/Gridline Suite Mini.clap" "$stage/plugins/CLAP/"
+          cp -r "build/plugins/Gridline Suite Mini-assets" "$stage/plugins/CLAP/"
+          rm -rf "$stage/plugins/VST3/Gridline Suite Mini.vst3/Contents/Resources/assets/sounds/src" "$stage/plugins/CLAP/Gridline Suite Mini-assets/sounds/src"
+          # Import from URL's tools (J-192)
+          tar -C "$stage" -xf "media/tools-windows-${{ matrix.arch }}.tar"
+          test -f "$stage/tools/ffmpeg.exe" && test -f "$stage/tools/yt-dlp.exe"
+          sed -e "s/@VERSION@/$VER/g" -e "s/@ARCH@/${{ matrix.arch }}/g" tools/release/README-windows.txt | sed 's/$/\r/' > "$stage/README.txt"
+          echo "STAGE=$stage" >> "$GITHUB_ENV"
+          echo "NAME=$name" >> "$GITHUB_ENV"
+      - name: Check version resources
+        shell: pwsh
+        run: |
+          foreach ($f in @("$env:STAGE/gridline.exe", "$env:STAGE/gridline-app.exe", "$env:STAGE/plugins/CLAP/Gridline.clap", "$env:STAGE/plugins/CLAP/Gridline Suite.clap", "$env:STAGE/plugins/CLAP/Gridline Suite Mini.clap")) {
+            $v = (Get-Item $f).VersionInfo
+            Write-Output "$f : $($v.ProductVersion) / $($v.FileVersion)"
+            if ($v.ProductVersion -ne $env:VER) { throw "version resource of $f is $($v.ProductVersion), expected $env:VER" }
+            $num = "$($v.FileMajorPart).$($v.FileMinorPart).$($v.FileBuildPart)"
+            if ($num -ne $env:VERNUM) { throw "binary file version of $f is $num, expected $env:VERNUM" }
+          }
+          $dll = Get-ChildItem -Recurse "$env:STAGE/plugins/VST3/Gridline.vst3/Contents" -Filter Gridline.vst3 | Where-Object { -not $_.PSIsContainer }
+          if ($dll.VersionInfo.ProductVersion -ne $env:VER) { throw "VST3 version resource" }
+      - name: Programs run
+        if: matrix.test
+        run: |
+          test "$("$STAGE/gridline.exe" --version | tr -d '\r')" = "Gridline $VER"
+          bash tools/ci/smoke.sh "$STAGE/gridline.exe" "$VER"
+          "$STAGE/gridline-app.exe" --version > app-version.txt 2>&1 || true
+          cat app-version.txt
+      - name: Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          # Inno Setup 6.6 or later: the dark wizard and the PNG art (gridline.iss, J-134).
+          # ISCC.exe carries no version resource, so the compiler itself decides: gridline.iss stops with
+          # an error on anything older than 6.6.
+          choco upgrade innosetup --no-progress -y | Select-Object -Last 2 | Write-Host
+          choco list innosetup --exact --limit-output | Write-Host
+          $iscc = Get-ChildItem -Path @(${env:ProgramFiles(x86)}, $env:ProgramFiles) -Directory -Filter "Inno Setup*" -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path (Join-Path $_.FullName "ISCC.exe") } | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $iscc) { throw "Inno Setup not found" }
+          Write-Output "Inno Setup in $iscc"
+          $env:PATH = "$iscc;$env:PATH"
+          $stage = (Resolve-Path $env:STAGE).Path
+          $out = (Resolve-Path dist).Path
+          iscc /Q "/DAppVersion=$env:VER" "/DAppNumVersion=$env:VERNUM" "/DArch=${{ matrix.arch }}" "/DStage=$stage" "/DOutDir=$out" tools\windows\gridline.iss
+          if (-not (Test-Path "dist\Gridline-$env:VER-windows-${{ matrix.arch }}-setup.exe")) { throw "no installer" }
+          $v = (Get-Item "dist\Gridline-$env:VER-windows-${{ matrix.arch }}-setup.exe").VersionInfo.ProductVersion
+          Write-Output "installer version: $v"
+      - name: Installer installs and uninstalls
+        if: matrix.test
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\GridlineInstall"
+          $p = Start-Process -Wait -PassThru "dist\Gridline-$env:VER-windows-x64-setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$dir","/TASKS=plugins"
+          if ($p.ExitCode -ne 0) { throw "setup exit $($p.ExitCode)" }
+          $out = & "$dir\gridline.exe" --version
+          if ($out -ne "Gridline $env:VER") { throw "installed gridline.exe says $out" }
+          if (-not (Test-Path "$env:CommonProgramFiles\VST3\Gridline.vst3")) { throw "VST3 plugin not installed" }
+          if (-not (Test-Path "$env:CommonProgramFiles\CLAP\Gridline.clap")) { throw "CLAP plugin not installed" }
+          if (-not (Test-Path "$env:CommonProgramFiles\VST3\Gridline Suite.vst3")) { throw "Gridline Suite VST3 not installed" }
+          if (-not (Test-Path "$env:CommonProgramFiles\CLAP\Gridline Suite.clap")) { throw "Gridline Suite CLAP not installed" }
+          if (-not (Test-Path "$env:CommonProgramFiles\CLAP\Gridline Suite-assets")) { throw "Gridline Suite CLAP assets not installed" }
+          if (-not (Test-Path "$env:CommonProgramFiles\VST3\Gridline Suite Mini.vst3")) { throw "Gridline Suite Mini VST3 not installed" }
+          if (-not (Test-Path "$env:CommonProgramFiles\CLAP\Gridline Suite Mini.clap")) { throw "Gridline Suite Mini CLAP not installed" }
+          if (-not (Test-Path "$env:CommonProgramFiles\CLAP\Gridline Suite Mini-assets")) { throw "Gridline Suite Mini CLAP assets not installed" }
+          & "$dir\gridline.exe" suite status
+          if (-not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Gridline\Gridline.lnk")) { throw "no Start menu entry" }
+          if (-not (Test-Path "$dir\tools\ffmpeg.exe")) { throw "Import from URL's ffmpeg not installed" }
+          & "$dir\tools\ffmpeg.exe" -hide_banner -version | Select-Object -First 1
+          $p = Start-Process -Wait -PassThru "$dir\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"
+          if ($p.ExitCode -ne 0) { throw "uninstall exit $($p.ExitCode)" }
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path "$env:STAGE" -DestinationPath "dist\$env:NAME.zip"
+      - name: Symbol files (a crash code resolves to functions and lines, tools/crash_symbolize.py)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force symbols | Out-Null
+          Compress-Archive -Path build\gridline-app.exe,build\gridline-app.pdb -DestinationPath "symbols\Gridline-$env:VER-symbols-windows-${{ matrix.arch }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridline-symbols-windows-${{ matrix.arch }}
+          path: symbols/Gridline-*-symbols-*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridline-windows-${{ matrix.arch }}
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
+
+  windows-arm64-check:
+    name: Windows arm64 (run on ARM)
+    needs: [version, windows]
+    runs-on: windows-11-arm
+    continue-on-error: true  # the ARM Windows runners are a preview; the arm64 build itself is checked above
+    timeout-minutes: 30
+    env:
+      VER: ${{ needs.version.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gridline-windows-arm64
+          path: dl
+      - run: |
+          cd dl && 7z x -y "Gridline-$VER-windows-arm64.zip" > /dev/null && cd ..
+          exe="dl/Gridline-$VER-windows-arm64/gridline.exe"
+          test "$("$exe" --version | tr -d '\r')" = "Gridline $VER"
+          bash tools/ci/smoke.sh "$exe" "$VER"
+
+  linux:
+    # Built in a Debian 11 container (glibc 2.31, GCC 10), so the packages install and run on Debian
+    # 11, 12 and 13, Ubuntu 22.04 and later, and Chromebooks with an older Debian 11 Linux. The build
+    # steps run in that container (their shell is docker exec); the checks run on the Ubuntu 22.04
+    # runner itself, which installs the .deb as a user there would.
+    name: Linux ${{ matrix.arch }}
+    needs: [version, media-tools]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, os: ubuntu-22.04 }
+          - { arch: aarch64, os: ubuntu-22.04-arm }
+    env:
+      VER: ${{ needs.version.outputs.version }}
+      VERNUM: ${{ needs.version.outputs.numeric }}
+      DEBVER: ${{ needs.version.outputs.deb }}
+      RPMREL: ${{ needs.version.outputs.rpm_release }}
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build system (Debian 11 container)
+        run: |
+          docker run -d --name gl-build -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -v "$RUNNER_TEMP:$RUNNER_TEMP" -w "$GITHUB_WORKSPACE" \
+            -e VER -e VERNUM -e DEBVER -e RPMREL -e APPIMAGE_EXTRACT_AND_RUN -e GRIDLINE_NO_PLUGIN_SCAN -e RUNNER_TEMP -e GITHUB_WORKSPACE \
+            -e DEBIAN_FRONTEND=noninteractive debian:11 sleep infinity
+          docker exec gl-build sh tools/ci/debian-archive.sh
+          docker exec gl-build sh tools/ci/install-deps.sh apt
+          docker exec gl-build apt-get install -y -q --no-install-recommends rpm dpkg-dev file desktop-file-utils curl binutils
+          docker exec gl-build git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          docker exec gl-build sh -c 'echo "Debian $(cat /etc/debian_version), $(ldd --version | head -1), $(c++ --version | head -1), $(cmake --version | head -1)"'
+      - name: Dependencies of the checks (on the runner)
+        run: |
+          sudo sh tools/ci/install-deps.sh apt
+          sudo apt-get install -y -q rpm dpkg-dev file desktop-file-utils
+      - uses: actions/download-artifact@v4
+        with:
+          name: media-tools-folder-linux-${{ matrix.arch }}
+          path: media
+      - name: Build
+        shell: docker exec gl-build bash -e {0}
+        run: |
+          tar -C media -xf "media/tools-linux-${{ matrix.arch }}.tar"  # J-192: Import from URL's tools (share/gridline/tools)
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DGRIDLINE_DEV_ASSETS=OFF \
+            -DGRIDLINE_INSTALL_PLUGINS=ON -DGRIDLINE_GUI_TESTS=OFF -DGRIDLINE_RELEASE_SYMBOLS=ON "-DGRIDLINE_MEDIA_TOOLS_DIR=$PWD/media/tools"
+          cmake --build build -j4 --target gridline gridline-app gridline_vst3 gridline_clap gridline_suite_gridline gridline_suite_mini
+          # A crash code resolves to functions and lines with these (tools/crash_symbolize.py); the program stays small.
+          mkdir -p symbols
+          objcopy --only-keep-debug build/gridline-app symbols/gridline-app.debug
+          objcopy --strip-debug --add-gnu-debuglink=symbols/gridline-app.debug build/gridline-app
+          (cd symbols && python3 -m zipfile -c "Gridline-$VER-symbols-linux-${{ matrix.arch }}.zip" gridline-app.debug)
+      - name: Packages (.deb, .rpm, .tar.gz)
+        shell: docker exec gl-build bash -e {0}
+        run: |
+          mkdir -p dist
+          (cd build && cpack -G "DEB;RPM")
+          mv build/Gridline-$VER-linux-*.deb build/Gridline-$VER-linux-*.rpm dist/
+          bash tools/release/deb-depends.sh dist/Gridline-$VER-linux-*.deb  # libraries renamed in newer Debian releases
+          name="Gridline-$VER-linux-${{ matrix.arch }}"
+          rm -rf "stage/$name" && mkdir -p stage
+          cmake --install build --prefix "$PWD/stage/$name"
+          rm -rf "stage/$name/share/gridline/assets/sounds/src"
+          sed -e "s/@VERSION@/$VER/g" -e "s/@SYSTEM@/Linux/g" -e "s/@ARCH@/${{ matrix.arch }}/g" -e "s/@DEPS@/libasound2, libjack optional/g" \
+            tools/release/README-unix.txt > "stage/$name/README.txt"
+          install -m 755 tools/release/install-unix.sh "stage/$name/install.sh"  # K-14: menus, icons, file type
+          tar -C stage -czf "dist/$name.tar.gz" "$name"
+          bash tools/ci/check-linux-icons.sh "stage/$name"  # K-14: window class, desktop entry and icons agree
+      - name: Desktop entry and AppStream metadata
+        run: |
+          desktop-file-validate assets/linux/gridline.desktop
+          grep -q "<release version=\"$VER\"" assets/linux/com.lolitemaultes.Gridline.metainfo.xml ||
+            { echo "::error::assets/linux/com.lolitemaultes.Gridline.metainfo.xml has no <release version=\"$VER\"> (docs/releasing.md)"; exit 1; }
+          # A current appstreamcli (Fedora); errors fail, warnings and hints are printed.
+          docker run --rm -v "$PWD:/w" -w /w fedora:latest sh -c \
+            'dnf install -y -q appstream > /dev/null && { appstreamcli validate --no-net --explain assets/linux/com.lolitemaultes.Gridline.metainfo.xml > as.txt 2>&1; cat as.txt; ! grep -q "^E:" as.txt; }'
+      - name: AppImage
+        shell: docker exec gl-build bash -e {0}
+        run: |
+          arch="${{ matrix.arch }}"
+          curl -fsSL -o linuxdeploy "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$arch.AppImage"
+          chmod +x linuxdeploy
+          rm -rf AppDir
+          DESTDIR="$PWD/AppDir" cmake --install build
+          # The AppImage carries the Gridline Suite in usr/share/gridline/suite; Gridline offers to
+          # copy it into ~/.vst3 and ~/.clap on first launch (hosts cannot scan inside the image).
+          mkdir -p AppDir/usr/share/gridline/suite
+          mv "AppDir/usr/lib/vst3/Gridline Suite.vst3" "AppDir/usr/lib/clap/Gridline Suite.clap" "AppDir/usr/lib/clap/Gridline Suite-assets" \
+            "AppDir/usr/lib/vst3/Gridline Suite Mini.vst3" "AppDir/usr/lib/clap/Gridline Suite Mini.clap" \
+            "AppDir/usr/lib/clap/Gridline Suite Mini-assets" AppDir/usr/share/gridline/suite/
+          rm -rf AppDir/usr/share/gridline/assets/sounds/src AppDir/usr/lib/vst3 AppDir/usr/lib/clap
+          desktop=AppDir/usr/share/applications/gridline.desktop
+          echo "X-AppImage-Version=$VER" >> "$desktop"
+          desktop-file-validate "$desktop"
+          # K-14: .DirIcon (file managers, thumbnailers, appimaged) is the 256 px PNG itself: linuxdeploy
+          # links the AppDir's root icon to the scalable SVG (its first choice) and appimagetool would
+          # point .DirIcon there; v0.7.1 shipped a 64 px one.
+          cp AppDir/usr/share/icons/hicolor/256x256/apps/gridline.png AppDir/.DirIcon
+          ./linuxdeploy --appdir AppDir --executable AppDir/usr/bin/gridline-app --executable AppDir/usr/bin/gridline \
+            --desktop-file "$desktop" --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/gridline.png
+          # linuxdeploy leaves out the libraries its exclude list expects on every system, but Debian
+          # 13 and newer systems no longer need libgpg-error, which the bundled libgcrypt (sound
+          # through libpulse and libsystemd) still does: it goes in by hand.
+          for lib in $(objdump -p AppDir/usr/lib/*.so* | sed -n 's/^ *NEEDED *\(libgpg-error\.so\.[0-9]*\)$/\1/p' | sort -u); do
+            cp -L "$(ldconfig -p | awk -v l="$lib" '$1 == l { print $NF; exit }')" AppDir/usr/lib/
+          done
+          LINUXDEPLOY_OUTPUT_VERSION="$VER" OUTPUT="dist/Gridline-$VER-linux-$arch.AppImage" LDAI_OUTPUT="dist/Gridline-$VER-linux-$arch.AppImage" \
+            ./linuxdeploy --appdir AppDir --output appimage
+          bash tools/ci/check-linux-icons.sh AppDir/usr AppDir  # K-14: also the AppImage's root icon and .DirIcon
+          # Nothing may need a newer C library than the build system's (glibc 2.31, Debian 11).
+          bash tools/release/check-glibc.sh 2.31 AppDir "stage/Gridline-$VER-linux-$arch"
+          ls -l dist
+      - name: Hand the files back to the runner user
+        if: always()
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+          docker rm -f gl-build > /dev/null || true
+      - name: Check
+        run: |
+          set -e
+          arch="${{ matrix.arch }}"
+          app="dist/Gridline-$VER-linux-$arch.AppImage"
+          chmod +x "$app"
+          test "$("$app" --version)" = "Gridline $VER"
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$app" --appimage-extract > /dev/null)
+          grep -x "X-AppImage-Version=$VER" "$RUNNER_TEMP/squashfs-root/gridline.desktop"
+          test -f "$RUNNER_TEMP/squashfs-root/usr/share/gridline/suite/Gridline Suite.clap"
+          test -d "$RUNNER_TEMP/squashfs-root/usr/share/gridline/suite/Gridline Suite.vst3"
+          test -f "$RUNNER_TEMP/squashfs-root/usr/share/gridline/suite/Gridline Suite Mini.clap"
+          test -d "$RUNNER_TEMP/squashfs-root/usr/share/gridline/suite/Gridline Suite Mini.vst3"
+          bash tools/ci/smoke.sh "$RUNNER_TEMP/squashfs-root/usr/bin/gridline" "$VER"
+          "$RUNNER_TEMP/squashfs-root/usr/share/gridline/tools/ffmpeg" -hide_banner -version | head -1  # J-192
+          test -x "$RUNNER_TEMP/squashfs-root/usr/share/gridline/tools/yt-dlp"
+          xvfb-run -a sh -c "GRIDLINE_CONFIG_HOME=$RUNNER_TEMP/cfg $app --hidden --size 800x600 --screenshot $RUNNER_TEMP/app.ppm --frames 5 --no-ui-sounds"
+          test -s "$RUNNER_TEMP/app.ppm"
+          sudo apt-get install -y -q x11-utils
+          xvfb-run -a bash tools/ci/check-x11-window.sh "$app" "$RUNNER_TEMP/wincfg"  # K-14: WM_CLASS and _NET_WM_ICON of the AppImage's window
+          deb="$(ls dist/*.deb)"; rpm="$(ls dist/*.rpm)"
+          dpkg-deb -f "$deb" Package Version Architecture Depends
+          test "$(dpkg-deb -f "$deb" Version)" = "$DEBVER"   # 0.7.0~beta.1 sorts before 0.7.0
+          dpkg-deb -f "$deb" Depends | grep -q 'libasound2 ([^)]*) | libasound2t64'  # tools/release/deb-depends.sh
+          rpm -qp --queryformat '%{NAME} %{VERSION} %{RELEASE} %{ARCH}\n' "$rpm"
+          test "$(rpm -qp --queryformat '%{VERSION}' "$rpm")" = "$VERNUM"
+          test "$(rpm -qp --queryformat '%{RELEASE}' "$rpm")" = "$RPMREL"  # 0.1.beta.1 (Fedora prerelease) / 1
+          sudo apt-get install -y -q "./$deb"
+          test "$(/usr/bin/gridline --version)" = "Gridline $VER"
+          test -f /usr/lib/vst3/Gridline.vst3/Contents/$arch-linux/Gridline.so
+          test -f "/usr/lib/vst3/Gridline Suite.vst3/Contents/$arch-linux/Gridline Suite.so"
+          test -f "/usr/lib/clap/Gridline Suite.clap"
+          test -f "/usr/lib/vst3/Gridline Suite Mini.vst3/Contents/$arch-linux/Gridline Suite Mini.so"
+          test -f "/usr/lib/clap/Gridline Suite Mini.clap"
+          /usr/bin/gridline suite status | grep -q "installed for all users"
+          bash tools/ci/smoke.sh /usr/bin/gridline "$VER"
+          bash tools/ci/check-linux-icons.sh /usr  # K-14: the installed .deb
+          sudo apt-get remove -y -q gridline
+          tar -tzf "dist/Gridline-$VER-linux-$arch.tar.gz" | grep -q "bin/gridline-app"
+          tar -tzf "dist/Gridline-$VER-linux-$arch.tar.gz" | grep -q "share/icons/hicolor/scalable/apps/gridline.svg"
+          tar -tzf "dist/Gridline-$VER-linux-$arch.tar.gz" | grep -q "/install.sh$"
+          tar -tzf "dist/Gridline-$VER-linux-$arch.tar.gz" | grep -q "share/gridline/tools/ffmpeg"
+          dpkg-deb -c "$deb" | grep -q "usr/share/metainfo/com.lolitemaultes.Gridline.metainfo.xml"
+          tar -tzf "dist/Gridline-$VER-linux-$arch.tar.gz" | grep -q "lib/clap/Gridline Suite.clap"
+          tar -tzf "dist/Gridline-$VER-linux-$arch.tar.gz" | grep -q "lib/clap/Gridline Suite Mini.clap"
+      - name: The .rpm installs on Fedora
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w fedora:latest sh -c \
+            "dnf install -y -q ./dist/Gridline-$VER-linux-${{ matrix.arch }}.rpm && gridline --version && test \"\$(gridline --version)\" = 'Gridline $VER' && bash tools/ci/smoke.sh /usr/bin/gridline $VER"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridline-symbols-linux-${{ matrix.arch }}
+          path: symbols/Gridline-*-symbols-*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridline-linux-${{ matrix.arch }}
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+
+  bsd:
+    name: ${{ matrix.name }}
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: FreeBSD 14, os: freebsd }
+          - { name: OpenBSD 7, os: openbsd }
+          - { name: NetBSD 10, os: netbsd }
+    env:
+      GRIDLINE_PACKAGE: ${{ needs.version.outputs.version }}
+      GRIDLINE_CMAKE_ARGS: "-DGRIDLINE_DEV_ASSETS=OFF"
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.os == 'freebsd'
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14"  # the newest 14.x release (a pinned point release reaches its end of life)
+          usesh: true
+          mem: 8192
+          envs: "GRIDLINE_PACKAGE GRIDLINE_CMAKE_ARGS GRIDLINE_NO_PLUGIN_SCAN"
+          prepare: sh tools/ci/install-deps.sh freebsd
+          run: sh tools/ci/bsd-build.sh
+      - if: matrix.os == 'openbsd'
+        uses: vmactions/openbsd-vm@v1
+        with:
+          release: "7.7"
+          usesh: true
+          mem: 8192
+          envs: "GRIDLINE_PACKAGE GRIDLINE_CMAKE_ARGS GRIDLINE_NO_PLUGIN_SCAN"
+          prepare: sh tools/ci/install-deps.sh openbsd
+          run: sh tools/ci/bsd-build.sh
+      - if: matrix.os == 'netbsd'
+        uses: vmactions/netbsd-vm@v1
+        with:
+          release: "10.1"
+          usesh: true
+          mem: 8192
+          envs: "GRIDLINE_PACKAGE GRIDLINE_CMAKE_ARGS GRIDLINE_NO_PLUGIN_SCAN"
+          prepare: sh tools/ci/install-deps.sh netbsd
+          run: sh tools/ci/bsd-build.sh
+      - run: ls -l dist && test -s dist/Gridline-*-${{ matrix.os }}-*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridline-${{ matrix.os }}
+          path: dist/Gridline-*.tar.gz
+
+  debian:
+    # The Linux .deb and AppImage of this release, installed with apt into fresh Debian 11, 12 and 13
+    # and Ubuntu 24.04 containers (the official images), x86_64 and ARM64: the dependencies resolve
+    # from each system's own repositories, every program and plugin finds its libraries, and the CLI
+    # and the app run there (tools/ci/debian-check.sh). Ubuntu 22.04 is the runner of the Linux job
+    # itself. A release that would not install on one of them is not published.
+    name: ${{ matrix.system }} ${{ matrix.arch }}
+    needs: [version, linux]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        system: ["debian:11", "debian:12", "debian:13", "ubuntu:24.04"]
+        arch: [x86_64, aarch64]
+        include:
+          - { arch: x86_64, deb: amd64, os: ubuntu-22.04 }
+          - { arch: aarch64, deb: arm64, os: ubuntu-22.04-arm }
+    env:
+      VER: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gridline-linux-${{ matrix.arch }}
+          path: dist
+      - name: Install and run
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w "${{ matrix.system }}" bash tools/ci/debian-check.sh \
+            "dist/Gridline-$VER-linux-${{ matrix.deb }}.deb" "dist/Gridline-$VER-linux-${{ matrix.arch }}.AppImage" "$VER"
+
+  chromeos:
+    # The Linux .deb and AppImage of this release, installed into the container image a Chromebook's
+    # Linux development environment uses (Google's own image, newest ChromeOS milestone), and into
+    # Google's older Debian 11 image that Chromebooks set up before, x86_64 and ARM64: the
+    # dependencies resolve from that system's repositories and the app runs there
+    # (tools/ci/chromeos-check.sh). A release that would not install on a Chromebook is not published.
+    name: ChromeOS ${{ matrix.arch }} (${{ matrix.image == 'bullseye' && 'Debian 11 container' || 'newest container' }})
+    needs: [version, linux]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+        image: [newest, bullseye]
+        include:
+          - { arch: x86_64, os: ubuntu-22.04 }
+          - { arch: aarch64, os: ubuntu-22.04-arm }
+    env:
+      VER: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gridline-linux-${{ matrix.arch }}
+          path: dist
+      - name: The Chromebook container image
+        run: |
+          sudo apt-get install -y -q squashfs-tools
+          bash tools/ci/crostini-docker.sh "$RUNNER_TEMP/crostini" "${{ matrix.image == 'bullseye' && 'bullseye' || '' }}"
+      - name: Install and run
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w gridline-crostini bash tools/ci/chromeos-check.sh \
+            "dist/Gridline-$VER-linux-$(dpkg --print-architecture).deb" "dist/Gridline-$VER-linux-${{ matrix.arch }}.AppImage" "$VER"
+
+  release:
+    name: Checksums and release
+    needs: [version, media-tools, macos, windows, linux, bsd, debian, chromeos]
+    runs-on: ubuntu-latest
+    env:
+      VER: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Collect and checksum
+        run: |
+          mkdir -p files
+          find dl -type f \( -name "Gridline-$VER-*" \) -exec cp {} files/ \;
+          cp dl/release-notes/notes.md .
+          cd files
+          for f in *; do case "$f" in *"$VER"*) ;; *) echo "::error::$f has no version in its name"; exit 1 ;; esac; done
+          sha256sum Gridline-* > "Gridline-$VER-SHA256SUMS"
+          cat "Gridline-$VER-SHA256SUMS"
+          sha256sum -c "Gridline-$VER-SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Gridline-${{ needs.version.outputs.version }}-all
+          path: files/*
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: Distribution channel files (K-1)
+        run: |
+          # Flathub, AUR, Homebrew, the Windows package managers, the FreeBSD port, COPR and the
+          # snap, filled in with this release's checksums. Not release files: the workflow
+          # artifact packaging-<version>, which the user submits to each channel.
+          python3 src/packaging/render.py --out "packaging-$VER" --version "$VER" --dist files \
+            --sums "files/Gridline-$VER-SHA256SUMS" --commit "$GITHUB_SHA" --date "$(date -u +%F)"
+          python3 src/packaging/check.py --rendered "packaging-$VER"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaging-${{ needs.version.outputs.version }}
+          path: packaging-${{ needs.version.outputs.version }}
+          include-hidden-files: true  # the AUR .SRCINFO files
+      - name: Publish the release
+        if: needs.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A prerelease label: a GitHub pre-release, never "Latest" (/releases/latest, which the
+          # stable update check reads, keeps answering the newest release).
+          if [ "$PRERELEASE" = "true" ]; then kind=(--prerelease --latest=false); else kind=(--latest); fi
+          gh release create "v$VER" --repo "$GITHUB_REPOSITORY" --title "Gridline $VER" --notes-file notes.md --verify-tag "${kind[@]}" files/*

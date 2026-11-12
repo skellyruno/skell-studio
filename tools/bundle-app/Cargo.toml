@@ -1,0 +1,13 @@
+[package]
+name = "bundle-app"
+description = "Builds Lemon Studio and writes its macOS app bundle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bundle-app"
+path = "src/main.rs"
+test = false
+
+[dependencies]

@@ -1,0 +1,234 @@
+// Gridline — J-75: files dragged into Gridline from other applications
+// (Finder / Explorer / file managers, sample stores such as Tracklib, browsers,
+// mail, photo apps).
+//
+// The window system layer (host/ui/ExternalDropMac.mm on macOS; SDL's drop
+// events in app/main.cpp elsewhere) turns a drag session into Events posted to
+// the queue below: Enter (what is dragged, where), Move, Leave, Drop, and for
+// files that only exist after the drop — file promises, downloads of web
+// links, raw audio data — Arrived / Failed / Progress. The interface
+// (app/ExternalDragUi) consumes them once a frame, shows where the drop would
+// land, and performs it.
+//
+// Pure logic, no UI: item kinds, the routing of a set of files onto a drop
+// target (what happens, where, and the hint text), uniform type identifier →
+// extension, web links, quick audio header reads. Unit tested
+// (tests/test_external_drop.cpp).
+//
+// Platform layers:
+//   macOS  — NSDraggingDestination on the main window: file URLs, file
+//            promises (NSFilePromiseReceiver), http(s) links to audio, raw
+//            audio data; hover position + modifier keys. Tested.
+//   X11 / Wayland / Windows — SDL2 reports files only when they are dropped
+//            (SDL_DROPBEGIN / SDL_DROPFILE / SDL_DROPTEXT / SDL_DROPCOMPLETE,
+//            no hover position): main.cpp turns them into Enter + Drop at the
+//            pointer. A native XDND / OLE IDropTarget layer plugs in by posting
+//            the same events (see native::install). Untested on those systems.
+#pragma once
+#include <cstdint>
+#include <string>
+#include <vector>
+#include "BrowserIndex.h"
+#include "Types.h"
+
+namespace gl::xdrop {
+
+// One dragged thing.
+struct Item {
+  std::string path;  // the file on disk ("" while pending)
+  std::string name;  // file name with extension (shown, decides the kind)
+  std::string url;   // http(s) link it is downloaded from (on drop only)
+  bool pending = false;  // file promise / download / raw data: not on disk yet
+  bool dir = false;      // a folder
+  bool guessed = false;  // pending item of unknown type: assumed to be audio
+};
+
+// Kind of an item (a folder → Kind::Folder; pending items by their name; a
+// pending item of unknown type counts as audio, the common case for sample
+// stores that promise files without a type).
+browse::Kind kindOf(const Item& it);
+// Display name ("Kick 01.wav").
+std::string displayName(const Item& it);
+
+struct Mods {
+  bool shift = false;  // playlist: one after another on the track under the pointer; rack: always new channels
+  bool alt = false;    // no snapping (the playlist inverts its snap, like every drag)
+  bool ctrl = false;
+};
+
+// ---------------------------------------------------------------- events
+enum class EventType { Enter, Move, Leave, Drop, Arrived, Failed, Progress };
+struct Event {
+  EventType type = EventType::Move;
+  float x = 0, y = 0;  // window coordinates (points / SDL window units), top-left origin
+  Mods mods;
+  bool hasMods = false;     // the layer knows the modifier keys (macOS)
+  std::vector<Item> items;  // Enter / Drop
+  uint64_t token = 0;       // Drop: identifies pending items; Arrived / Failed / Progress: which drop
+  size_t index = 0;         // Arrived / Failed / Progress: item index
+  std::string path;         // Arrived: the file
+  std::string error;        // Failed
+  double progress = 0;      // Progress: 0..1, < 0 unknown
+};
+// Thread safe (promise / download completions come from background threads).
+void post(const Event& e);
+std::vector<Event> take();
+uint64_t newToken();
+
+// K-153: when an SDL drop (X11, Wayland, Windows) lands. X11 and Windows: at the pointer when SDL says
+// the drop is complete. SDL's Wayland driver knows no pointer position during a drag (no global
+// position on Wayland, the window's own position reads 0,0, and the drag's motion is not passed on):
+// the drop waits until the pointer is back in the window, which the compositor reports right after the
+// drag ends, and lands there; after `kWaitSeconds` without it, at the last position known.
+struct DropTiming {
+  static constexpr double kWaitSeconds = 0.5;
+  bool waiting = false;
+  double since = 0;
+  // SDL said the drop is complete: true when it lands now (not Wayland), else it waits.
+  bool completed(bool waylandDriver, double now) {
+    if (!waylandDriver) return true;
+    waiting = true, since = now;
+    return false;
+  }
+  // The pointer moved in (or entered) the main window: true when a waiting drop lands now, there.
+  bool pointerMoved() {
+    const bool was = waiting;
+    waiting = false;
+    return was;
+  }
+  // Once a frame: true when a waiting drop gave up waiting and lands at the last position now.
+  bool expired(double now) {
+    if (!waiting || now - since < kWaitSeconds) return false;
+    waiting = false;
+    return true;
+  }
+};
+
+// Where pending items are written: "<project folder>/Dropped", or the config
+// folder's "Dropped" while the project is unsaved. Set by the interface.
+void setDropFolder(const std::string& dir);
+std::string dropFolder();
+// A free path for `name` in `dir` ("Kick.wav", "Kick (2).wav", …); makes the folder.
+std::string uniquePath(const std::string& dir, const std::string& name);
+// Whether the last drawn frame found a target that takes the drag (the
+// platform layer shows the copy cursor then).
+void setHoverAccepted(bool on);
+bool hoverAccepted();
+// Set by the interface when a drag was cancelled (Escape): the platform
+// layer refuses the drop until the next drag enters.
+void setCancelled(bool on);
+bool cancelled();
+
+// ------------------------------------------------------------- formats
+// File name extension (".wav") for a uniform type identifier, "" if unknown.
+std::string extensionForUti(const std::string& uti);
+// Audio uniform type identifiers (raw audio data on a pasteboard).
+const std::vector<std::string>& audioUtis();
+bool isWebUrl(const std::string& s);
+// "file:///a%20b/c.wav" → "/a b/c.wav"; "" when not a file URL.
+std::string pathFromFileUrl(const std::string& url);
+// File name for a web link ("https://x.com/a/Kick%2001.wav?dl=1" → "Kick 01.wav").
+std::string fileNameForUrl(const std::string& url);
+// Length of an audio file from its header (WAV / FLAC), < 0 when unknown.
+double audioHeaderSeconds(const std::string& path);
+
+// ------------------------------------------------------------- planning
+// Where the drag is: the drop target under the pointer and what is there.
+struct Context {
+  browse::DropTarget target = browse::DropTarget::Workspace;
+  std::string targetType;         // plugin type of the target (channel row / plugin window / mixer slot)
+  bool targetUsesSample = false;  // that plugin loads samples
+  bool onChannel = false;         // Rack: over a channel row (replace its sample / instrument)
+  bool insertHere = false;        // Rack: between two rows (new channels are inserted there, J-97)
+  std::string targetName;         // channel / plugin / mixer track name (hint text)
+  int track = 0;                  // Playlist: track under the pointer (0-based)
+  Tick tick = 0;                  // Playlist: snapped position
+  Tick barTicks = 384;            // one bar
+  int trackCount = 500;           // playlist tracks
+  std::vector<Tick> lengths;      // per item: length in ticks (0 = unknown)
+  Tick fallbackLength = 384;      // drawn length of clips of unknown length
+};
+// What dropping does with one item.
+struct Step {
+  size_t item = 0;
+  browse::DropAction action = browse::DropAction::None;
+  int track = 0;   // AudioClip / MidiPatternClip
+  Tick tick = 0;
+  Tick length = 0;
+};
+struct Plan {
+  std::vector<Step> steps;
+  std::vector<size_t> unsupported;  // items no target takes (not audio / MIDI / preset / project / folder)
+  std::vector<size_t> skipped;      // usable items this target ignores
+  std::string label;                // "Drop to add 3 audio clips on track 4 at bar 9"
+  bool accepted() const { return !steps.empty(); }
+};
+// `kinds`: per item, what it is (presets decoded by the caller; see
+// browserui::dropItemFor). FL behaviour: several samples dropped on the
+// playlist go on consecutive tracks from the one under the pointer (stacked);
+// Shift lays them one after another on that track. A channel row takes one
+// sample or instrument preset (J-97: replace its sample, or its instrument);
+// the rest, or everything with Shift, become new channels.
+// A project anywhere opens (the rest of the drop is ignored).
+Plan plan(const std::vector<Item>& items, const std::vector<browse::DropItem>& kinds, const Context& ctx, const Mods& mods);
+
+// Positions of several clips dropped at (track, tick): stacked on
+// consecutive tracks (clamped to the last track) or one after another.
+struct Place {
+  int track = 0;
+  Tick tick = 0;
+};
+std::vector<Place> layoutClips(const std::vector<Tick>& lengths, int track, Tick tick, bool sequential, int trackCount);
+
+// J-97: whether a channel's name was given automatically, so replacing its
+// content renames it: empty, the instrument's name (`pluginName`, how new
+// channels are named), or the stem of its sample (`oldData`, a file path).
+// A name the user typed stays. J-213: a numbered instrument name ("Sampler #2",
+// as cloned channels are named) is automatic too.
+bool autoChannelName(const std::string& name, const std::string& pluginName, const std::string& oldData);
+// J-213: `name` is `base` or `base` followed by " #<number>".
+bool numberedName(const std::string& name, const std::string& base);
+
+// J-97: how a plugin's state data holds its sample, for dropped audio files:
+// Whole = the data is the file path (Sampler, Kerf, Granular, Tercet's custom
+// wave); FirstLine = the path is the first line and the rest the plugin's own
+// settings (scratch moves, spline, convolver envelope), which stay; None = the
+// data cannot take one dropped sample (drum kits, everything else).
+enum class SampleSlot { None, Whole, FirstLine };
+SampleSlot sampleSlot(const std::string& type);
+// `data` with `path` as its sample (sampleSlot(type) != None).
+std::string withSample(const std::string& type, const std::string& data, const std::string& path);
+// A sample dropped on a channel row of this instrument loads into it (the
+// sample players); any other instrument is replaced by a sampler (FL).
+bool rowTakesSample(const std::string& type);
+
+// J-97: where a drag over a channel rack row lands. The top and bottom edge
+// bands (a quarter of the row, at least 4 px, and the gap between rows)
+// insert a new channel before / after the row; the middle replaces it.
+enum class RowZone { Before, Replace, After };
+RowZone rowZone(float y, float rowTop, float rowHeight);
+
+// ------------------------------------------------------------- platform
+namespace native {
+// Makes the main window (NSWindow*) a drop target for everything above
+// (macOS). False where Gridline relies on SDL's drop events.
+bool install(void* nativeWindow);
+// Main loop, once a frame: download progress (macOS).
+void poll();
+// Starts downloading `url` into the drop folder; posts Progress, then
+// Arrived / Failed with (token, index). Only ever called for an explicit drop.
+void download(uint64_t token, size_t index, const std::string& url);
+#if defined(__APPLE__)
+// What an NSPasteboard* holds, as drag items, in order of preference: file
+// URLs (Finder, Electron apps such as Tracklib / Splice), else file promises
+// (browsers, Mail, Photos, sample stores), else http(s) links to audio /
+// MIDI, else raw audio data. `resolve` (the drop): promises start arriving in
+// the drop folder, links start downloading, raw data is written — Arrived /
+// Failed events carry `token`. Tests call it with their own pasteboard.
+std::vector<Item> readPasteboard(void* pasteboard, bool resolve, uint64_t token);
+// The pasteboard's types per item ("public.file-url, …"; GRIDLINE_DND_LOG=1 prints them on drag enter).
+std::string describePasteboard(void* pasteboard);
+#endif
+}  // namespace native
+
+}  // namespace gl::xdrop

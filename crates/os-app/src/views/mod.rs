@@ -1,0 +1,757 @@
+// Copyright (C) 2026 ItsAlphaNeon
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
+
+//! Views of the main window, laid out from the measured default layout.
+// spec: ui/main-window.md
+
+pub mod browser;
+pub mod cabledebug;
+pub mod channel_win;
+pub mod container;
+pub mod data_folder;
+pub mod factory_folder;
+pub mod dialog;
+pub mod menus;
+pub mod midi_form;
+pub mod midi_page;
+pub mod mondebug;
+pub mod settings;
+pub mod mixer;
+pub mod piano;
+pub mod patterns;
+pub mod perf;
+pub mod plugin_palette;
+pub mod playlist;
+pub mod project_forms;
+pub mod rack;
+pub mod remote_box;
+pub mod export_form;
+pub mod save_form;
+pub mod arpeggiate;
+pub mod strum;
+pub mod piano_dlg;
+pub mod tapper;
+pub mod touch;
+pub mod events;
+pub mod theme_preview;
+pub mod toolbar;
+pub mod vintage_toolbar;
+pub mod typein;
+
+use std::borrow::Cow;
+
+use os_ui::{kit, Color, Rect};
+
+use crate::app::{Action, Bar, Scroll, Seg, State, Ui, Win};
+use crate::icons::{self, Icon};
+
+/// Per-frame values that don't live in `State`.
+pub struct FrameInfo {
+    pub title: String,
+    pub hint: Cow<'static, str>,
+    pub playing: bool,
+    /// Playing but held by Play (pause).
+    pub paused: bool,
+    /// Playback position in ticks of the running mode (a pattern wraps at its end), and whether that mode is
+    /// the playlist. Every playhead and the time display read these, never the UI's own tempo or mode.
+    pub tick: f64,
+    pub piano_tick: f64,
+    pub song: bool,
+    /// The tempo the toolbar shows: the one playback plays at (tempo automation moves it), else the project's.
+    pub tempo: f64,
+    pub peaks: (f32, f32),
+    /// Notes playing now, as (channel index, key).
+    pub sounding: Vec<(u16, u16)>,
+    /// The song position slider's handle is being dragged (it shows the dragged position, not the playhead).
+    pub song_pos_drag: bool,
+    pub active_knob: Option<crate::knobs::KnobId>,
+    pub rack_drag: Option<crate::rack_drag::Overlay>,
+    /// What the toolbar editor's drag carries (spec: ui/toolbar-menu.md §8).
+    pub bar_drag: Option<crate::toolbar::BarDrag>,
+}
+
+/// UI text at a nominal size (Cuprum; spec §10).
+pub fn fnt(size: f32) -> os_ui::Font {
+    os_ui::Font::new(size.round() as u16)
+}
+
+/// The light display face (song position).
+pub fn light(size: f32) -> os_ui::Font {
+    os_ui::Font::light(size.round() as u16, 0)
+}
+
+/// Display scale of popup menus and combo lists for a window at scale `main`: General ▸ Display ▸ Pop-ups scaling
+/// (Main = `main`). Their row heights follow it (`os_ui::kit::menu::metrics`). Spec: ui/ui-scaling.md §1–2.
+pub fn popup_scale(main: f32) -> f32 {
+    let pct = crate::prefs::choice(&crate::prefs::POPUPS_SCALING).strip_suffix('%').and_then(|p| p.parse::<f32>().ok());
+    pct.map_or(main, |p| p / 100.0)
+}
+
+/// Top of the workspace (§1) below the toolbar of two rows (the classic layout).
+pub const WORK_Y: f32 = 83.0;
+
+/// Top of the workspace and the browser now: the window's top while the toolbar is hidden (spec: ui/toolbar-menu.md
+/// §5), else the top band's bottom (`band_h`).
+pub fn work_y(s: &State) -> f32 {
+    if s.toolbar.hidden || s.native_view == Some(Win::Browser) { 0.0 } else { band_h(s) }
+}
+
+/// Display scale of the main window's top band (the toolbar rows, `WORK_Y` tall in its own px for two rows) for a
+/// window at scale `main`: General ▸ Display ▸ Toolbars scaling (Main = `main`). Spec: ui/ui-scaling.md §1.
+pub fn toolbar_scale(main: f32) -> f32 {
+    let pct = crate::prefs::choice(&crate::prefs::TOOLBARS_SCALING).strip_suffix('%').and_then(|p| p.parse::<f32>().ok());
+    pct.map_or(main, |p| p / 100.0)
+}
+
+/// The window's px per px of the top band at the last paint's scale: 1 at Toolbars scaling Main.
+pub fn band_k(s: &State) -> f32 {
+    let main = s.ui_scale.max(0.01);
+    let preferred = toolbar_scale(main) / main;
+    if s.toolbar_required_width > 0.0 && s.screen.0 > 0.0 {
+        return preferred.min(s.screen.0 / s.toolbar_required_width).max(preferred * 0.8);
+    }
+    preferred
+}
+
+/// Height of the top band in the window's px (shown or not): its rows' (`toolbar::Layout::band_h`, `WORK_Y` for two)
+/// at its scale.
+pub fn band_h(s: &State) -> f32 {
+    toolbar::display_layout(s).band_h() * band_k(s)
+}
+
+/// `r` in px `k` times as big.
+pub fn scale_rect(r: Rect, k: f32) -> Rect {
+    Rect::new(r.x * k, r.y * k, r.w * k, r.h * k)
+}
+
+/// The top band's toolbar panels as laid out now, in the band's own px.
+fn placed(s: &State) -> Vec<crate::toolbar::Placed> {
+    // Reuse the measured room left by the fixed right-side actions. Painting,
+    // invalidation and pointer mapping must use exactly the same layout.
+    let width = s.screen.0 / band_k(s);
+    toolbar::placements(s, width)
+}
+
+/// How far toolbar panel `p` is from its home (`toolbar::Panel::home`); `None` when it is not on the toolbar.
+pub fn panel_at(s: &State, p: crate::toolbar::Panel) -> Option<crate::toolbar::At> {
+    placed(s).into_iter().find(|q| q.panel == p).map(|q| q.at())
+}
+
+/// Rect `r` of the top band, given in the home px of the panel whose slot holds its top-left (`toolbar::Panel`,
+/// `app::HINT_RECT`, `patterns::PLUS_BOX_AT`...), in the window's px where that panel is drawn now. A panel that is not
+/// on the toolbar leaves `r` where it is (scaled).
+pub fn band_rect(s: &State, r: Rect) -> Rect {
+    let a = crate::toolbar::Panel::at_home(r.x, r.y).and_then(|p| panel_at(s, p)).unwrap_or_default();
+    scale_rect(a.r(r), band_k(s))
+}
+
+/// The parts of rect `r` of the top band, given in its panels' home px (`band_rect`), in the window's px where each of
+/// those panels is drawn now: to repaint them (`App::damage_band`). Panels that are not on the toolbar give none.
+pub fn band_rects(s: &State, r: Rect) -> Vec<Rect> {
+    if vintage_toolbar::active(s,s.screen.0/band_k(s)) {
+        return vec![scale_rect(toolbar::band(s,s.screen.0/band_k(s)),band_k(s))];
+    }
+    let k = band_k(s);
+    placed(s)
+        .into_iter()
+        .filter(|p| !p.panel.repeats())
+        .filter_map(|p| {
+            let (row, x0, x1) = p.panel.home();
+            let slot = Rect::new(x0, crate::toolbar::ROW_H * row as f32, x1 - x0, crate::toolbar::ROW_H + 1.0);
+            let part = slot.intersect(&r);
+            (!part.is_empty()).then(|| scale_rect(p.at().r(part), k))
+        })
+        .collect()
+}
+
+/// The toolbar editor's palette in the window's px, while it is open (spec: ui/toolbar-menu.md §8).
+pub fn palette_rect(s: &State) -> Option<Rect> {
+    let k = band_k(s);
+    (s.bar.editing && !s.toolbar.hidden).then(|| scale_rect(toolbar::palette(s, s.screen.0 / k).rect, k))
+}
+/// Width of the docked browser incl. the splitter (§4): the default, and the least its splitter drags it to.
+pub const BROWSER_W: f32 = 209.0;
+
+/// Width of the docked browser incl. the splitter, as dragged (`State::browser_w`), at most half the window (spec:
+/// ui/browser.md §9).
+pub fn browser_w(s: &State) -> f32 {
+    if s.native_view == Some(Win::Browser) { return s.screen.0; }
+    if s.native_detached.contains(&Win::Browser) { return 0.0; }
+    if s.browser_auto_hidden {return 8.;}
+    s.browser_w.min(s.screen.0 / 2.0).max(BROWSER_W)
+}
+
+/// Paints the frame; returns the number of hits registered before the overlays (menus, popups, picker...), which cover
+/// docked plugin windows.
+pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
+    let (w, h) = ui.c.size();
+    // A maximized Playlist or Piano roll paints all of its rect (`framed`): the workspace under it needs no clear.
+    let cover = s.docked().filter(|w| matches!(w, Win::Playlist | Win::PianoRoll)).map(|w| s.win_rect(w));
+    ui.c.set_cover(cover);
+    ui.c.clear(ui.t.workspace);
+    ui.c.set_cover(None);
+
+    // Workspace (§9): the theme's picture or the watermark, then docked windows on top.
+    let left = if s.show_browser { browser_w(s) } else { 0.0 };
+    let top = work_y(s);
+    let work = Rect::new(left, top, w - left, h - top);
+    let docked = s.docked();
+    // spec: ui/flstheme.md §3 (BackMode, BackPicFilename); no watermark over a picture (`wallpaper`).
+    if docked.is_none() && !crate::wallpaper::paint(ui, work) && crate::workspace_visibility::shown("visible_watermark") {
+        let wm = ui.t.watermark;
+        icons::logo(ui.c, work.cx(), work.cy() + 40.0, 170.0, wm);
+        let version = format!("AQUILA v{}", crate::version::staged());
+        let vc = ui.t.version_text;
+        let vw = ui.c.text_width(crate::views::fnt(16.0), &version);
+        ui.c.text(crate::views::fnt(16.0), work.cx() - vw / 2.0, h - 22.0, vc, &version);
+    }
+
+    // One stacking order for all child windows (spec: ui/channel-rack.md §5). A maximized window
+    // fills the workspace, so windows below it are covered and not painted.
+    let docked_at = s.z.iter().rposition(|&w| s.is_max(w));
+    // Each part is skipped by a repaint that misses it (`Ui::part`).
+    if s.show_browser && (s.native_view == Some(Win::Browser) || (s.native_view.is_none() && !s.native_detached.contains(&Win::Browser))) {
+        let r = Rect::new(0.0, top, browser_w(s), h - top);
+        ui.part(Seg::Browser, r, |ui| browser::paint(ui, s, r));
+    }
+    let _ = work;
+    for (i, &win) in s.z.iter().enumerate() {
+        // A detached window paints in its own native window (`paint_detached`).
+        if s.native_view.map_or(s.native_detached.contains(&win),|v|v!=win) {continue;}
+        if s.native_view.is_none() && docked_at.is_some_and(|d| i < d) || s.is_detached(win) {
+            continue;
+        }
+        ui.win = Some(win);
+        let r = s.win_rect(win);
+        // A window paints inside its paint area (also what it marks as drawn, e.g. text's generous overhang).
+        let a = paint_area(s, win);
+        ui.c.push_clip(a);
+        // Transparent windows: one that isn't the active one shows what is behind it (spec: ui/animations.md §4.9). A
+        // maximized one has nothing behind it to show.
+        let inactive = i + 1 != s.z.len() && !s.is_max(win) && crate::prefs::index(&crate::prefs::TRANSPARENT_WINDOWS) == 1;
+        let opacity = s.motion.borrow_mut().window_opacity(win, None, inactive, a);
+        let behind = (opacity < 1.0 && ui.c.visible(a)).then(|| ui.c.begin_layer(a, false));
+        match win {
+            Win::Playlist => ui.part(Seg::Win(win), a, |ui| playlist::paint(ui, s, r, f)),
+            Win::Mixer => ui.part(Seg::Win(win), a, |ui| {
+                // Timed while the cables swing: a mixer too slow to redraw them hangs them still. Not in tests: they
+                // paint while the rest of the suite runs, and on a busy machine the clock would hang the cables (and
+                // post their message) at random between two paints a test compares. `cable`'s tests give the costs.
+                let swinging = (!cfg!(test) && s.cables.borrow().moving()).then(std::time::Instant::now);
+                mixer::paint(ui, s, r, f);
+                if let Some(t) = swinging {
+                    s.cables.borrow_mut().paint_cost(t.elapsed());
+                }
+            }),
+            Win::PianoRoll => ui.part(Seg::Win(win), a, |ui| piano::paint(ui, s, r, f)),
+            Win::ChannelRack => ui.part(Seg::Win(win), a, |ui| rack::paint(ui, s, f)),
+            Win::Plugin => ui.part(Seg::Win(win), a, |ui| channel_win::paint(ui, s, f)),
+            Win::Perf => ui.part(Seg::Win(win), a, |ui| perf::paint(ui, s, f)),
+            Win::Tapper => ui.part(Seg::Win(win), a, |ui| tapper::paint(ui, s, f)),
+            Win::Touch => ui.part(Seg::Win(win), a, |ui| touch::paint(ui, s, f)),
+            Win::Strum => ui.part(Seg::Win(win), a, |ui| strum::paint(ui, s, f)),
+            Win::Arp => ui.part(Seg::Win(win), a, |ui| arpeggiate::paint(ui, s, f)),
+            Win::PianoDlg => ui.part(Seg::Win(win), a, |ui| piano_dlg::paint(ui, s, f)),
+            Win::Events => ui.part(Seg::Win(win), a, |ui| events::paint(ui, s, f)),
+            Win::Container => ui.part(Seg::Win(win), a, |ui| container::paint(ui, s, f)),
+            Win::PluginPalette => ui.part(Seg::Win(win), a, |ui| plugin_palette::paint(ui, s, f)),
+            _ => {}
+        }
+        if let Some(l) = behind {
+            ui.c.end_layer(l, opacity);
+        }
+        ui.c.pop_clip();
+        ui.win = None;
+    }
+    if !s.toolbar.hidden && s.native_view.is_none() {
+        // At Toolbars scaling (spec: ui/ui-scaling.md §1): the band works in its own px, `k` of the window's each, so
+        // it is `w / k` of them wide; what doesn't fit is left out (`toolbar::room`).
+        let scale = ui.c.scale * band_k(s);
+        ui.part(Seg::Toolbar, Rect::new(0.0, 0.0, w, band_h(s)), |ui| ui.scaled(scale, |ui, k| toolbar::paint(ui, s, f, w / k)));
+    }
+    // The floating hint bar, over every window (spec: ui/toolbar-menu.md §4).
+    // Hints live only in the top toolbar; there is no floating duplicate.
+    let overlays = ui.hit_count();
+    if s.native_view != s.native_input {return overlays;}
+    if crate::plugin_picker::floating(s) { crate::plugin_picker::paint(ui, s); }
+    crate::plugin_downloads::paint_tooltip(ui, s);
+    // The toolbar editor's palette goes over the windows, which docked plugin windows leave free like any overlay (spec:
+    // ui/toolbar-menu.md §8).
+    if s.bar.editing && !s.toolbar.hidden {
+        let scale = ui.c.scale * band_k(s);
+        ui.scaled(scale, |ui, k| toolbar::paint_palette(ui, s, f, w / k));
+    }
+    if let Some(m) = s.menu_open {
+        ui.scaled(popup_scale(ui.c.scale), |ui, k| menus::paint_dropdown(ui, s, m, k));
+    }
+    // A menu opened from the settings window (Audio page combos) goes over it; a dropdown's submenu over the dropdown;
+    // the time signature dialog's value lists over the dialog.
+    let over_dialog = crate::timesig::form_open(s);
+    // The popups and boxes opened from a detached window are in that window (`paint_detached`).
+    let here = !s.overlay_on.is_some_and(|w| s.is_detached(w) && s.shown(w));
+    if !s.settings.open && !over_dialog && here {
+        piano::paint_lane_menu(ui, s);
+        playlist::paint_overlays(ui, s);
+    }
+    rack::paint_fill(ui, s);
+    patterns::paint(ui, s);
+    if s.settings.open {
+        settings::paint(ui, s);
+        if !over_dialog && here {
+            playlist::paint_overlays(ui, s);
+        }
+    }
+    // A browser drag over a detached window draws its ghost there (`paint_detached`).
+    if s.drag_on.is_none_or(|w| !s.is_detached(w)) {
+        browser::paint_ghost(ui, s);
+    }
+    if s.monitor.debug {
+        mondebug::paint(ui, s);
+    }
+    if s.cables.borrow().debug {
+        cabledebug::paint(ui, s);
+    }
+    // The Song info box of a project opened with "Show info on opening" (spec: flp/events/project-info.md).
+    crate::project_info::paint_song_info(ui, s);
+    // The Remote control settings box (spec: ui/remote-control.md §2).
+    if let Some(b) = &s.link_box {
+        remote_box::paint(ui, s, b);
+    }
+    if !crate::plugin_picker::floating(s) { crate::plugin_picker::paint(ui, s); }
+    crate::help::paint_spotlight(ui, s);
+    // Message boxes and file dialogs go over everything (spec: ui/dialogs.md).
+    dialog::paint(ui, s);
+    if over_dialog && here {
+        playlist::paint_overlays(ui, s);
+    }
+    s.motion.borrow_mut().paint_ghosts(ui.c);
+    overlays
+}
+
+/// Detached window `w` (Options ▸ Detached, Lemon Studio's design: spec ui/mixer.md §6.2), painted whole into its own
+/// native window's canvas: the window, then the popups and boxes opened from it (`State::overlay_on`). Returns where
+/// the overlays' hits start, as `paint` does.
+pub fn paint_detached(ui: &mut Ui, s: &State, f: &FrameInfo, w: Win) -> usize {
+    ui.c.clear(ui.t.workspace);
+    let r = s.win_rect(w);
+    let a = paint_area(s, w);
+    ui.win = Some(w);
+    ui.c.push_clip(a);
+    match w {
+        Win::Mixer => mixer::paint(ui, s, r, f),
+        Win::ChannelRack => rack::paint(ui, s, f),
+        _ => {}
+    }
+    ui.c.pop_clip();
+    ui.win = None;
+    let overlays = ui.hit_count();
+    if s.overlay_on == Some(w) {
+        if w == Win::ChannelRack {
+            rack::paint_fill(ui, s);
+        }
+        playlist::paint_overlays(ui, s);
+    }
+    if s.drag_on == Some(w) {
+        browser::paint_ghost(ui, s);
+    }
+    s.motion.borrow_mut().paint_ghosts(ui.c);
+    overlays
+}
+
+/// Where window `w` paints: its rect (and the channel rack's graph editor hanging below it). The resize zones past
+/// its edges are hits only. A repaint that misses this skips the window; a playlist scroll paints around it.
+pub fn paint_area(s: &State, w: Win) -> Rect {
+    crate::floating::placed(w).map_or_else(|| s.win_rect(w), |p| (p.paint)(s))
+}
+
+/// Start of a Playlist / Mixer / Piano roll window: blocks clicks through it, and (once the
+/// content is painted, so the zones sit on top) `resize_zones` adds its resize edges.
+pub fn window_body(ui: &mut Ui, r: Rect) {
+    ui.hit(r, Action::Swallow, "");
+}
+
+/// Resize edges of a floating window: thin strips along the sides and small corner squares,
+/// reaching 3 px outside the window. Not for maximized or collapsed windows.
+pub fn resize_zones(ui: &mut Ui, s: &State, win: Win, r: Rect) {
+    let Some(i) = win.slot() else { return };
+    if s.native_view==Some(win) || s.wins[i].maxed || s.wins[i].mini {
+        return;
+    }
+    use crate::app::{EDGE_B, EDGE_L, EDGE_R, EDGE_T};
+    let (o, n, c) = (3.0, 2.0, 8.0);
+    let hint = "Drag to resize";
+    let (x0, x1, y0, y1) = (r.x, r.right(), r.y, r.bottom());
+    for (z, e) in [
+        (Rect::span(x0 - o, x0 + n, y0 + c, y1 - c), EDGE_L),
+        (Rect::span(x1 - n, x1 + o, y0 + c, y1 - c), EDGE_R),
+        (Rect::span(x0 + c, x1 - c, y0 - o, y0 + n), EDGE_T),
+        (Rect::span(x0 + c, x1 - c, y1 - n, y1 + o), EDGE_B),
+        (Rect::span(x0 - o, x0 + c, y0 - o, y0 + c), EDGE_L | EDGE_T),
+        (Rect::span(x1 - c, x1 + o, y0 - o, y0 + c), EDGE_R | EDGE_T),
+        (Rect::span(x0 - o, x0 + c, y1 - c, y1 + o), EDGE_L | EDGE_B),
+        (Rect::span(x1 - c, x1 + o, y1 - c, y1 + o), EDGE_R | EDGE_B),
+    ] {
+        ui.hit(z, Action::WinResize(win, e), hint);
+    }
+}
+
+/// Minimize / maximize / close buttons from `x0` at the title bar of a window at top `y`.
+pub fn window_buttons(ui: &mut Ui, win: Win, x0: f32, y: f32, _normal: Color, _hover: Color) {
+    if win.slot().is_some() {
+        let r=Rect::new(x0-23.,y+3.,19.,17.);
+        let hover=ui.hit(r,Action::DetachWin(win),"Detach / attach window - move freely between monitors");
+        ui.c.fill_rrect(r,2.,if hover {ui.t.button_hi} else {ui.t.sunken});
+        ui.c.stroke_rrect(r,2.,1.,if hover {ui.t.accent} else {ui.t.text_dim});
+        ui.c.text_center(os_ui::Font::new(13),r,ui.t.text,"D");
+    }
+    let (mut hovered, mut down) = (None, None);
+    for (i, (hint, action)) in [
+        ("Minimize window", Action::MinWin(win)),
+        ("Maximize / restore window", Action::MaxWin(win)),
+        ("Close window", Action::CloseWin(win)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let b = Rect::new(x0 + i as f32 * 19.5, y + 3.0, 17.0, 17.0);
+        if ui.down(b, &action) {
+            down = Some(i);
+        }
+        if ui.hit(b, action, hint) {
+            hovered = Some(i);
+        }
+    }
+    if ui.t.style.vintage_2005 && crate::vintage_skin::has_frame("WindowButtonFaces", 5) {
+        for i in 0..3 {
+            crate::vintage_skin::native(ui.c,"WindowButtonFaces",[0,2,4][i]+usize::from(hovered==Some(i)),(x0+i as f32*19.5+1.).round(),y+6.);
+        }
+    } else {kit::window_buttons(ui.c, ui.t, x0, y, hovered, down);}
+}
+
+/// A window's own close ✕ in its title bar: the hit on `hit`, then the hover / pressed back of every title bar button
+/// on `back` (`kit::title_button_back`), under the glyph the caller draws. Whether the mouse is over it.
+pub fn close_button(ui: &mut Ui, hit: Rect, back: Rect, action: Action, hint: &'static str) -> bool {
+    let down = ui.down(hit, &action);
+    let hov = ui.hit(hit, action, hint);
+    kit::title_button_back(ui.c, ui.t, back, true, hov, down);
+    hov || down
+}
+
+/// Window frame with a title bar (§5); the bar drags the window. `buttons` = draw the window
+/// buttons at the right (the Mixer draws its own over the slot panel). Returns the client rect.
+pub fn window_frame(ui: &mut Ui, win: Win, r: Rect, title: &str, title_x: f32, buttons: bool) -> Rect {
+    window_frame_ex(ui, win, r, title, title_x, buttons, false)
+}
+
+/// `window_frame` with `flat`: a flat title bar without the separator (inside a floating frame).
+pub fn window_frame_ex(ui: &mut Ui, win: Win, r: Rect, title: &str, title_x: f32, buttons: bool, flat: bool) -> Rect {
+    let t = ui.t;
+    ui.c.fill_rect(r, t.window_title);
+    let bar = Rect::new(r.x, r.y, r.w, 23.0);
+    if t.style.vintage_2005 {
+        crate::vintage::window_caption(ui.c,bar);
+    } else if kit::panel_finish(ui.c, t, bar, t.window_title) {
+        // The finish stays inside the same draggable title rectangle.
+    } else if kit::lemon::on(t) {
+        // Lemon (spec: ui/lemon-design.md §3): a flat bar, a hairline under it.
+        if !flat {
+            ui.c.fill_rect(Rect::new(r.x, r.y + 22.0, r.w, 1.0), t.splitter_dark);
+        }
+    } else if !flat {
+        ui.c.fill_rect_gradient(bar, t.window_title.shade(0.04), t.window_title.shade(-0.03), 0.0);
+        ui.c.fill_rect(Rect::new(r.x, r.y + 22.0, r.w, 1.0), t.splitter_dark);
+    }
+    let font = if t.style.vintage_2005 {os_ui::Font::vintage(12)}else{kit::title_font(t, os_ui::Font::new(17))};
+    // The title stops short of the window buttons (a narrow window cuts it).
+    ui.c.text_clip(font, r.x + title_x, r.y + 1.0, (title_room(r, buttons) - title_x).max(0.0), t.text, title);
+    ui.hit(bar, Action::WinDrag(win), "Drag to move");
+    // Minimize / maximize / close glyphs at the right (1862, 1881, 1901 at full width).
+    if buttons {
+        window_buttons(ui, win, r.right() - 64.0, r.y, t.text_dim.mix(t.glyph, 0.6), t.glyph);
+    }
+    Rect::new(r.x, r.y + 23.0, r.w, r.h - 23.0)
+}
+
+/// How far from a title bar's left (at `r`) its text may reach: short of the window buttons when there are any.
+pub fn title_room(r: Rect, buttons: bool) -> f32 {
+    if buttons { r.w - 68.0 } else { r.w }
+}
+
+/// Floating window frame (spec ui/piano-roll.md §1a, same for Playlist / Mixer / Piano roll):
+/// 1 px dark border, 5 px frame, 1 px inner line around the client, flat 28 px title bar.
+/// Returns the inner rect (laid out like the docked window) when `win` floats, else `None`.
+pub fn float_frame(ui: &mut Ui, s: &State, win: Win, r: Rect) -> Option<Rect> {
+    if s.native_view==Some(win) {return None;}
+    let ws = &s.wins[win.slot()?];
+    if ws.maxed || ws.mini || r.h < 2.0 * crate::app::TITLE_H {
+        return None;
+    }
+    let t = ui.t;
+    let inner = Rect::new(r.x + 7.0, r.y + 5.0, r.w - 14.0, r.h - 12.0);
+    if t.style.vintage_2005 {
+        crate::vintage::metal(ui.c,r,t.window_title);
+        ui.c.stroke_rrect(r.inset(3.),0.,1.,Color::rgb(0x28373d));
+        ui.c.fill_rect(Rect::new(inner.x-1.,inner.y+23.,inner.w+2.,inner.h-22.),Color::rgb(0x202b32));
+    } else if kit::lemon::on(t) {
+        kit::float_frame(ui.c, t, r);
+    } else {
+        ui.c.fill_rect(r, ui.t.s(0x191d1f));
+        ui.c.fill_rect(r.inset(1.0), t.window_title);
+        ui.c.fill_rect(Rect::new(r.x + 1.0, r.y + 1.0, r.w - 2.0, 1.0), ui.t.s(0x303436));
+        ui.c.fill_rect(Rect::new(inner.x - 1.0, inner.y + 22.0, inner.w + 2.0, inner.h - 21.0), ui.t.s(0x131718));
+    }
+    ui.hit(Rect::new(r.x, r.y, r.w, 28.0), Action::WinDrag(win), "Drag to move");
+    Some(inner)
+}
+
+/// The (layout rect, client rect) that `framed` returns for `win` at `r`, without painting.
+pub fn frame_rects(s: &State, win: Win, r: Rect) -> (Rect, Rect) {
+    let floats = s.native_view!=Some(win) && win.slot().is_some_and(|i| !s.wins[i].maxed && !s.wins[i].mini) && r.h >= 2.0 * crate::app::TITLE_H;
+    let r = if floats { Rect::new(r.x + 7.0, r.y + 5.0, r.w - 14.0, r.h - 12.0) } else { r };
+    (r, Rect::new(r.x, r.y + 23.0, r.w, r.h - 23.0))
+}
+
+/// Window frame for `win`: the floating frame when it floats, else the docked title bar.
+/// Returns (layout rect, client rect).
+pub fn framed(ui: &mut Ui, s: &State, win: Win, r: Rect, title: &str, title_x: f32, buttons: bool) -> (Rect, Rect) {
+    match float_frame(ui, s, win, r) {
+        Some(inner) => (inner, window_frame_ex(ui, win, inner, title, title_x, buttons, true)),
+        None => (r, window_frame(ui, win, r, title, title_x, buttons)),
+    }
+}
+
+/// "Small scrollbars in editors" is on (General ▸ Miscellaneous; spec: ui/settings-choices.md "Miscellaneous"): the
+/// piano roll's and the playlist's scroll bars are about half as thick, without arrow buttons; the room goes to the
+/// time ruler and the grid.
+pub fn small_scrollbars() -> bool {
+    crate::prefs::check(&crate::prefs::SMALL_SCROLLBARS)
+}
+
+/// The Playlist picker's scroll bar hint (its right-drag resizes the previews, spec: ui/scroll-bars.md §3).
+pub const PICK_BAR_HINT: &str = "Drag to scroll - right-drag resizes the previews";
+
+/// A scroll bar over `track`: thumb sized `view / total`, positioned by `pos` (content pixels).
+/// Registers the bar for dragging (see `App::scrollbar_press`).
+pub fn scrollbar(ui: &mut Ui, track: Rect, vertical: bool, pos: f32, view: f32, total: f32, target: Scroll) {
+    let len = if vertical { track.h } else { track.w };
+    let total = total.max(view).max(1.0);
+    let mut max = (total - view).max(0.0);
+    let (mut thumb_at, mut thumb) = os_ui::kit::thumb(len, pos, view, total);
+    let content_span=crate::elastic_scroll::adaptive(target).then_some(total);
+    if content_span.is_some() {(thumb_at,thumb,max)=crate::elastic_scroll::horizontal(len,pos,view,total);}
+    if target==Scroll::PlaylistY {
+        thumb=thumb.max(72.0_f32.min(len));
+        thumb_at=if max>0. {pos.clamp(0.,max)/max*(len-thumb)}else{0.};
+    }
+    if target == Scroll::MixerX {
+        thumb = 26.0_f32.min(len.max(0.0));
+        thumb_at = if max > 0.0 { pos.clamp(0.0, max) / max * (len - thumb) } else { 0.0 };
+    }
+    let hint = match target {
+        Scroll::PianoX | Scroll::PlaylistX => "Drag to scroll - right-drag: left/right scrolls, up/down zooms",
+        Scroll::PlPick => PICK_BAR_HINT,
+        Scroll::PlaylistY => "Drag to scroll - drag thumb ends to resize tracks; right-drag sideways also resizes",
+        _ => "Drag to scroll",
+    };
+    let act = Action::Scrollbar(target);
+    let hov = ui.hit(track, act.clone(), hint);
+    let st = kit::State::new(hov, ui.down(track, &act), false);
+    let (draw_at, draw_len) = if content_span.is_some() {(thumb_at,thumb)} else {crate::elastic_scroll::thumb(&ui.elastic, target, thumb_at, thumb)};
+    if target == Scroll::MixerX {
+        // Invisible full-height hit lane, with only a small handle painted.
+        let color = if ui.held(&act) { ui.t.tx(0xffffff) } else { ui.t.s(0x172126) };
+        ui.c.fill_rect(Rect::new(track.x + thumb_at, track.cy() - 2.0, thumb, 4.0), color);
+    } else if target==Scroll::PlaylistY {
+        ui.c.fill_rect(track,ui.t.scrollbar);
+        let r=Rect::new(track.x+1.,track.y+draw_at,(track.w-2.).max(1.),draw_len);
+        kit::scroll_thumb_face(ui.c, ui.t, r, true, st);
+    } else if target == Scroll::PlaylistX {
+        // The Playlist draws the viewport and clip miniature itself.
+        ui.c.fill_rect(track, ui.t.scrollbar.with_alpha(255));
+    } else if target == Scroll::PianoX {
+        ui.c.fill_rect(track, ui.t.scrollbar);
+        // Keep the face aligned with the drag geometry, including the right endpoint.
+        let face = Rect::new(track.x + draw_at, track.y + 2.0, draw_len, track.h - 4.0);
+        kit::scroll_thumb_face(ui.c, ui.t, face, false, st);
+    } else if target == Scroll::PianoY && draw_len != thumb {
+        ui.c.fill_rect(track,ui.t.scrollbar);
+        let face=Rect::new(track.x+2.,track.y+draw_at,(track.w-4.).max(1.),draw_len);
+        if kit::lemon::on(ui.t) {
+            let face=Rect::new(face.x,face.y+1.,face.w,(face.h-2.).max(0.));
+            ui.c.fill_rrect(face,(face.w.min(face.h)/2.).max(0.),kit::scroll_thumb(ui.t,st,kit::high_visibility()));
+        } else {kit::scroll_thumb_face(ui.c,ui.t,face,true,st);}
+    } else {kit::scrollbar(ui.c, ui.t, track, vertical, pos, view, total, st);}
+    if target==Scroll::PlaylistY {
+        for y in [track.y+draw_at+2.,track.y+draw_at+draw_len-3.] {
+            ui.c.fill_rect(Rect::new(track.x+3.,y,(track.w-6.).max(1.),1.),ui.t.text_dim);
+        }
+    }
+    ui.bars.push(Bar { target, track, vertical, max, view, thumb, content_span });
+}
+
+/// Raised surface: soft vertical gradient (lighter at the top) so panels don't look flat.
+pub fn raised(ui: &mut Ui, r: Rect, base: Color, radius: f32) {
+    kit::raised_in(ui.c, ui.t, r, base, radius);
+}
+
+/// Whether the Lemon design draws (spec: ui/lemon-design.md); views keep their Classic drawing otherwise.
+pub fn lemon(ui: &Ui) -> bool {
+    kit::lemon::on(ui.t)
+}
+
+/// Button face states.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Look {
+    Off,
+    Hover,
+    On,
+    /// Hovered or held window-toggle buttons light up orange (spec: ui/main-window.md §1a).
+    Hot,
+}
+
+impl Look {
+    /// The kit state for this look.
+    pub fn state(self) -> kit::State {
+        match self {
+            Look::Off => kit::State::NORMAL,
+            Look::Hover => kit::State::hover(true),
+            Look::On => kit::State::new(false, false, true),
+            Look::Hot => kit::State::new(true, true, false),
+        }
+    }
+}
+
+/// FL-style raised button face (spec §1): 1 px border with softened corners, an elliptical radial
+/// face (light centre, darker edges) and a darker 1 px inner rim.
+pub fn button_face(ui: &mut Ui, r: Rect, look: Look) {
+    if ui.t.style.vintage_2005 {
+        let face=if matches!(look,Look::On|Look::Hot) {ui.t.on_bottom} else if matches!(look,Look::Hover) {ui.t.button_hi} else {ui.t.button};
+        crate::vintage::metal(ui.c,r,face);
+    } else {kit::button(ui.c, ui.t, r, look.state());}
+}
+
+/// A square toolbar button's face for `look` and the colour of its icon. With the Toolbars menu's Flat buttons on
+/// (spec: ui/toolbar-menu.md §3) there is no face: a lit button is a slightly darker flat square with a blue icon
+/// (Lemon: its button shade, the icon in the brand colour), the others just their icon.
+pub fn tool_face(ui: &mut Ui, r: Rect, look: Look) -> Color {
+    let lit = matches!(look, Look::On | Look::Hot);
+    if !ui.flat {
+        button_face(ui, r, look);
+    } else if lit && lemon(ui) {
+        ui.c.fill_rrect(r.inset(1.0), ui.t.style.radius, ui.t.button);
+        return ui.t.brand_lit(os_theme::design::lemon::MAIN);
+    } else if lit {
+        ui.c.fill_rect(Rect::new(r.x, r.y + 1.0, r.w, r.h - 2.0), ui.t.s(0x282c2e));
+        return ui.t.a(0x4589c7);
+    }
+    kit::ink(ui.t, look.state())
+}
+
+/// A 30×33 toolbar button (§1). `on` draws the orange "on" state.
+/// An `Action::Placeholder` button is not available yet: drawn greyed out, never lit (`Ui::off`).
+pub fn tool_button(ui: &mut Ui, r: Rect, icon: Icon, on: bool, action: Action, hint: &'static str) {
+    if matches!(action, Action::Placeholder(_)) {
+        ui.off(r, hint);
+        let st = kit::State::NORMAL.with_disabled(true);
+        if !ui.flat {
+            kit::button(ui.c, ui.t, r, st);
+        }
+        icons::draw(ui.c, icon, Rect::new(r.x + 5.0, r.y + 6.5, 20.0, 20.0), kit::ink(ui.t, st));
+        return;
+    }
+    let hov = ui.hit(r, action.clone(), hint);
+    let down = ui.down(r, &action);
+    let look = if on { Look::On } else if down { Look::Hot } else { Look::Off };
+    lit_button(ui, r, icon, look, Look::Hover, hov && !on && !down);
+}
+
+/// A toolbar button in `look`; from rest, the look `hover` comes and goes over that as `lit` says.
+pub fn lit_button(ui: &mut Ui, r: Rect, icon: Icon, look: Look, hover: Look, lit: bool) {
+    let place = Rect::new(r.x + 5.0, r.y + 6.5, 20.0, 20.0);
+    let c = tool_face(ui, r, look);
+    icons::draw(ui.c, icon, place, c);
+    let glow = button_glow(ui, r, lit);
+    if glow > 0.0 && matches!(look, Look::Off) {
+        let l = ui.c.begin_layer(r.outset(1.0), false);
+        let c = tool_face(ui, r, hover);
+        icons::draw(ui.c, icon, place, c);
+        ui.c.end_layer(l, glow);
+    }
+}
+
+/// How lit a toolbar button in `r` shows: its times and its curve are FL's, measured (spec: ui/animations.md §2.2, §4.6).
+pub fn button_glow(ui: &mut Ui, r: Rect, lit: bool) -> f32 {
+    let key = crate::motion::key((r.x.to_bits(), r.y.to_bits()));
+    ui.hover_linear(key, lit, r, crate::motion::BUTTON_HOVER).powf(1.5)
+}
+
+/// A sunken panel (hint bar, monitors): flat fill inside a 1 px dark border.
+pub fn sunken(ui: &mut Ui, r: Rect, fill: Color) {
+    kit::sunken(ui.c, ui.t, r, fill);
+}
+
+/// A ring knob (toolbar style): arc from the minimum; bipolar knobs pass `center = true`.
+pub fn knob(ui: &mut Ui, cx: f32, cy: f32, r: f32, value: f32, center: bool, _c: Color, _track: Color) {
+    hover_look(ui, Rect::new(cx - r, cy - r, 2.0 * r, 2.0 * r), |c, t, st| kit::knob(c, t, cx, cy, r, value, center, kit::KnobLook::Ring, st));
+}
+
+/// A control in `area` drawn as `draw` says, its hover look coming and going over its look at rest (spec:
+/// ui/animations.md §4.6).
+pub fn hover_look(ui: &mut Ui, area: Rect, draw: impl Fn(&mut os_ui::Canvas, &os_theme::Palette, kit::State)) {
+    let hov = ui.hovering(area);
+    let k = ui.k;
+    let up = Rect::new(area.x * k, area.y * k, area.w * k, area.h * k);
+    let lit = ui.motion.borrow_mut().hover_knob(crate::motion::key((area.x.to_bits(), area.y.to_bits())), hov, up);
+    if lit >= 1.0 {
+        return draw(ui.c, ui.t, kit::State::hover(true));
+    }
+    draw(ui.c, ui.t, kit::State::hover(false));
+    if lit > 0.0 {
+        let l = ui.c.begin_layer(area.outset(2.0), false);
+        draw(ui.c, ui.t, kit::State::hover(true));
+        ui.c.end_layer(l, lit);
+    }
+}
+
+/// A dark glossy ball knob (mixer, rack, slots) with a pointer.
+pub fn ball_knob(ui: &mut Ui, cx: f32, cy: f32, r: f32, value: f32) {
+    hover_look(ui, Rect::new(cx - r, cy - r, 2.0 * r, 2.0 * r), |c, t, st| kit::knob(c, t, cx, cy, r, value, false, kit::KnobLook::Ball, st));
+}
+
+/// A round LED (spec §7: grey ring, green ball with a bright core when lit).
+pub fn led(ui: &mut Ui, cx: f32, cy: f32, on: bool) {
+    let hov = ui.hovering(Rect::new(cx - 6.0, cy - 6.0, 12.0, 12.0));
+    kit::led(ui.c, ui.t, cx, cy, 6.0, kit::State::hover(hov).with_on(on));
+}
+
+/// The label of a question's check that turns its Manage messages entry off when Ok is pressed.
+pub(crate) const REMEMBER: &str = "Remember my choice";
+
+/// How wide `remember_check` draws.
+pub fn remember_width(ui: &mut Ui, label: &str) -> f32 {
+    20.0 + ui.c.text_width(os_ui::Font::new(13), label)
+}
+
+/// A question's "Remember my choice" check at the bottom left of its box, left edge `x`, centred on `cy`: a small box,
+/// ticked when `on`, and its label; a click on either is `action`. Spec: ui/settings-choices.md "Hints and warnings:
+/// Manage messages and Project data size warning (2026-10-16)".
+pub fn remember_check(ui: &mut Ui, x: f32, cy: f32, on: bool, label: &str, action: Action) {
+    let t = ui.t;
+    let f = os_ui::Font::new(13);
+    let w = remember_width(ui, label);
+    let hov = ui.hit(Rect::new(x, cy - 10.0, w, 20.0), action, "Ok with this ticked turns this message off (Manage messages)");
+    let b = Rect::new(x, (cy - 6.5).round(), 13.0, 13.0);
+    ui.c.fill_rrect(b, 2.0, t.s(0x141516));
+    ui.c.stroke_rrect(b, 2.0, 1.0, if hov { t.glyph_dim } else { t.text_dim });
+    if on {
+        kit::tick(ui.c, b, t.glyph);
+    }
+    let lh = ui.c.line_height(f);
+    ui.c.text(f, x + 20.0, (cy - lh / 2.0).round(), if hov { t.glyph } else { t.text }, label);
+}
+
+/// Channel / clip colors from the model.
+pub fn rgb(c: os_model::Rgb) -> Color {
+    Color { r: c.r, g: c.g, b: c.b, a: 255 }
+}

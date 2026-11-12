@@ -1,0 +1,352 @@
+// Gridline — FLP export: plugin state encoders for FlpFx2Pitch.cpp (Pitcher,
+// Pitch Shifter, Frequency Shifter, Fruity Vocoder, Fruity Scratcher). The
+// reverse of the decoders in that file; see FlpEncode.h for the model.
+#include <algorithm>
+#include <cmath>
+#include "FlpEncode.h"
+#include "../../packs/spectral/spectral.h"
+#include "../../packs/spectral/turntable.h"
+#include "../PluginParams.h"
+
+namespace gl::flp::enc {
+
+namespace {
+
+namespace sp = gl::packs::spectral;
+
+float param(const PluginState& s, int k) { return k >= 0 && static_cast<size_t>(k) < s.params.size() ? s.params[static_cast<size_t>(k)] : 0.f; }
+
+Field f32(int gl, size_t offset, double lo, double hi, std::function<double(double)> inverse = {}) {
+  return Field{gl, offset, Type::F32, lo, hi, std::move(inverse), {}};
+}
+
+// ---------------------------------------------------------------- Pitcher
+// "SSLF", u32 size, "1RTP", 33 f32 parameters (0..1 unless noted), 12 bytes
+// scale note mask (C..B), f32 MIDI port.
+constexpr int kPitcherParams = 33;
+constexpr size_t kPitcherBase = 12;
+constexpr size_t kPitcherMask = kPitcherBase + 4 * kPitcherParams;
+constexpr size_t kPitcherPort = kPitcherMask + 12;
+size_t pf(int k) { return kPitcherBase + 4 * static_cast<size_t>(k); }
+
+Encoder pitcher() {
+  Encoder e;
+  e.flName = "Pitcher";
+  e.glType = "gl.pitcher";
+  e.nativeRank = 0;
+  e.defaults = [] {
+    float f[kPitcherParams] = {};
+    f[0] = 1.0f;   // correction speed (instant)
+    f[1] = 1.0f;   // stereo
+    f[2] = 0.5f;   // gender (neutral)
+    f[3] = 0.5f;   // fine tune (centre)
+    f[4] = 0.0f;   // bypass all off
+    // 5..16 per-key bypass off
+    for (int k = 17; k <= 20; ++k) f[k] = 0.5f;  // voice 1..4 pan (centre)
+    f[22] = 0.0f;  // formant preservation off
+    f[23] = 0.5f;  // A4 reference 440 Hz
+    f[24] = 0.0f;  // pitch reference: mixer
+    // 25..27 MIDI targets / octaves / harmonize off, 28 root C, 29 scale, 30 mix, 31 velocity
+    f[32] = 2.0f;  // lowest note range (110 Hz)
+    ByteWriter w;
+    w.bytes("SSLF", 4);
+    w.u32(static_cast<uint32_t>(4 + 4 * kPitcherParams + 12 + 4));  // size of what follows
+    w.bytes("1RTP", 4);
+    for (float v : f) w.f32(v);
+    for (int k = 0; k < 12; ++k) w.u8(1);  // every note of the scale
+    w.f32(0.0f);                           // MIDI port: none
+    return w.b;
+  };
+  e.fields = [](const Bytes& b) {
+    auto same = [](double v) { return v; };
+    auto pan = [](double g) { return (g + 1.0) / 2.0; };
+    std::vector<Field> v{
+        f32(sp::PcCorrSpeed, pf(0), 0, 1, same),
+        f32(sp::PcStereo, pf(1), 0, 1, same),
+        f32(sp::PcFormant, pf(2), 0, 1, [](double st) { return st / 24.0 + 0.5; }),
+        f32(sp::PcFine, pf(3), 0, 1, [](double c) { return (c / 100.0 + 1.0) / 2.0; }),
+        f32(sp::PcBypassAll, pf(4), 0, 1, same),
+        f32(sp::PcPreserve, pf(22), 0, 1, same),
+        f32(sp::PcReference, pf(23), 0, 1, [](double hz) { return 0.5 + 6.0 * std::log2(hz / 440.0); }),
+        f32(sp::PcRefChannel, pf(24), 0, 1, [](double c) { return c / 2.0; }),
+        f32(sp::PcMidiTargets, pf(25), 0, 1, same),
+        f32(sp::PcMidiOctaves, pf(26), 0, 1, same),
+        f32(sp::PcHarmonize, pf(27), 0, 1, same),
+        f32(sp::PcKey, pf(28), 0, 11, same),
+        f32(sp::PcHarmMix, pf(30), 0, 1, same),
+        f32(sp::PcHarmVel, pf(31), 0, 1, same),
+        f32(sp::PcRange6, pf(32), 0, 5, same),
+    };
+    for (int k = 0; k < 12; ++k) v.push_back(f32(sp::PcKeyBypass0 + k, pf(5 + k), 0, 1, same));
+    for (int k = 0; k < 4; ++k) v.push_back(f32(sp::PcHarmPan1 + k, pf(17 + k), 0, 1, pan));
+    for (int k = 0; k < 12; ++k) v.push_back(field(sp::PcNote0 + k, kPitcherMask + static_cast<size_t>(k), Type::U8, 0, 1));
+    if (b.size() >= kPitcherPort + 4)
+      v.push_back(f32(sp::PcMidiPort, kPitcherPort, 0, 1, [](double port) { return (port + 1.0) / 256.0; }));
+    return v;
+  };
+  return e;
+}
+
+// ---------------------------------------------------------------- Pitch Shifter
+// v7: version, 13 ints by tag, u32 correction copy, u8 tempo sync, i32
+// engine (0 voice, 1 music), i32 detector, i32 spectrum speed, u8 spectrum
+// on, u8 spectrum mono.
+Encoder pitchShifter() {
+  Encoder e;
+  e.flName = "Pitch Shifter";
+  e.glType = "gl.pitch";
+  e.nativeRank = 0;
+  e.defaults = [] {
+    ByteWriter w;
+    w.u32(7);      // version
+    w.i32(0);      // 0 pitch (cents)
+    w.i32(0);      // 1 formant (cents)
+    w.i32(0);      // 2 analysis channel
+    w.i32(2400);   // 3 mix (full wet)
+    w.i32(8500);   // 4 duration (85 ms)
+    w.i32(200);    // 5 density
+    w.i32(0);      // 6 jitter
+    w.i32(0);      // 7 randomness
+    w.i32(768);    // 8 delay
+    w.i32(0);      // 9 feedback
+    w.i32(0);      // 10 delay mode
+    w.i32(65536);  // 11 formant correction
+    w.i32(0);      // 12 pitch mode
+    w.u32(65536);  // correction wheel copy
+    w.u8(0);       // tempo sync off
+    w.i32(1);      // engine: music
+    w.i32(1);      // detector: high quality
+    w.i32(1000);   // spectrum speed
+    w.u8(1);       // spectrum on
+    w.u8(1);       // spectrum mono
+    return w.b;
+  };
+  e.fields = [](const Bytes& b) {
+    std::vector<Field> v{i32(sp::PsPitch, 4, -1200, 1200),     i32(sp::PsFormant, 8, -1200, 1200), i32(sp::PsAnalysis, 12, 0, 2),
+                         i32(sp::PsMix, 16, 0, 2400),          i32(sp::PsDuration, 20, 2000, 15000), i32(sp::PsDensity, 24, 100, 500),
+                         i32(sp::PsJitter, 28, 0, 100),        i32(sp::PsRand, 32, 0, 100),        i32(sp::PsDelay, 36, 1, 768),
+                         i32(sp::PsDelaySteps, 36, 1, 768),    i32(sp::PsFeedback, 40, 0, 100),    i32(sp::PsDelayMode, 44, 0, 3),
+                         i32(sp::PsCorrection, 48, 0, 65536),  i32(sp::PsPitchMode, 52, 0, 3)};
+    if (b.size() >= 4 + 13 * 4 + 4 + 1 + 8) {
+      v.push_back(field(sp::PsDelaySync, 60, Type::U8, 0, 1));
+      v.push_back(i32(sp::PsEngine, 61, 0, 1));
+      v.push_back(i32(sp::PsDetector, 65, 0, 1));
+    }
+    return v;
+  };
+  return e;
+}
+
+// ---------------------------------------------------------------- Frequency Shifter
+// version 4, ints by tag: mix, type, frequency, L/R phase, left / right
+// shape, feedback, stereo, range, start phase; then flags, sidechain track.
+Encoder freqShifter() {
+  Encoder e;
+  e.flName = "Frequency Shifter";
+  e.glType = "gl.freqshift";
+  e.nativeRank = 0;
+  e.defaults = [] {
+    ByteWriter w;
+    w.u32(4);      // version
+    w.i32(10000);  // 0 mix (full wet)
+    w.i32(0);      // 1 type: HQ
+    w.i32(70000);  // 2 frequency (top of the range)
+    w.i32(0);      // 3 L/R phase
+    w.i32(10000);  // 4 left shape
+    w.i32(10000);  // 5 right shape
+    w.i32(5000);   // 6 feedback (none)
+    w.i32(10000);  // 7 stereo
+    w.i32(1);      // 8 range: narrow
+    w.i32(5000);   // 9 start phase
+    w.i32(0);      // flags (shape link)
+    w.i32(0);      // sidechain track: none
+    return w.b;
+  };
+  e.fields = [](const Bytes&) {
+    return std::vector<Field>{i32(pp::FsMixRef, 4, 0, 10000),     i32(pp::FsType, 8, 0, 2),           i32(pp::FsFreqPos, 12, -70000, 70000),
+                              i32(pp::FsLrPhase, 16, 0, 10000),   i32(pp::FsShapeL, 20, 0, 10000),     i32(pp::FsShapeR, 24, 0, 10000),
+                              i32(pp::FsFeedbackRef, 28, 0, 10000), i32(pp::FsWidth, 32, 0, 10000),  i32(pp::FsRange, 36, 0, 2),
+                              i32(pp::FsStartRef, 40, 0, 10000)};
+  };
+  return e;
+}
+
+// ---------------------------------------------------------------- Fruity Vocoder
+// version 2, band count, u32 filter order, u32 listen mode, u8 carrier side,
+// f32 level per band, then 12 ints by tag (frequency range, scale, invert,
+// formant, bandwidth, attack, release, hold, modulator / carrier / wet level).
+constexpr size_t kVocLevels = 17;
+Bytes vocoderState(int bands, const Bytes& old) {
+  ByteWriter w;
+  w.u32(2);  // version
+  w.i32(bands);
+  const int oldBands = old.size() >= 8 ? static_cast<int32_t>(getU32(old, 4)) : 0;
+  const bool keep = oldBands > 0 && old.size() >= kVocLevels + 4 * static_cast<size_t>(oldBands);
+  if (keep) {
+    w.bytes(old.data() + 8, 9);  // filter order, listen mode, carrier side
+  } else {
+    w.u32(2);  // filter order
+    w.u32(2);  // listen: wet
+    w.u8(0);   // carrier on the right
+  }
+  for (int k = 0; k < bands; ++k) w.f32(keep && k < oldBands ? getF32(old, kVocLevels + 4 * static_cast<size_t>(k)) : 1.0f);  // band levels
+  const size_t knobs = kVocLevels + 4 * static_cast<size_t>(std::max(oldBands, 0));
+  if (keep && old.size() >= knobs) {
+    w.bytes(old.data() + knobs, old.size() - knobs);
+  } else {
+    w.i32(0);      // 0 start frequency
+    w.i32(65536);  // 1 end frequency
+    w.i32(64);     // 2 frequency scale
+    w.i32(0);      // 3 invert off
+    w.i32(0);      // 4 formant
+    w.i32(50);     // 5 bandwidth
+    w.i32(20);     // 6 attack
+    w.i32(100);    // 7 release
+    w.i32(0);      // 8 hold off
+    w.i32(0);      // 9 modulator level
+    w.i32(0);      // 10 carrier level
+    w.i32(128);    // 11 wet level
+  }
+  return w.b;
+}
+Encoder vocoder() {
+  Encoder e;
+  e.flName = "Fruity Vocoder";
+  e.glType = "gl.vocoder";
+  e.nativeRank = -1;  // band count and the knobs the decoder reads are carried (K-2)
+  // K-37: an instance imported before the wide range compares as the same values on the wide knobs.
+  e.strip = [](PluginState& s) {
+    if (s.params.size() < static_cast<size_t>(sp::VcCount)) return;
+    if (s.params[sp::VcRange] < 0.5f) {
+      s.params[sp::VcLowW] = s.params[sp::VcLowFreq];
+      s.params[sp::VcHighW] = s.params[sp::VcHighFreq];
+      s.params[sp::VcAttackW] = s.params[sp::VcAttack];
+    } else {
+      s.params[sp::VcLowFreq] = std::clamp(s.params[sp::VcLowW], 20.f, 2000.f);
+      s.params[sp::VcHighFreq] = std::clamp(s.params[sp::VcHighW], 1000.f, 20000.f);
+      s.params[sp::VcAttack] = std::clamp(s.params[sp::VcAttackW], 0.5f, 200.f);
+    }
+    s.params[sp::VcRange] = 1.f;
+  };
+  e.defaults = [] { return vocoderState(16, {}); };
+  e.write = [](const PluginState& g, Bytes& b, const EncodeContext&) {
+    const int choice = std::clamp(static_cast<int>(std::lround(param(g, sp::VcBands))), 0, static_cast<int>(sp::kVocBandChoiceCount) - 1);
+    const int bands = sp::kVocBandChoices[choice];
+    if (b.size() < 8 || static_cast<int32_t>(getU32(b, 4)) != bands) b = vocoderState(bands, b);
+    // K-2: the knobs the decoder reads (inverse laws; FL's own ranges).
+    const size_t knobs = kVocLevels + 4 * static_cast<size_t>(bands);
+    if (b.size() < knobs + 12 * 4) return;
+    auto put = [&](int tag, double raw, double lo, double hi) {
+      putI32(b, knobs + 4 * static_cast<size_t>(tag), static_cast<int32_t>(std::lround(std::clamp(raw, lo, hi))));
+    };
+    auto freqRaw = [](double hz) { return 65536.0 * std::log(1.0 + std::max(0.0, hz - 10.0) * 100.0 / 15990.0) / std::log(101.0); };
+    auto lvlRaw = [](double db) { return db <= -60 ? 0.0 : 128.0 * std::pow(10.0, db / 20.0); };
+    const bool wide = param(g, sp::VcRange) >= 0.5;  // K-37
+    put(0, freqRaw(param(g, wide ? sp::VcLowW : sp::VcLowFreq)), 0, 65536);
+    put(1, freqRaw(param(g, wide ? sp::VcHighW : sp::VcHighFreq)), 0, 65536);
+    put(3, param(g, sp::VcInvert) >= 0.5 ? 1 : 0, 0, 1);
+    put(4, 100.0 * param(g, sp::VcFormant), -1200, 1200);
+    put(6, param(g, wide ? sp::VcAttackW : sp::VcAttack), 10, 1000);
+    put(7, param(g, sp::VcRelease), 10, 1000);
+    put(8, param(g, sp::VcHold) >= 0.5 ? 1 : 0, 0, 1);
+    put(9, lvlRaw(param(g, sp::VcModLevel)), 0, 160);
+    put(10, lvlRaw(param(g, sp::VcCarLevel)), 0, 160);
+    put(11, lvlRaw(param(g, sp::VcWetLevel)), 0, 160);
+  };
+  return e;
+}
+
+// ---------------------------------------------------------------- Fruity Scratcher
+// Written as version 1001002 (what the current plugin saves): 14 f32 settings
+// by control tag (internal values), u32 length + sample path, u8 editor size
+// (1 normal, 2 large), i32 timecode format (-1 = off), u8 phono preamp.
+// J-206: every setting, the path and the options tail map back (older layouts
+// are rewritten in this one). K-23: decoded as the Turntable effect, which is
+// written back natively from any mixer slot; the 0.7.1 instrument (an
+// instance a 0.7.1 import moved to a channel) is written as the effect it
+// carries over to (turntableFxOfInstrument), back into its slot.
+constexpr size_t kScrFloats = 4, kScrPath = kScrFloats + 14 * 4;
+constexpr uint32_t kScrVersion = 1001002;
+float scrParam(const PluginState& g, int k, float d) {
+  return k >= 0 && static_cast<size_t>(k) < g.params.size() && std::isfinite(g.params[static_cast<size_t>(k)]) ? g.params[static_cast<size_t>(k)] : d;
+}
+Bytes scratcherState(const PluginState& g, const Bytes& old) {
+  const sp::TurntableLayout* lp = sp::turntableLayout(g.type);
+  const sp::TurntableLayout& L = lp ? *lp : sp::kTtFxLayout;
+  ByteWriter w;
+  w.u32(kScrVersion);
+  const uint32_t oldVersion = old.size() >= 4 ? getU32(old, 0) : 0;
+  if (old.size() >= kScrPath && oldVersion >= 1001000 && oldVersion <= kScrVersion) {
+    w.bytes(old.data() + kScrFloats, kScrPath - kScrFloats);
+  } else {
+    float v[14];
+    sp::turntableToReference(g.params, v);  // (the fields refine them)
+    for (float x : v) w.f32(x);
+  }
+  const std::string& path = g.data;
+  w.u32(static_cast<uint32_t>(path.size()));
+  w.bytes(reinterpret_cast<const uint8_t*>(path.data()), path.size());
+  w.u8(scrParam(g, L.zoom, 0) >= 0.5f ? 2 : 1);
+  const int tc = static_cast<int>(std::lround(std::clamp(scrParam(g, L.timecode, 0), 0.f, 8.f)));
+  w.u32(static_cast<uint32_t>(tc - 1));
+  w.u8(scrParam(g, L.riaa, 0) >= 0.5f ? 1 : 0);
+  return w.b;
+}
+Encoder scratcher(const sp::TurntableLayout& L) {
+  Encoder e;
+  e.flName = "Fruity Scratcher";
+  e.glType = L.type;
+  // The effect is FL's scratcher in a mixer slot: every instance is written
+  // back. The 0.7.1 instrument: only instances imported from it.
+  e.nativeRank = L.notes < 0 ? 0 : -1;
+  e.defaults = [] {
+    PluginState d = defaultPluginState(sp::kTurntableFx);
+    if (d.params.size() > static_cast<size_t>(sp::TxEmpty)) d.params[sp::TxEmpty] = 1.f;  // FL's own default: no sample
+    return scratcherState(d, {});
+  };
+  e.fields = [](const Bytes&) {
+    auto at = [](int tag) { return kScrFloats + 4 * static_cast<size_t>(tag); };
+    auto id = [](double g) { return g; };
+    return std::vector<Field>{
+        f32(sp::TtPosition, at(0), 0, 1, id),
+        f32(sp::TtMute, at(1), 0, 1, [](double g) { return g >= 0.5 ? 0.0 : 1.0; }),
+        f32(sp::TtSpeed, at(2), 0, 1, [](double g) { return g * 0.5; }),
+        f32(sp::TtAccel, at(3), 0, 1, id),
+        f32(sp::TtPan, at(4), 0, 1, [](double g) { return (g + 1.0) * 0.5; }),
+        f32(sp::TtVolume, at(5), 0, 1, id),
+        f32(sp::TtHold, at(6), 0, 1, id),
+        f32(sp::TtSense, at(7), 0, 1, id),
+        f32(sp::TtTransport, at(8), -1, 1, [](double g) { return std::round(g) - 1.0; }),
+        f32(sp::TtSmooth1, at(9), 0, 1, id),
+        f32(sp::TtSmooth2, at(10), 0, 1, id),
+        f32(sp::TtSmooth3, at(11), 0, 1, id),
+        f32(sp::TtSmooth4, at(12), 0, 1, id),
+        f32(sp::TtTurns, at(13), 0, 18, [](double g) { return std::round(g) + 9.0; }),
+    };
+  };
+  e.write = [](const PluginState& g, Bytes& b, const EncodeContext& c) {
+    (void)c;
+    b = scratcherState(g, b);  // the path and the options tail from the state; the settings stay for the fields
+  };
+  // The instrument's note settings are Gridline's own (the FL plugin plays by
+  // its motor): the instrument is written as the effect it carries over to,
+  // which is what the decoder produces.
+  if (L.notes >= 0)
+    e.strip = [](PluginState& s) {
+      if (s.type == sp::kTurntableInst) s = sp::turntableFxOfInstrument(s);
+    };
+  return e;
+}
+
+}  // namespace
+
+void registerFx2Pitch(std::vector<Encoder>& v) {
+  v.push_back(pitcher());
+  v.push_back(pitchShifter());
+  v.push_back(freqShifter());
+  v.push_back(vocoder());
+  v.push_back(scratcher(sp::kTtFxLayout));    // K-23: the Turntable effect
+  v.push_back(scratcher(sp::kTtInstLayout));  // the 0.7.1 instrument (old projects)
+}
+
+}  // namespace gl::flp::enc

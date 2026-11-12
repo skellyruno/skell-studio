@@ -1,0 +1,82 @@
+// Gridline — "modulation" pack: functions shared between the pack's runtime
+// files and its editors (all UI-thread safe; none are called per sample
+// except tensionCurve / lfoWave).
+#pragma once
+#include <memory>
+#include <string>
+#include <vector>
+#include "../../core/Expr.h"
+#include "../../core/PluginInfo.h"
+#include "../../engine/Effects.h"
+#include "../../engine/Generators.h"
+#include "cv.h"
+
+namespace gl::packs::modulation {
+
+// Bends 0..1 by tension t in -1..1 (0 = straight, > 0 slow start, < 0 fast start).
+double tensionCurve(double x, double t);
+// LFO shapes 0..4 (sine, triangle, square, saw, random) over a phase in cycles, 0..1.
+double lfoWave(int shape, double phase, uint64_t cycle);
+// J-68: the peak controller's tension laws as the engine applies them (legacy
+// tensionCurve or the reference model's exponential bend), 0..1 → 0..1, for
+// the curves drawn in its tension wheels. lfo = false: the peak section.
+double peakTensionLaw(const PluginState& s, bool lfo, double x);
+
+// Formula controller: compiles its formula (variables a b c t beat bar tempo in playing).
+bool compileFormula(const std::string& text, Expr& out, std::string* err);
+// Keyboard controller key table <-> PluginState::data.
+std::vector<float> parseKeyValues(const std::string& data);
+std::string formatKeyValues(const std::vector<float>& v);
+
+// Chord generator: the chord's intervals (semitones from the played note,
+// sorted) for a state; returns the count (<= 8).
+int chordVoicing(const PluginState& s, float* notes);
+
+// Note script: compiles its three formulas (pitch, velocity, play) from data.
+struct NoteScriptProgram {
+  Expr pitch, velocity, play;
+  std::string error;  // first compile error, empty when all compiled
+};
+void compileNoteScript(const std::string& body, NoteScriptProgram& out);
+// Default script text and the variable names scripts may use.
+const char* defaultNoteScript();
+const std::vector<std::string>& noteScriptVars();
+
+// Patch host: a small graph of other plugins kept in PluginState::data.
+struct PatchNode {
+  PluginState plugin;       // hosted plugin (generator first, then effects)
+  bool parallel = false;    // effects: runs alongside the previous effect instead of after it
+  float mix = 1.0f;         // effects: dry/wet
+  bool bypass = false;
+};
+struct PatchMacroTarget {
+  int node = 0;
+  int param = 0;
+  float min = 0, max = 1;  // normalized range of the target driven by the macro
+};
+struct PatchGraph {
+  std::vector<PatchNode> nodes;
+  std::vector<PatchMacroTarget> macros[8];
+  std::string macroNames[8];
+};
+PatchGraph parsePatchGraph(const std::string& data);
+// The graph a host state runs (default graph for empty data, unhostable nodes removed).
+PatchGraph patchGraphOf(const PluginState& state);
+std::string serializePatchGraph(const PatchGraph& g);
+std::unique_ptr<Generator> createPatchHostGenerator();
+std::unique_ptr<Effect> createPatchHostEffect();
+void preparePatchHost(const PluginState& state, ChannelAux& aux);
+
+// K-170: control voltage in and out (cv.h). Prepared data: this computer's calibration of the
+// device channels a Voltage In reads (in) or a Voltage Out drives (out, per side).
+struct CvAux final : AuxData {
+  CvCal in[kCvDeviceIns];
+  CvCal out[2];
+};
+std::unique_ptr<Generator> createVoltageIn();
+void prepareVoltageAux(const PluginState& state, ChannelAux& aux);
+// Logical output channel of a Voltage Out side for calibration: the main pair 0, 1; direct pair k
+// 2 + 2k, 3 + 2k.
+inline int cvOutputChannel(bool direct, int pair, int side) { return direct ? 2 + 2 * pair + side : side; }
+
+}  // namespace gl::packs::modulation

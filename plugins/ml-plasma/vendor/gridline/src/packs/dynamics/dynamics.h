@@ -1,0 +1,358 @@
+// Gridline — "dynamics" pack: mastering dynamics, loudness, enhancement,
+// distortion and multi-effects. Parameter indices shared by the catalogue
+// (dynamics_info.cpp), the runtimes (*_dsp.cpp) and the editors (*_ui.cpp).
+#pragma once
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <memory>
+#include <string>
+#include "../../core/PluginInfo.h"
+#include "../../engine/Effects.h"
+
+namespace gl::packs::dynamics {
+
+// ------------------------------------------------------------ gl.master
+// Three crossover bands (low / mid / high) and a master band, each with the
+// same block of parameters (offset kMsBand0 + band * kMsBandStride).
+enum MasterGlobal {
+  MsLowFreq = 0,  // low / mid crossover
+  MsHighFreq,     // mid / high crossover
+  MsLowSlope,     // 6 / 12 / 24 dB per octave
+  MsHighSlope,
+  MsLookahead,    // ms
+  MsBandMix,      // processed bands vs. dry (before the master band)
+  MsLowCut,       // input high-pass (Hz, minimum = off)
+  MsSolo,         // None / Low / Mid / High
+  MsOversample,   // saturation oversampling
+  MsBand0,
+};
+enum MasterBand {
+  MbMode = 0,  // Bypass / Active / Mute / No compression (gain stages + saturation only) / Merged (low / high: into mid)
+  MbPre,       // dB
+  MbPost,      // dB
+  MbAttack,    // ms
+  MbRelease,   // ms
+  MbThreshHi,  // dB: above it the "above" ratio applies
+  MbRatioHi,   // x:1 (1 = no compression, 30 = limit)
+  MbKnee,      // dB
+  MbThreshLo,  // dB: below it the "below" ratio applies
+  MbRatioLo,   // <1 lifts quiet parts (upward compression), >1 expands downward
+  MbGate,      // dB: hard gate floor (minimum = off)
+  MbSatThresh, // dB: soft saturation starts here (relative to 0 dBFS)
+  MbSatCeil,   // dB: saturation ceiling
+  MbStereo,    // -1 mono … 0 unchanged … +1 wide
+  MbWindow,    // ms: detector RMS window (0 = peak)
+  MbStride,
+};
+inline constexpr int kMsBands = 4;  // low, mid, high, master
+inline constexpr int kMsBaseCount = MsBand0 + kMsBands * MbStride;
+inline int msParam(int band, int k) { return MsBand0 + band * MbStride + k; }
+
+// κ2: per-band extension block (appended after the four band blocks so older
+// states keep their indices): the reference maximizer's drawn compression
+// curve, second release, envelope curves and modes.
+inline constexpr int kMsCurvePts = 8;
+enum MasterBandExt {
+  MxRelease2 = 0,  // ms, 0 = off
+  MxAtkCurve,      // 0..7 (curve 1-8): attack / release 2 smoothing stages
+  MxRelCurve,      // 0..7 (curve 1-8): release stages
+  MxEnvMode,       // detector: 0 peak window, 1 RMS window
+  MxSatMode,       // 0 off, 1 mode A, 2 mode B
+  MxCurveMode,     // 0 parametric (thresholds / ratios), 1 drawn curve
+  MxPoints,        // number of drawn points (2..8)
+  MxPt0,           // x, y, tension per point (x, y in 0..1: x = log9(2·in + 1), out = (9^y − 1) / 2)
+  MxStride = MxPt0 + kMsCurvePts * 3,
+};
+inline constexpr int MsExt0 = kMsBaseCount;
+inline int msExt(int band, int k) { return MsExt0 + band * MxStride + k; }
+inline constexpr int kMsCount = MsExt0 + kMsBands * MxStride;
+
+// J-35: reference block (maximus_ref.h): the reference plugin's stored integers
+// (7 globals, then 4 bands × 13 in its tag order), its options and the drawn
+// curves' point types (the points themselves stay in the MxPt block above).
+// gl.master appends it at MsRef0; gl.enhance at EnRef0 (for its program).
+enum MaxRefParam {
+  MrModel = 0,     // 0 legacy engine, 1 reference engine
+  MrRaw0,          // kMrRaw values
+  MrSolo = MrRaw0 + 59,
+  MrTarget,        // selected (solo) band 0..3
+  MrMasterMid,     // mid band works on the whole input
+  MrSafetyOff,     // curves reach 0 dBFS instead of the 0.975 safety
+  MrFir,           // legacy linear-phase crossover (J-42: windowed-sinc FIR bands)
+  MrLin,           // modern linear-phase crossover (J-42: FFT filter bank)
+  MrPtType0,       // 4 bands × kMsCurvePts point types (0 single curve, 1 double curve, 2 hold)
+  MrLinQuality = MrPtType0 + kMsBands * kMsCurvePts,  // J-42: FFT size 512 << quality (0..5)
+  MrLinSpeed,      // J-42: cross-fade time on split changes (0.1 / 0.25 / 0.01 / 0.02 s)
+  MrOversample,    // K-S: oversampling stages of the low / mid / high section (2^n)
+  MrRevision,      // K-S: 0 = laws before the K-8 oracle round (older states), 1 = current
+  kMrCount
+};
+inline constexpr int MsRef0 = kMsCount;
+inline constexpr int kMsTotal = MsRef0 + kMrCount;
+
+// Drawn curve of a band (x ascending in 0..1). Value at x with per-segment tension.
+struct DrawnCurve {
+  int n = 3;
+  double x[kMsCurvePts] = {0, 0.5, 1}, y[kMsCurvePts] = {0, 0.5, 0.5}, t[kMsCurvePts] = {0, 0, 0};
+  double at(double xv) const;
+};
+DrawnCurve masterDrawnCurve(const PluginState& s, int band);
+// Gain (linear) the drawn curve applies at a linear input level a (0..4).
+double drawnCurveGain(const DrawnCurve& c, double a);
+
+// K-S: curves of more than kMsCurvePts points (the reference's state allows 64)
+// live in PluginState::data: "crv1" then per band " <band> <n>" and n points of
+// four words (x, y, tension as float bits in hex, point type). The point
+// parameters keep the first ones and the last for old readers.
+inline constexpr int kMsLongCurve = 64;
+struct LongCurve {
+  int n = 0;
+  float x[kMsLongCurve], y[kMsLongCurve], t[kMsLongCurve];
+  int type[kMsLongCurve];
+};
+bool masterLongCurve(const std::string& data, int band, LongCurve& out);  // no allocation
+std::string masterLongCurvesWith(const std::string& data, int band, const LongCurve* c);  // data with this band's curve set / removed
+// K-46: a word at the end of the data marks states whose controls, moved while running, follow the reference: new
+// instances and imports. States saved before it keep the moves they had; a word no older reader stumbles on.
+inline constexpr const char* kMsMoveLawWord = "mv2";
+bool masterHasMoveLaw(const std::string& data);  // no allocation
+std::string masterWithMoveLaw(const std::string& data);
+// K-S: monitor frames of a running Crest: per band {input peak, output peak, analysis level, gain reduction dB}.
+struct MasterScope {
+  static constexpr int kFrames = 2048, kHop = 256;  // kHop samples per frame
+  std::atomic<uint32_t> head{0};                    // frames written
+  std::atomic<float> v[kFrames][kMsBands * 4];
+  std::atomic<float> in[kFrames];                   // main input peak
+};
+const MasterScope* masterScope(const Effect* fx);  // null when fx is not a Crest on the reference engine
+
+// Static transfer curve of one band (dB in → dB out, before post gain).
+// Shared by the runtime and the editor so the drawn curve is the real one.
+double masterCurve(const PluginState& s, int band, double inDb);
+double masterCurveParams(double thHi, double ratioHi, double knee, double thLo, double ratioLo, double gate, double inDb);
+
+// ------------------------------------------------------------ gl.emphasis
+enum Emph {
+  EmInput = 0,   // dB drive into the limiter
+  EmCeiling,     // dB output ceiling
+  EmRelease,     // ms
+  EmCharacter,   // Balanced / Loud / Punchy / Smooth
+  EmLowEmph,     // dB pre-emphasis below ~150 Hz (de-emphasised afterwards)
+  EmHighEmph,    // dB pre-emphasis above ~4 kHz
+  EmClip,        // 0..1 share of the work done by the clipper
+  EmClipHard,    // soft / hard clipper
+  EmLink,        // stereo link 0..1
+  EmStereoMode,  // L/R or M/S detection
+  EmDcBlock,
+  EmOversample,
+  EmLevelMatch,
+  EmDelta,
+  // J-35 reference engine (EmModel = 1, emphasis_ref.h; pre-model states keep the
+  // legacy engine). Shared with the legacy set: EmInput (dB 0..24), EmLink,
+  // EmStereoMode (M/S), EmDcBlock, EmLevelMatch, EmDelta.
+  EmModel, EmBypass, EmOrder /* index: order - 1 */, EmTruePeak, EmMode, EmAmount, EmCeilKnob, EmHardness, EmOs5, EmLowLatency, EmInstant,
+  EmCount
+};
+
+// ------------------------------------------------------------ gl.enhance
+// κ2: EnCustom = 1 runs the embedded program (a full gl.master parameter block
+// at EnProg0, e.g. imported from the reference plugin) instead of a built-in voicing;
+// the amount then sets the program's band mix, as the reference does.
+// J-26: EnCustom = 2 runs the peak-emphasis limiter (emphasizer_ref.h) with the
+// appended controls: input dB, emphasis, soft clip, level match, output gain
+// (linear), bypass.
+// J-35: EnCustom = 3 runs the embedded program on the reference mastering
+// engine (program in EnProg0 + the reference block at EnRef0; amount = band mix).
+enum Enh { EnAmount = 0, EnMode, EnCustom, EnProg0 };
+inline constexpr int EnPeakIn = EnProg0 + kMsCount;
+inline constexpr int EnPeakEmph = EnPeakIn + 1, EnPeakSoft = EnPeakIn + 2, EnPeakMatch = EnPeakIn + 3, EnPeakOut = EnPeakIn + 4,
+                     EnPeakBypass = EnPeakIn + 5;
+inline constexpr int EnRef0 = EnPeakIn + 6;
+inline constexpr int EnCount = EnRef0 + kMrCount;
+
+// ------------------------------------------------------------ gl.amprack
+inline constexpr int kRackSlots = 6;
+inline constexpr int kRackKnobs = 6;
+enum RackGlobal { RkInput = 0, RkOutput, RkSoftClip, RkOversample, RkSlot0 };
+enum RackSlotParam { RsType = 0, RsOn, RsK0, RsK1, RsK2, RsK3, RsK4, RsK5, RsMix, RsStride };
+inline constexpr int kRkBase = RkSlot0 + kRackSlots * RsStride;
+inline int rkParam(int slot, int k) { return RkSlot0 + slot * RsStride + k; }
+// J-35: reference models after the guitar rack's parameters. RkModel 0 = guitar
+// rack, 1 = module rack (modrack_ref.h: up to four modules, the stored integers of
+// each), 2 = pedal board (pedal_ref.h: the 50 stored values).
+inline constexpr int kDrModules = 4, kDrParams = 49;
+enum ModRackModule { DmKind = 0, DmAlgo, DmOs, DmRemoveDc, DmDisabled, DmFilterType, DmFilterOpt, DmImpulse, DmChorusMode, DmP0,
+                     DmStride = DmP0 + kDrParams };
+inline constexpr int RkModel = kRkBase;
+inline constexpr int DrSoftClip = RkModel + 1, DrCount = RkModel + 2, DrSlot0 = RkModel + 3, DrModule0 = DrSlot0 + kDrModules;
+inline int drParam(int module, int k) { return DrModule0 + module * DmStride + k; }
+inline constexpr int PbValue0 = DrModule0 + kDrModules * DmStride;  // 50 values
+inline constexpr int kRkCount = PbValue0 + 50;
+enum RackModule {
+  RmEmpty = 0, RmOverdrive, RmFuzz, RmAmp, RmCompressor, RmEq, RmWah, RmChorus, RmPhaser, RmDelay, RmReverb,
+  RmGate, RmTremolo, RmCount
+};
+const char* rackModuleName(int type);
+// Label of knob k for a module type (nullptr = knob unused).
+const char* rackKnobLabel(int type, int k);
+// Display text of knob k (value 0..1) for a module type.
+void rackKnobText(int type, int k, double v, char* buf, int size);
+// Default knob values for a freshly chosen module.
+double rackKnobDefault(int type, int k);
+
+// ------------------------------------------------------------ gl.overdrive
+enum Od {
+  OdPreBand = 0, OdColor, OdPreAmp, OdBoost, OdPostFilter, OdPostGain, OdOversample,
+  // J-26 reference engine (OdModel = 1; pre-model states keep the legacy engine): knob positions
+  // 0..1 as the original — pre gain 1 + 25 p³ (x100: 2500), tone filter coefficient colour³,
+  // post gain (OdPostGainK)², two one-pole low-passes with pole 0.2 + 0.7 · post filter.
+  OdModel, OdPostGainK,
+  OdCount
+};
+double overdriveCurve(double x, double color);
+
+// ------------------------------------------------------------ gl.fastdist
+enum Fd {
+  FdPreAmp = 0, FdThreshold, FdType, FdMix, FdPost,
+  // κ3 reference engine: knob positions (pre 0.5..1.5, mix / post 0..1, gain law 0.1 (11^x - 1)),
+  // drive 1..10 (1 clean), types A (dB-domain compressor) / B (dB power law).
+  FdPreK, FdDrive, FdMixK, FdPostK, FdClassic,
+  FdCount
+};
+// Reference transfer table value for |x| in 0..1 (type 0 A, 1 B; drive 1..10).
+double fastDistRef(double a, int type, int drive);
+double fastDistCurve(double x, double threshold, int type);
+
+// ------------------------------------------------------------ gl.squeeze
+enum Sq {
+  SqGain = 0, SqMix,
+  SqSquare, SqSteps,                                // squarize
+  SqPunchAmount, SqPreserve, SqImpact, SqRelation,  // puncher (cycle-length tricks)
+  SqRingFreq, SqRingAmount,                         // ring modulator
+  SqRateDiv,                                        // sample-rate division
+  SqFilterOn, SqFilterType, SqCutoff, SqResonance, SqFilterPos,
+  // J-26 reference engine (SqModel = 1; pre-model states keep the legacy engine): linear gain
+  // after the mix, quantiser steps S (>= 32768 = off), cutoff knob position (50 Hz .. 0.75·sr),
+  // periodic puncher (impact ms at the amount gain, then preserve ms at unity). Filter types in
+  // the reference: LP, HP, BP, notch, LP − HP; SqResonance = r, SqFilterPos 0 pre / 1 post.
+  SqModel, SqGainRef, SqStepsRef, SqCutoffPos, SqImpactMs, SqPreserveMs, SqAmountRef,
+  SqCount
+};
+// Reference laws (raw control values of the original → engine units).
+inline double sqStepsOfRaw(double raw) { return std::pow(32768.0, 1.0 - std::clamp(raw, 0.0, 32768.0) / 32768.0); }
+inline double sqMsOfRaw(double raw) { return (std::pow(44101.0, std::clamp(raw, 0.0, 44100.0) / 44100.0) - 1.0) / 44.1; }
+inline double sqCutoffHz(double pos, double sr) { return 50.0 * std::pow(0.75 * sr / 50.0, std::clamp(pos, 0.0, 1.0)); }
+
+// ------------------------------------------------------------ gl.effector
+enum Ef {
+  EfKind = 0, EfX, EfY, EfModX, EfModY, EfModShape, EfModRate, EfInput, EfOutput, EfMix, EfBypass,
+  // J-26 reference engine (EfModel = 1; pre-model states keep the legacy engine): the twelve
+  // stored values of the original, 0..1 each, in its order (efref:: laws in effector_ref.h).
+  EfModel, EfRawKind, EfRawBypass, EfRawMix, EfRawX, EfRawY, EfRawRate, EfRawTempoRed, EfRawModX, EfRawModY,
+  EfRawShape, EfRawIn, EfRawOut,
+  EfCount
+};
+inline constexpr int kEfKinds = 12;
+const char* effectorKindName(int kind);
+const char* effectorAxisLabel(int kind, int axis);  // axis 0 = X, 1 = Y
+// LFO length in beats for the rate choice.
+double effectorRateBeats(int choice);
+// Modulation shape value (-1..1) at phase 0..1.
+double effectorShape(int shape, double phase, double randA, double randB);
+
+// ------------------------------------------------------------ gl.transplit
+// The input splits into a transient part and a sustain part (detector:
+// fast vs slow envelope, sensitivity, hold, release, detection speed); each
+// part has its own level, tilt and effect slot, then they are summed. The
+// band split / balance, drive, mix and gain act on the whole result.
+// TsAttack / TsRelease are the transient / sustain levels (-1 silent, 0 unity,
+// +1 = +12 dB); TsAttackShape is the detection speed, TsReleaseShape the
+// detector release. Indices 0..8 are the original layout; 9.. were appended.
+enum Ts {
+  TsSplitFreq = 0, TsBalance, TsAttack, TsAttackShape, TsRelease, TsReleaseShape, TsDrive, TsMix, TsGain,
+  TsSensitivity, TsHold, TsTransTilt, TsSusTilt,
+  TsTransFx, TsTransFxMix, TsTransFxA, TsTransFxB,
+  TsSusFx, TsSusFxMix, TsSusFxA, TsSusFxB,
+  TsLookahead, TsStereoLink, TsTransOn, TsSusOn, TsTransSync, TsSusSync,
+  // J-45 reference engine (TsModel = 1, transmitter_ref.h): the 42 stored
+  // controls of the effect it imports as they are kept (tsRaw(tag)); the
+  // transient / sustain sends (FL route indexes, 0 = off) and the detection
+  // source (input route index; -1 = the track's sidechain, 0 = own input).
+  TsModel, TsRaw0, TsSendT = TsRaw0 + 42, TsSendS, TsScIn,
+  TsCount
+};
+inline constexpr int tsRaw(int tag) { return TsRaw0 + tag; }
+// Stored-control ranges (tag → min, max) and the defaults of a fresh instance.
+inline constexpr int kTsRawMin[42] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0,
+                                      0, 0, 0, 0, 0, 0, 0, 0, 0};
+inline constexpr int kTsRawMax[42] = {10000, 10000, 10000, 12800, 12800, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000,
+                                      10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 768,
+                                      10000, 10000, 10000, 768, 10000, 1, 1, 2, 1, 1, 5, 5, 1, 1};
+inline constexpr int kTsRawDef[42] = {7475, 1968, 1968, 8743, 8743, 5000, 5000, 10000, 9112, 0, 5000, 5051, 5000, 10000, 3333, 0,
+                                      10000, 3342, 0, 10000, 5320, 5275, 10000, 4443, 4642, 10000, 3531, 144, 0, 10000, 3156, 240, 0,
+                                      1, 1, 1, 1, 1, 0, 2, 0, 0};
+// Effect slot kinds (TsTransFx / TsSusFx). A / B per kind: saturate drive /
+// warmth, bounce time curve / amp curve, diffuse and blur depth / size, echo
+// feedback / time.
+enum TsFxKind { TsFxSaturate = 0, TsFxBounce, TsFxDiffuse, TsFxBlur, TsFxEcho, TsFxOff, TsFxCount };
+inline constexpr int kTsSlotStride = TsSusFx - TsTransFx;  // transient slot params + stride = sustain slot params
+// Transient / sustain level (-1..1) → linear gain.
+inline double tsLevelGain(double v) { return v >= 0 ? 1.0 + 3.0 * v : 1.0 + v; }
+// Echo time: free 1..1000 ms (log) or tempo-synced 1..768 ticks of 1/96 beat.
+inline double tsEchoSeconds(double b, bool sync, double tempo) {
+  b = b < 0 ? 0 : (b > 1 ? 1 : b);
+  if (sync) return (1.0 + std::round(b * 767.0)) / 96.0 * 60.0 / (tempo < 10 ? 10 : tempo);
+  return 0.001 * std::pow(1000.0, b);
+}
+
+// ------------------------------------------------------------ gl.pocketrack (J-42)
+// Pocket Rack: up to four modules in series (the module rack FL ships as its mobile
+// multi-effect). Slot s: module type id (0 = empty; ids as the reference's module
+// table), 31 normalised module parameters (index 0 = on), then post gain, mix and
+// wet balance (0..1, 0.5 / 1 / 0.5 neutral).
+inline constexpr int kPkSlots = 4, kPkParams = 31;
+enum PkField { PkType = 0, PkP0 = 1, PkPost = PkP0 + kPkParams, PkMix, PkPan, PkFields };
+inline constexpr int pkParam(int slot, int field) { return slot * PkFields + field; }
+inline constexpr int PkCount = kPkSlots * PkFields;
+inline constexpr int kPkTypes = 47;
+const char* pocketModuleName(int type);  // "" for ids without a module
+// Default parameter values of a module type (31 values, index 0 = on).
+void pocketModuleDefaults(int type, float* out);
+const char* pocketParamName(int type, int index);  // nullptr = unused index
+int pocketModuleParamCount(int type);  // stored parameters of a module (index 0 = on included)
+// Whether a module type with these parameters runs a reference engine (pocket_dsp.cpp).
+bool pocketModuleExact(int type, const float* params);
+
+// Runtimes, one factory per source file.
+std::unique_ptr<Effect> createMasterEffect(const std::string& type);  // master_dsp.cpp
+std::unique_ptr<Effect> createRackEffect(const std::string& type);    // rack_dsp.cpp
+std::atomic<double>& cabRate();  // J-42: engine rate seen by the module rack (dynamics_dsp.cpp)
+std::unique_ptr<Effect> createDistEffect(const std::string& type);    // dist_dsp.cpp
+
+// ------------------------------------------------------------ gl.hitloop
+// J-45 Hit Looper: captures the input continuously; each detected hit (or a
+// tempo / manual trigger) makes two loopers (A, B; B's length divided by the
+// A/B ratio) replay the slice between the last two triggers, with reverse /
+// octave choices per trigger (random or position-based), pan or auto-pan,
+// mixed with the dry signal. Engine: transporter_ref.h. Controls are kept as
+// whole numbers in the ranges of the effect it imports (hlRaw(k)); see
+// kHlRawMin / kHlRawMax / kHlRawDef.
+enum HitLoop {
+  HlDry = 0, HlLevelA, HlLevelB, HlReverse, HlOctave, HlOctaveUp, HlSpread, HlMinLength, HlRatio, HlSensitivity, HlBounce,
+  HlFreeze, HlFlush, HlMode, HlBypass, HlUpdateA, HlUpdateB, HlUpdateAB, HlFixed, HlTempoLength, HlTempoTrigger, HlIgnore,
+  HlSource,      // detection source: left / right / both
+  HlStereo,      // 0 mono capture, 1 stereo (loop A = left, loop B = right)
+  HlFlushOnStop, // clear the loops when the transport stops
+  HlLookahead,   // stored only (the engine always looks ahead)
+  HlSendTo,      // loops A / B to the hosting track's route n (0 = off)
+  HlInput,       // detection from the hosting track's input route n (0 = own input, -1 = the track's sidechain)
+  HlCount
+};
+inline constexpr int kHlRawMin[22] = {0, 0, 0, 0, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+inline constexpr int kHlRawMax[22] = {12800, 12800, 12800, 10000, 10000, 10000, 1024, 2000, 36, 1024, 1024, 1, 1, 3, 1, 1, 1, 1, 1, 20, 21, 10000};
+inline constexpr int kHlRawDef[22] = {12800, 12800, 12800, 0, 0, 0, 512, 500, 8, 512, 512, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 0};
+std::unique_ptr<Effect> createPocketEffect(const std::string& type);  // pocket_dsp.cpp
+void appendPocketInfo(std::vector<PluginInfo>& v);                     // pocket_info.cpp
+
+}  // namespace gl::packs::dynamics

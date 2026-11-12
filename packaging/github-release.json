@@ -1,0 +1,42 @@
+{
+  "tag": "v2026.11.11.2",
+  "title": "AQUILA 2026.11.11.2",
+  "notes": "- Drag across Channel Rack rows to select channels. The selection box and row highlights show the selection as you drag. Press Delete to remove the selected channels together.\n- Use Mute or Solo on a selected Channel Rack row to apply it to the group. Adjust Pitch, Volume, or Pan together while keeping the relative settings between channels.\n- Hold Ctrl and drag to reorder a Channel Rack row or move the selected channels together. An insertion line shows where the rows will land. Undo and Redo preserve the notes and instruments attached to each channel.\n- Fixed the Playlist audio timing editor closing or placing an extra clip when you clicked or dragged inside the editor.\n- Fixed distorted PAT and SONG labels and sharpened the Play, Pause, and Stop icons. Updated the AQUILA app icon for Windows, macOS, and Linux.\n\nhttps://michaellanemusic.de/ml-studio/",
+  "assets": [
+    {
+      "name": "ML-Studio-Windows-Setup-2026.11.11.2.exe",
+      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026111102/Lemon-Studio-Windows-Setup-2026.11.11.2.exe",
+      "sha256": "c8268237f9495bc3394fdca4b1939e6bf34b35a6aad7c8b273e6d6b03c981a56"
+    },
+    {
+      "name": "ML-Studio-Source-2026111102.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/updates/2026111102/Lemon%20Studio%20Source.zip",
+      "sha256": "e34409e8505496a1b1f8d6ab9d3e1a958e07171a5a392e5705e03eef9c551cfa"
+    },
+    {
+      "name": "ML-Studio-Linux-x86_64-2026111102.tar.gz",
+      "url": "https://michaellanemusic.de/lemon-studio/linux/2026111102/Lemon-Studio-Linux-x86_64-2026111102.tar.gz",
+      "sha256": "bfc457fba57a0e124e8a8a9a4ee232b0f52e84dbc448a40a1ceb30da8a043c87"
+    },
+    {
+      "name": "ML-Studio-Mac-arm64-2026111102.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111102/Lemon-Studio-Mac-arm64-2026111102.dmg",
+      "sha256": "5a5eb200d56de68b584daabb267dafe848a5a329c704be4113056645be72eebc"
+    },
+    {
+      "name": "ML-Studio-Source-Mac-arm64-2026111102.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111102/Lemon-Studio-Source-Mac-arm64-2026111102.zip",
+      "sha256": "04819e008a20b8e4faee7dd121a8695498dbd93a650805d4a70ad25519053e0c"
+    },
+    {
+      "name": "ML-Studio-Mac-x86_64-2026111102.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111102/Lemon-Studio-Mac-x86_64-2026111102.dmg",
+      "sha256": "bed3e4b9ed21c1ceb8ab3fdab469dd83ef03079bfeab1734dc8c0450188aea08"
+    },
+    {
+      "name": "ML-Studio-Source-Mac-x86_64-2026111102.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111102/Lemon-Studio-Source-Mac-x86_64-2026111102.zip",
+      "sha256": "d5fbd33c64ec9ff8661cd33ef9ade168b31fdfa55c0178e1bfcd9a85cc20231c"
+    }
+  ]
+}

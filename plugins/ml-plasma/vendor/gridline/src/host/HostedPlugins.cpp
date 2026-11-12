@@ -1,0 +1,1948 @@
+#include "HostedPlugins.h"
+#include "CrossFormat.h"
+#include "../core/Crash.h"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <exception>
+#include <functional>
+#include <map>
+#include <mutex>
+#include <set>
+#include <thread>
+#include "../core/Json.h"
+#include "../engine/AudioEngine.h"
+#include "PluginFolders.h"
+#include "PluginPrefs.h"
+#include "sandbox/Sandbox.h"
+
+namespace gl::host {
+
+// ---------------------------------------------------------------- classes
+
+double HostedClass::toNormalized(size_t k, double v) const {
+  if (k >= params.size()) return std::clamp(v, 0.0, 1.0);
+  if (isChoice(k)) return std::clamp(v / params[k].stepCount, 0.0, 1.0);
+  return std::clamp(v, 0.0, 1.0);
+}
+
+double HostedClass::fromNormalized(size_t k, double n) const {
+  n = std::clamp(n, 0.0, 1.0);
+  if (k >= params.size()) return n;
+  if (isChoice(k)) return std::round(n * params[k].stepCount);
+  if (params[k].stepCount == 1) return n >= 0.5 ? 1.0 : 0.0;
+  return n;
+}
+
+const char* HostedClass::formatLabel() const {
+  const Format* f = findFormat(format);
+  return f ? f->label : "Plugin";
+}
+
+HostedClass makeHostedClass(const ScannedClass& c, const std::string& bundle, const std::string& format) {
+  HostedClass h;
+  h.type = format + ":" + c.uid;
+  h.format = format;
+  h.bundle = bundle;
+  h.uid = c.uid;
+  h.name = c.name;
+  h.vendor = c.vendor;
+  h.version = c.version;
+  h.subCategories = c.subCategories;
+  h.instrument = c.instrument;
+  h.sidechain = c.sidechainChannels > 0;
+  h.eventInput = c.eventInput;
+  h.eventOutput = c.eventOutput;
+  h.inputChannels = c.inputChannels;
+  h.outputChannels = c.outputChannels;
+  h.auxOutputs = c.auxOutputs;
+  if (h.auxOutputs.size() > static_cast<size_t>(kMaxAuxOutputs)) h.auxOutputs.resize(kMaxAuxOutputs);
+  h.programs = c.programs;
+  const size_t cap = static_cast<size_t>(c.instrument ? kMaxInstrumentParams : kMaxEffectParams);
+  // Plugins that flag automatable parameters get only those (wrappers add
+  // thousands of non-automatable MIDI-controller proxies); otherwise every
+  // writable, visible parameter.
+  const bool anyAutomatable = std::any_of(c.params.begin(), c.params.end(), [](const ScannedParam& p) { return (p.flags & kParamAutomatable) != 0; });
+  for (const auto& p : c.params) {
+    if (p.flags & (kParamReadOnly | kParamHidden | kParamBypass)) continue;
+    if (anyAutomatable && !(p.flags & kParamAutomatable)) continue;
+    if (h.params.size() >= cap) break;
+    h.params.push_back(p);
+  }
+  return h;
+}
+
+PluginInfo makePluginInfo(const HostedClass& c) {
+  PluginInfo info;
+  info.type = c.type;
+  info.name = c.name;
+  info.category = c.vendor.empty() ? std::string(c.formatLabel()) : c.vendor;
+  info.kind = c.instrument ? PluginKind::Generator : PluginKind::Effect;
+  for (size_t k = 0; k < c.params.size(); ++k) {
+    const auto& p = c.params[k];
+    ParamDesc d;
+    d.name = p.title.empty() ? "Param " + std::to_string(p.id) : p.title;
+    d.unit = p.units;
+    d.min = 0;
+    d.max = 1;
+    if (c.isChoice(k)) {
+      d.kind = ParamKind::Choice;
+      d.choices = p.labels;
+      d.max = p.stepCount;
+      d.def = std::round(p.def * p.stepCount);
+      d.unit.clear();
+    } else if (p.stepCount == 1) {
+      d.kind = ParamKind::Toggle;
+      d.def = p.def >= 0.5 ? 1 : 0;
+    } else {
+      d.def = p.def;
+    }
+    info.params.push_back(std::move(d));
+  }
+  // Programs are the plugin's factory presets (selected through the instance,
+  // not by parameter values; see the plugin header in the app).
+  for (const auto& name : c.programs) {
+    PluginInfo::Preset pr;
+    pr.name = name;
+    info.presets.push_back(std::move(pr));
+  }
+  return info;
+}
+
+namespace {
+// J-103: never destroyed, like the class map and the scan service: plugin threads (scanner,
+// sandbox watchers, editors) may still reach them while static destructors run.
+std::mutex& gClassLock = *new std::mutex;
+std::map<std::string, std::shared_ptr<const HostedClass>>& classMap() {
+  static auto* m = new std::map<std::string, std::shared_ptr<const HostedClass>>;
+  return *m;
+}
+std::mutex& gErrLock = *new std::mutex;
+std::string& gLastError = *new std::string;
+void setError(const std::string& e) {
+  std::lock_guard<std::mutex> g(gErrLock);
+  gLastError = e;
+}
+std::atomic<uint64_t> gGeneration{0};
+std::mutex& gExeLock = *new std::mutex;
+std::string& gChildExe = *new std::string;
+}  // namespace
+
+namespace {
+
+thread_local bool tRenderWorker = false;  // inside a UiThreadRenderScope
+
+struct UiTask {
+  const std::function<void()>* fn;
+  bool done = false;
+  std::exception_ptr error;
+};
+std::mutex& gUiTaskLock = *new std::mutex;
+std::condition_variable& gUiTaskDone = *new std::condition_variable;
+std::deque<UiTask*>& gUiTasks = *new std::deque<UiTask*>;
+
+// Runs `fn` on the interface thread and waits for it (a render worker, never an audio device's thread).
+void callOnUiThread(const std::function<void()>& fn) {
+  UiTask t{&fn, false, nullptr};
+  std::unique_lock<std::mutex> lk(gUiTaskLock);
+  gUiTasks.push_back(&t);
+  gUiTaskDone.wait(lk, [&] { return t.done; });
+  lk.unlock();
+  if (t.error) std::rethrow_exception(t.error);
+}
+
+}  // namespace
+
+UiThreadRenderScope::UiThreadRenderScope() { tRenderWorker = true; }
+UiThreadRenderScope::~UiThreadRenderScope() { tRenderWorker = false; }
+
+void runUiThreadTasks() {
+  for (;;) {
+    UiTask* t = nullptr;
+    {
+      std::lock_guard<std::mutex> lk(gUiTaskLock);
+      if (gUiTasks.empty()) return;
+      t = gUiTasks.front();
+      gUiTasks.pop_front();
+    }
+    std::exception_ptr error;
+    {
+      // Loading a big plugin holds this frame up for as long as it takes: long work, not a freeze.
+      crash::BusyScope busy("a plugin call of a render", 120);
+      try {
+        (*t->fn)();
+      } catch (...) {
+        error = std::current_exception();
+      }
+    }
+    std::lock_guard<std::mutex> lk(gUiTaskLock);
+    t->error = error;
+    t->done = true;
+    gUiTaskDone.notify_all();
+  }
+}
+
+void serveUiThreadTasksWhile(const std::atomic<bool>& running) {
+  while (running.load()) {
+    crash::uiHeartbeat();  // no frames while the interface waits here (a cancelled render, leaving the app)
+    runUiThreadTasks();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  runUiThreadTasks();
+}
+
+std::string lastError() {
+  std::lock_guard<std::mutex> g(gErrLock);
+  return gLastError;
+}
+
+void setChildExecutable(const std::string& exe) {
+  std::lock_guard<std::mutex> g(gExeLock);
+  gChildExe = exe;
+}
+
+std::string childExecutable() {
+  std::lock_guard<std::mutex> g(gExeLock);
+  return gChildExe.empty() ? selfExecutablePath() : gChildExe;
+}
+
+// K-13: an entry left the search folders (folder removed or switched off, plugin deleted): its
+// classes leave the list. Projects that use them keep the plugin's state (a placeholder).
+// K-71: every entry in one pass over the classes.
+static void unregisterEntries(const std::set<std::pair<std::string, std::string>>& entries) {
+  if (entries.empty()) return;
+  bool any = false;
+  {
+    std::lock_guard<std::mutex> g(gClassLock);
+    for (auto it = classMap().begin(); it != classMap().end();)
+      if (entries.count({it->second->format, it->second->bundle})) {
+        it = classMap().erase(it);
+        any = true;
+      } else {
+        ++it;
+      }
+  }
+  if (any) ++gGeneration;
+}
+
+void registerScanResult(const ScanResult& r) {
+  if (!r.ok) return;
+  for (const auto& c : r.classes) {
+    auto h = std::make_shared<const HostedClass>(makeHostedClass(c, r.bundle, r.format));
+    registerDynamicPlugin(makePluginInfo(*h));
+    std::lock_guard<std::mutex> g(gClassLock);
+    classMap()[h->type] = h;
+  }
+  ++gGeneration;
+}
+
+std::shared_ptr<const HostedClass> hostedClass(const std::string& type) {
+  std::lock_guard<std::mutex> g(gClassLock);
+  auto it = classMap().find(type);
+  return it == classMap().end() ? nullptr : it->second;
+}
+
+std::vector<std::shared_ptr<const HostedClass>> hostedClasses() {
+  std::lock_guard<std::mutex> g(gClassLock);
+  std::vector<std::shared_ptr<const HostedClass>> v;
+  for (const auto& [k, c] : classMap()) v.push_back(c);
+  return v;
+}
+
+// ---------------------------------------------------------------- state chunks
+
+std::string encodeState(const std::string& component, const std::string& controller) {
+  return "vst3s1:" + base64Encode(component) + ":" + base64Encode(controller);
+}
+
+bool decodeState(const std::string& data, std::string& component, std::string& controller) {
+  component.clear();
+  controller.clear();
+  if (data.compare(0, 7, "vst3s1:") != 0) return false;
+  size_t colon = data.find(':', 7);
+  if (colon == std::string::npos) return false;
+  return base64Decode(data.substr(7, colon - 7), component) && base64Decode(data.substr(colon + 1), controller);
+}
+
+// ---------------------------------------------------------------- adapter core
+
+namespace {
+
+int64_t monoNanos() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void atomicMax(std::atomic<float>& a, float v) {
+  float cur = a.load(std::memory_order_relaxed);
+  while (v > cur && !a.compare_exchange_weak(cur, v, std::memory_order_relaxed)) {
+  }
+}
+
+// Shared by the instrument and effect adapters: parameter mapping, state
+// loading, the audio-side parameter diff, event scheduling, the fixed size
+// buffer and the UI pump.
+//
+// Scheduling: everything the engine sends (notes, MIDI, parameter values,
+// modulation) is stamped with an absolute input sample position (inClock_ +
+// offset) and handed to the plugin with the block that contains it, at its
+// offset inside that block. Without fixed size buffers the plugin blocks
+// are the engine's blocks (split at maxBlock); with them the plugin always
+// processes exactly fixedSize frames through a FIFO (fixedSize frames of
+// added latency, reported for delay compensation).
+class Core final : public HostedInstance {
+ public:
+  static constexpr int kMaxPending = 4096;
+  static constexpr int kMaxMidiOut = 1024;
+
+  Core(std::shared_ptr<const HostedClass> cls, std::unique_ptr<Backend> b, bool sandboxed)
+      : cls_(std::move(cls)), b_(std::move(b)), sandboxed_(sandboxed), opts_(hostOptions(cls_->type)) {
+    const size_t n = cls_->params.size();
+    ids_.resize(n);
+    mapped_.resize(n);
+    modulated_.resize(n);
+    for (size_t k = 0; k < n; ++k) {
+      ids_[k] = cls_->params[k].id;
+      mapped_[k] = b_->paramIndex(ids_[k]) >= 0;
+      modulated_[k] = opts_.modulation && mapped_[k] && b_->supportsParamMod(ids_[k]) && !cls_->isChoice(k) && cls_->params[k].stepCount == 0;
+    }
+    sent_.assign(n, std::nanf(""));
+    sentMod_.assign(n, 0.0);
+    ctrlKnown_.assign(n, std::nanf(""));
+    ownEdit_.assign(n, std::nanf(""));
+    ownEditPump_.assign(n, 0);
+    audioVals_.reset(new std::atomic<float>[n == 0 ? 1 : n]);
+    base_.reset(new std::atomic<float>[n == 0 ? 1 : n]);
+    for (size_t k = 0; k < n; ++k) {
+      audioVals_[k].store(std::nanf(""), std::memory_order_relaxed);
+      base_[k].store(std::nanf(""), std::memory_order_relaxed);
+    }
+    pending_.reset(new Pending[kMaxPending]);
+    midiOut_.reset(new Generator::MidiOutEvent[kMaxMidiOut]);
+    creator_ = std::this_thread::get_id();
+    fixedSize_ = opts_.fixedBuffers ? std::clamp(opts_.fixedSize, 32, AudioEngine::kMaxBlock) : 0;
+    if (fixedSize_ > 0) {
+      const int buses = 1 + std::min(std::max(b_->auxOutputCount(), static_cast<int>(cls_->auxOutputs.size())), kMaxAuxOutputs);
+      fifoIn_.assign(static_cast<size_t>(4 * fixedSize_), 0.0f);  // main L/R, sidechain L/R
+      fifoOut_.assign(static_cast<size_t>(buses * 2 * fixedSize_), 0.0f);
+      fifoBuses_ = buses;
+    }
+  }
+  ~Core() override {
+    if (renderWorker_ && std::this_thread::get_id() != creator_) callOnUiThread([this] { goAway(); });
+    else goAway();
+  }
+  void goAway() {
+    if (b_->onGoingAway) b_->onGoingAway();
+    suspend();
+    if (b_->lost()) (void)b_.release();  // its destructor would call the plugin, and that throws
+    b_.reset();
+  }
+  // This instance belongs to a render on a worker thread (UiThreadRenderScope).
+  void setRenderWorker(bool on) { renderWorker_ = on; }
+
+  Backend* backend() override { return b_.get(); }
+  const HostedClass& hostedClass() const override { return *cls_; }
+  bool sandboxed() const override { return sandboxed_; }
+  bool crashed() const override { return b_->crashed(); }
+  std::string crashReason() const override { return b_->crashReason(); }
+  void requestReload() override { reload_.store(true); }
+  const HostOptions& options() const override { return opts_; }
+  // K-37: nothing on the UI thread calls the plugin: it crashed, or its interface is closing on a
+  // helper thread and its own UI thread may be stuck (Backend::editorClosing).
+  bool uiBlocked() const { return b_->crashed() || b_->editorClosing(); }
+  // K-39: a plugin threw on the UI thread. (The sandbox has its own report: the plugin is shown as crashed.)
+  void reportThrow() const {
+    if (!sandboxed_) crash::caught("Calling a plugin");
+  }
+  int totalLatency() const override {
+    if (renderWorker_ && std::this_thread::get_id() != creator_) {
+      int v = 0;
+      const Core* self = this;
+      callOnUiThread([&] { v = self->totalLatencyNow(); });
+      return v;
+    }
+    return totalLatencyNow();
+  }
+  int totalLatencyNow() const {
+    try {
+      return (uiBlocked() ? 0 : b_->latency()) + fixedSize_;
+    } catch (...) {
+      b_->markLost();
+      return fixedSize_;
+    }
+  }
+  bool stale() const {
+    return reload_.load() || runsInSandbox(cls_->type) != sandboxed_ || !hostOptions(cls_->type).sameStructure(opts_);
+  }
+  void takeCpu(float& average, float& peak) override {
+    const uint64_t ns = cpuNs_.exchange(0, std::memory_order_relaxed);
+    const uint64_t frames = cpuFrames_.exchange(0, std::memory_order_relaxed);
+    const double sr = b_->sampleRate() > 0 ? b_->sampleRate() : 48000.0;
+    average = frames > 0 ? static_cast<float>(static_cast<double>(ns) / (static_cast<double>(frames) / sr * 1e9)) : 0.0f;
+    peak = cpuPeak_.exchange(0, std::memory_order_relaxed);
+  }
+  uint64_t midiOutCount() const override { return midiOutTotal_.load(std::memory_order_relaxed); }
+  bool hasMidiOutput() const override { return b_->hasEventOutput(); }
+
+  // ---- UI thread ----
+  // K-78: true unless `st` holds a state moved from another format that the plugin did not take: its
+  // parameters, read back now, differ from the saved values. The outcome goes to the load report.
+  bool movedStateTook(const PluginState& st, bool setStateOk) {
+    xformat::LoadNote n;
+    if (st.ident.empty() || !xformat::loadNote(st, n) || n.via != "state" || n.to != cls_->type) return true;
+    int agree = 0, total = 0;
+    fixups_.clear();
+    for (int k : n.verify) {
+      const size_t i = static_cast<size_t>(k);
+      if (k < 0 || i >= ids_.size() || i >= st.params.size() || !mapped_[i]) continue;
+      ++total;
+      if (std::fabs(cls_->toNormalized(i, st.params[i]) - b_->paramNormalized(ids_[i])) <= 0.01) ++agree;
+      else fixups_.push_back(i);
+    }
+    const bool ok = setStateOk && (total == 0 || agree * 10 >= total * 9);
+    const std::string name = cls_->name + " (" + cls_->formatLabel() + ")";
+    if (ok)
+      xformat::postLoadCheck(name + ": the moved settings loaded; " + std::to_string(agree) + " of " + std::to_string(total) +
+                             " parameters read back as saved" + (fixups_.empty() ? std::string() : ", the others were set to their saved values"));
+    if (!ok) {
+      fixups_.clear();
+      xformat::postLoadCheck(name + ": the plugin did not take the moved settings (" + std::to_string(agree) + " of " + std::to_string(total) +
+                             " parameters as saved); the saved values were set by name instead");
+    }
+    return ok;
+  }
+  void prepareHost(const PluginState& st, double sr) {
+    if (renderWorker_ && std::this_thread::get_id() != creator_) {
+      callOnUiThread([&] { prepareHostSafe(st, sr); });
+      return;
+    }
+    prepareHostSafe(st, sr);
+  }
+  void prepareHostSafe(const PluginState& st, double sr) {
+    try {
+      prepareHostNow(st, sr);
+    } catch (...) {
+      reportThrow();
+      b_->markLost();
+    }
+  }
+  void prepareHostNow(const PluginState& st, double sr) {
+    for (size_t k = 0; k < ids_.size(); ++k) base_[k].store(k < st.params.size() ? st.params[k] : std::nanf(""), std::memory_order_relaxed);
+    if (uiBlocked()) return;
+    const bool needLoad = !loaded_ || st.data != lastData_;
+    const bool needPrepare = !b_->active() || b_->sampleRate() != sr;
+    if (!needLoad && !needPrepare) return;
+    // K-132: a big plugin can take long to take its state (a replace, a project opening): long
+    // work on the interface thread, not a freeze.
+    crash::BusyScope busy("a plugin taking its state", 120);
+    suspend();
+    if (needPrepare) b_->prepare(sr, AudioEngine::kMaxBlock);
+    if (needLoad) {
+      const bool took = st.data.empty() || b_->setState(st.data);
+      lastData_ = st.data;
+      loaded_ = true;
+      // K-78: a state moved from another format of the plugin: its parameters must read back as saved,
+      // else the saved values are set one by one (below, like a state-less load).
+      const bool keepSong = !st.data.empty() && !movedStateTook(st, took);
+      if (st.data.empty() || keepSong) {
+        // No plugin state yet (new instance, imported values): the song's
+        // values are the truth — every one goes to the plugin with the next block.
+        songValues_ = st.params;
+        for (size_t k = 0; k < sent_.size(); ++k) {
+          sent_[k] = std::nanf("");
+          sentMod_[k] = 0.0;
+          ctrlKnown_[k] = std::nanf("");
+          ownEdit_[k] = std::nanf("");
+        }
+        readbackPending_ = true;  // reports the song's own values (nothing changes)
+        readbackFromSong_ = true;
+        resetSchedule();
+        resume();
+        return;
+      }
+      // The song's values are what the processor has now (no resend); the
+      // controller's values are read back into the song by pumpUi.
+      for (size_t k = 0; k < sent_.size(); ++k) {
+        sent_[k] = k < st.params.size() ? st.params[k] : std::nanf("");
+        sentMod_[k] = 0.0;
+        float c = mapped_[k] ? static_cast<float>(cls_->fromNormalized(k, b_->paramNormalized(ids_[k]))) : sent_[k];
+        ctrlKnown_[k] = c;
+        ownEdit_[k] = std::nanf("");
+        audioVals_[k].store(c, std::memory_order_relaxed);
+      }
+      // K-78: parameters the moved state left elsewhere than saved get their saved values.
+      for (size_t k : fixups_) {
+        b_->setParamNormalized(ids_[k], cls_->toNormalized(k, st.params[k]));
+        sent_[k] = std::nanf("");
+        ctrlKnown_[k] = st.params[k];
+        audioVals_[k].store(st.params[k], std::memory_order_relaxed);
+      }
+      fixups_.clear();
+      readbackPending_ = true;
+      readbackFromSong_ = false;
+    }
+    resetSchedule();
+    resume();
+  }
+
+  void pumpUi(UiUpdate& u) override {
+    try {
+      pumpUiNow(u);
+    } catch (...) {
+      reportThrow();
+      b_->markLost();  // reported with the next call
+    }
+  }
+  void pumpUiNow(UiUpdate& u) {
+    if (b_->crashed()) {
+      if (!crashReported_) u.crashed = true;
+      crashReported_ = true;
+      return;
+    }
+    if (b_->editorClosing()) return;  // picked up again once it has closed
+    if (const int off = offlineRequest_.exchange(-1); off >= 0 && off != offlineApplied_) {
+      suspend();
+      b_->setOffline(off == 1);
+      offlineApplied_ = off;
+      resume();
+    }
+    b_->idle();
+    events_.clear();
+    b_->drainHostEvents(events_);
+    for (const auto& e : events_) {
+      switch (e.kind) {
+        case HostEvent::PerformEdit: {
+          int k = indexOf(e.id);
+          if (k < 0) break;
+          float v = static_cast<float>(cls_->fromNormalized(static_cast<size_t>(k), e.value));
+          ctrlKnown_[static_cast<size_t>(k)] = v;
+          ownEdit_[static_cast<size_t>(k)] = v;  // the controller has it; the song takes it after this call
+          ownEditPump_[static_cast<size_t>(k)] = pumps_;
+          u.edits.push_back({k, v});
+          break;
+        }
+        case HostEvent::EndEdit:
+          u.gestureEnd = true;
+          break;
+        case HostEvent::Restart:
+          if (e.flags & (kRestartReload | kRestartLatency | kRestartParamInfo)) {
+            suspend();
+            b_->restart(e.flags);
+            resetSchedule();
+            resume();
+          }
+          if (e.flags & (kRestartParamValues | kRestartParamInfo)) {
+            readbackPending_ = true;
+            readbackFromSong_ = false;
+            u.captureState = true;
+          }
+          break;
+        case HostEvent::Dirty:
+          u.captureState = true;
+          break;
+        case HostEvent::BeginEdit:
+          break;
+      }
+    }
+    // Values the processor changed itself go to the controller.
+    OutputValue ov{};
+    while (b_->popOutputValue(ov)) {
+      b_->setParamNormalized(ov.id, ov.value);
+      int k = indexOf(ov.id);
+      if (k >= 0) ctrlKnown_[static_cast<size_t>(k)] = static_cast<float>(cls_->fromNormalized(static_cast<size_t>(k), ov.value));
+    }
+    // Values the engine sent (automation, links, knob edits) go to the controller.
+    // K-168: not the ones that only lag behind an edit made in the plugin's own interface. The
+    // song takes such an edit after this call and the engine sends it a block or more later, so
+    // until then the engine still holds the value from before the edit (or an earlier step of the
+    // same drag). Handing that back reset the plugin's knob, menu or switch to where it was the
+    // moment it was changed (VST3: the controller takes the value; an AU only rereads its own).
+    // The controller is the truth for that parameter until the engine sends the edit itself, or
+    // for kOwnEditHold pumps when it never does (the song rounded or refused it).
+    ++pumps_;
+    for (size_t k = 0; k < ids_.size(); ++k) {
+      float a = audioVals_[k].load(std::memory_order_relaxed);
+      if (!std::isnan(ownEdit_[k])) {
+        if (a == ownEdit_[k] || pumps_ - ownEditPump_[k] > kOwnEditHold) ownEdit_[k] = std::nanf("");
+        if (a == ctrlKnown_[k] || !std::isnan(ownEdit_[k])) continue;
+      }
+      if (std::isnan(a) || a == ctrlKnown_[k] || !mapped_[k]) continue;
+      b_->setParamNormalized(ids_[k], cls_->toNormalized(k, a));
+      ctrlKnown_[k] = a;
+    }
+    if (programCapture_) {
+      programCapture_ = false;
+      u.captureState = true;
+    }
+    if (readbackPending_) {
+      readbackPending_ = false;
+      u.readback = true;
+      u.values.resize(ids_.size());
+      for (size_t k = 0; k < ids_.size(); ++k) {
+        float c = readbackFromSong_ ? (k < songValues_.size() ? songValues_[k] : std::nanf(""))
+                  : mapped_[k]      ? static_cast<float>(cls_->fromNormalized(k, b_->paramNormalized(ids_[k])))
+                                    : sent_[k];
+        u.values[k] = std::isnan(c) ? static_cast<float>(cls_->fromNormalized(k, cls_->params[k].def)) : c;
+        if (!readbackFromSong_) ctrlKnown_[k] = u.values[k];
+      }
+      readbackFromSong_ = false;
+    }
+  }
+
+  bool captureState(std::string& data) override {
+    try {
+      if (uiBlocked() || !b_->getState(data)) return false;
+    } catch (...) {
+      reportThrow();
+      b_->markLost();
+      return false;  // the project keeps the state it has
+    }
+    lastData_ = data;
+    return true;
+  }
+
+  std::string paramText(int index, float value) override {
+    if (uiBlocked() || index < 0 || static_cast<size_t>(index) >= ids_.size() || !mapped_[static_cast<size_t>(index)]) return {};
+    try {
+      return b_->paramText(ids_[static_cast<size_t>(index)], cls_->toNormalized(static_cast<size_t>(index), value));
+    } catch (...) {
+      reportThrow();
+      b_->markLost();
+      return {};
+    }
+  }
+
+  int programCount() const override {
+    try {
+      return uiBlocked() ? 0 : b_->programCount();
+    } catch (...) {
+      reportThrow();
+      b_->markLost();
+      return 0;
+    }
+  }
+  std::string programName(int i) const override {
+    try {
+      return uiBlocked() ? std::string() : b_->programName(i);
+    } catch (...) {
+      reportThrow();
+      b_->markLost();
+      return {};
+    }
+  }
+  bool selectProgram(int i) override {
+    if (uiBlocked()) return false;
+    suspend();
+    bool ok = false;
+    try {
+      ok = b_->selectProgram(i);
+    } catch (...) {
+      reportThrow();
+      b_->markLost();
+    }
+    resume();
+    if (ok) {
+      readbackPending_ = true;
+      readbackFromSong_ = false;
+      programCapture_ = true;
+    }
+    return ok;
+  }
+  const std::vector<PresetRef>& libraryPresets() override {
+    if (!presetsScanned_ && !uiBlocked()) {
+      try {
+        presets_ = b_->discoverPresets();
+      } catch (...) {
+        b_->markLost();
+      }
+      presetsScanned_ = true;
+    }
+    return presets_;
+  }
+  bool loadLibraryPreset(size_t i) override {
+    if (uiBlocked() || i >= libraryPresets().size()) return false;
+    suspend();
+    bool ok = false;
+    try {
+      ok = b_->loadPreset(presets_[i]);
+    } catch (...) {
+      reportThrow();
+      b_->markLost();
+    }
+    resetSchedule();
+    resume();
+    if (ok) {
+      readbackPending_ = true;
+      readbackFromSong_ = false;
+      programCapture_ = true;
+    }
+    return ok;
+  }
+
+  // ---- audio thread ----
+  // Enter/leave the audio-side section; false while the UI reconfigures.
+  bool enter() {
+    busy_.store(true);
+    if (suspended_.load()) {
+      busy_.store(false);
+      return false;
+    }
+    return true;
+  }
+  void leave() { busy_.store(false); }
+
+  // Start of an engine block: its context and where it starts on the input clock.
+  void beginBlock(const ProcessContext& ctx) {
+    ctx_ = ctx;
+    ctxClock_ = inClock_;
+    b_->setRenderingOffline(ctx.offline);
+    const int want = ctx.offline && opts_.notifyRender ? 1 : 0;
+    if (want != offlineApplied_) {
+      // Offline exports run on the thread that created the instance: switch
+      // right here, between two process calls; otherwise ask the UI thread.
+      if (std::this_thread::get_id() == creator_) {
+        b_->setOffline(want == 1);
+        offlineApplied_ = want;
+      } else if (renderWorker_) {  // the interface thread makes the call; this render waits for it
+        callOnUiThread([&] { b_->setOffline(want == 1); });
+        offlineApplied_ = want;
+      } else {
+        offlineRequest_.store(want);
+      }
+    }
+  }
+
+  // Changed parameter values (and modulation amounts) at the current input position.
+  void sendParams(const PluginState& st) {
+    const size_t n = std::min(sent_.size(), st.params.size());
+    for (size_t k = 0; k < n; ++k) {
+      if (!mapped_[k]) continue;
+      float v = st.params[k];
+      if (modulated_[k]) {
+        // The plugin keeps the song's value; the difference is modulation.
+        const float base = base_[k].load(std::memory_order_relaxed);
+        const float b = std::isnan(base) ? v : base;
+        if (b != sent_[k]) {
+          if (!queueParam(ids_[k], cls_->toNormalized(k, b), 0, false)) break;
+          sent_[k] = b;
+          audioVals_[k].store(b, std::memory_order_relaxed);
+        }
+        const double mod = cls_->toNormalized(k, v) - cls_->toNormalized(k, b);
+        if (std::fabs(mod - sentMod_[k]) > 1e-9) {
+          if (!queueParam(ids_[k], mod, 0, true)) break;
+          sentMod_[k] = mod;
+        }
+        continue;
+      }
+      if (v == sent_[k]) continue;
+      if (!queueParam(ids_[k], cls_->toNormalized(k, v), 0, false)) break;  // full: the rest go next block
+      sent_[k] = v;
+      audioVals_[k].store(v, std::memory_order_relaxed);
+    }
+  }
+
+  // A note / MIDI event `offset` samples after the current input position.
+  void queueEvent(const NoteEvent& e, int offset) {
+    if (pendingCount_ >= kMaxPending) return;
+    Pending p;
+    p.at = inClock_ + std::max(0, offset);
+    p.kind = Pending::Event;
+    p.ev = e;
+    insert(p);
+  }
+  void dropInput() {
+    pendingCount_ = 0;
+    b_->clearInput();
+  }
+
+  // Runs n engine frames. in: effect input (nullptr = silence); sc: sidechain;
+  // out: overwritten (effects) or added to (instruments); aux: extra outputs
+  // [k][L, R][kMaxBlock] written at auxPos.
+  void run(int n, const float* inL, const float* inR, const float* scL, const float* scR, float* outL, float* outR, bool add, float* aux,
+           int auxCount, int auxPos) {
+    Backend* p = b_.get();
+    if (fixedSize_ <= 0) {
+      const int maxb = std::max(1, p->maxBlock());
+      for (int done = 0; done < n;) {
+        int len = std::min(n - done, maxb);
+        if (!opts_.maxBuffers)  // split the block at the next note / MIDI event
+          for (int q = 0; q < pendingCount_; ++q) {
+            const int64_t at = pending_[q].at - (inClock_ + done);
+            if (pending_[q].kind == Pending::Event && at > 0) {
+              len = static_cast<int>(std::min<int64_t>(len, at));
+              break;
+            }
+          }
+        feed(inL ? inL + done : nullptr, inR ? inR + done : nullptr, scL ? scL + done : nullptr, scR ? scR + done : nullptr, len);
+        const bool ok = processBlock(inClock_ + done, len);
+        for (int bus = 0; bus <= auxCount; ++bus) {
+          float* dl = bus == 0 ? outL + done : aux + static_cast<size_t>(bus - 1) * 2 * AudioEngine::kMaxBlock + auxPos + done;
+          float* dr = bus == 0 ? outR + done : dl + AudioEngine::kMaxBlock;
+          emit(ok, bus, 0, len, dl, dr, bus == 0 && add);
+        }
+        done += len;
+      }
+    } else {
+      const int N = fixedSize_;
+      for (int i = 0; i < n;) {
+        const int take = std::min(n - i, N - fill_);
+        float* fin = fifoIn_.data();
+        for (int k = 0; k < take; ++k) {
+          fin[fill_ + k] = inL ? inL[i + k] : 0.0f;
+          fin[N + fill_ + k] = inR ? inR[i + k] : 0.0f;
+          fin[2 * N + fill_ + k] = scL ? scL[i + k] : 0.0f;
+          fin[3 * N + fill_ + k] = scR ? scR[i + k] : 0.0f;
+        }
+        for (int bus = 0; bus <= auxCount && bus < fifoBuses_; ++bus) {
+          const float* sl = fifoOut_.data() + static_cast<size_t>(bus * 2 * N + fill_);
+          const float* sr = sl + N;
+          float* dl = bus == 0 ? outL + i : aux + static_cast<size_t>(bus - 1) * 2 * AudioEngine::kMaxBlock + auxPos + i;
+          float* dr = bus == 0 ? outR + i : dl + AudioEngine::kMaxBlock;
+          for (int k = 0; k < take; ++k) {
+            if (bus == 0 && add) {
+              dl[k] += sl[k];
+              dr[k] += sr[k];
+            } else {
+              dl[k] = sl[k];
+              dr[k] = sr[k];
+            }
+          }
+        }
+        fill_ += take;
+        i += take;
+        if (fill_ == N) {
+          fill_ = 0;
+          feed(fin, fin + N, fin + 2 * N, fin + 3 * N, N);
+          const bool ok = processBlock(inClock_ + i - N, N);
+          for (int bus = 0; bus < fifoBuses_; ++bus) {
+            float* dl = fifoOut_.data() + static_cast<size_t>(bus * 2 * N);
+            emit(ok, bus, 0, N, dl, dl + N, false);
+          }
+        }
+      }
+    }
+    inClock_ += n;
+  }
+
+  // MIDI the plugin sent since the engine last asked (see Generator::takeMidiOut).
+  int takeMidiOut(Generator::MidiOutEvent* out, int max) {
+    const int n = std::min(max, midiOutCount_);
+    for (int i = 0; i < n; ++i) out[i] = midiOut_[i];
+    midiOutCount_ = 0;
+    return n;
+  }
+
+ private:
+  struct Pending {
+    enum Kind : uint8_t { Event, Param, Mod } kind = Event;
+    int64_t at = 0;  // absolute input sample
+    NoteEvent ev;
+    uint32_t id = 0;
+    double value = 0;
+  };
+
+  bool queueParam(uint32_t id, double v, int offset, bool mod) {
+    if (pendingCount_ >= kMaxPending) return false;
+    Pending p;
+    p.at = inClock_ + std::max(0, offset);
+    p.kind = mod ? Pending::Mod : Pending::Param;
+    p.id = id;
+    p.value = v;
+    insert(p);
+    return true;
+  }
+  void insert(const Pending& p) {  // stable by position
+    int i = pendingCount_++;
+    while (i > 0 && pending_[i - 1].at > p.at) {
+      pending_[i] = pending_[i - 1];
+      --i;
+    }
+    pending_[i] = p;
+  }
+  void resetSchedule() {
+    pendingCount_ = 0;
+    fill_ = 0;
+    std::fill(fifoIn_.begin(), fifoIn_.end(), 0.0f);
+    std::fill(fifoOut_.begin(), fifoOut_.end(), 0.0f);
+    midiOutCount_ = 0;
+  }
+
+  // Plugin input buffers for the next block.
+  void feed(const float* inL, const float* inR, const float* scL, const float* scR, int len) {
+    Backend* p = b_.get();
+    const int inCh = p->mainInputChannels();
+    for (int c = 0; c < inCh; ++c) {
+      float* d = p->inputChannel(c);
+      if (!d) continue;
+      const float* s = c == 0 ? inL : c == 1 ? inR : nullptr;
+      if (inCh == 1 && inL && inR)
+        for (int i = 0; i < len; ++i) d[i] = 0.5f * (inL[i] + inR[i]);
+      else if (s)
+        std::memcpy(d, s, sizeof(float) * static_cast<size_t>(len));
+      else
+        std::memset(d, 0, sizeof(float) * static_cast<size_t>(len));
+    }
+    const int scCh = p->sidechainChannels();
+    for (int c = 0; c < scCh; ++c) {
+      float* d = p->sidechainChannel(c);
+      if (!d) continue;
+      const float* s = c == 0 ? scL : c == 1 ? scR : nullptr;
+      if (scCh == 1 && scL && scR)
+        for (int i = 0; i < len; ++i) d[i] = 0.5f * (scL[i] + scR[i]);
+      else if (s)
+        std::memcpy(d, s, sizeof(float) * static_cast<size_t>(len));
+      else
+        std::memset(d, 0, sizeof(float) * static_cast<size_t>(len));
+    }
+  }
+
+  // Hands the plugin what is due in [start, start + len) and processes len frames.
+  bool processBlock(int64_t start, int len) {
+    Backend* p = b_.get();
+    int used = 0;
+    for (; used < pendingCount_ && pending_[used].at < start + len; ++used) {
+      Pending& q = pending_[used];
+      const int off = static_cast<int>(std::clamp<int64_t>(q.at - start, 0, len - 1));
+      if (q.kind == Pending::Event) {
+        NoteEvent e = q.ev;
+        e.offset = off;
+        p->addEvent(e);
+      } else if (q.kind == Pending::Param) {
+        p->addParamChange(q.id, q.value, off);
+      } else {
+        p->addParamMod(q.id, q.value, off);
+      }
+    }
+    if (used > 0) {
+      std::memmove(static_cast<void*>(pending_.get()), pending_.get() + used, sizeof(Pending) * static_cast<size_t>(pendingCount_ - used));
+      pendingCount_ -= used;
+    }
+    Transport tr;
+    context(start - ctxClock_, tr);
+    const int64_t t0 = monoNanos();
+    tr.systemNanos = t0;
+    const bool ok = p->process(len, tr);
+    const int64_t dt = monoNanos() - t0;
+    cpuNs_.fetch_add(static_cast<uint64_t>(std::max<int64_t>(0, dt)), std::memory_order_relaxed);
+    cpuFrames_.fetch_add(static_cast<uint64_t>(len), std::memory_order_relaxed);
+    const double sr = tr.sampleRate > 0 ? tr.sampleRate : 48000.0;
+    atomicMax(cpuPeak_, static_cast<float>(static_cast<double>(dt) / (len / sr * 1e9)));
+    MidiOut m;
+    while (p->popMidiOut(m)) {
+      midiOutTotal_.fetch_add(1, std::memory_order_relaxed);
+      if (midiOutCount_ >= kMaxMidiOut) continue;
+      const int64_t rel = start - ctxClock_ + m.offset;
+      midiOut_[midiOutCount_++] = {static_cast<int>(std::clamp<int64_t>(rel, 0, AudioEngine::kMaxBlock - 1)), m.data[0], m.data[1], m.data[2]};
+    }
+    clock_ += len;
+    return ok;
+  }
+
+  // Copies (or adds) output bus `bus` of the last block to dl/dr.
+  void emit(bool ok, int bus, int from, int len, float* dl, float* dr, bool add) {
+    Backend* p = b_.get();
+    const int ch = ok ? p->outputChannels(bus) : 0;
+    if (ch <= 0) {
+      if (!add) {
+        std::memset(dl, 0, sizeof(float) * static_cast<size_t>(len));
+        std::memset(dr, 0, sizeof(float) * static_cast<size_t>(len));
+      }
+      return;
+    }
+    const float* a = p->outputChannel(bus, 0);
+    const float* c = ch > 1 ? p->outputChannel(bus, 1) : a;
+    if (!a || !c) return;
+    a += from;
+    c += from;
+    if (add) {
+      for (int i = 0; i < len; ++i) {
+        dl[i] += a[i];
+        dr[i] += c[i];
+      }
+    } else {
+      std::memcpy(dl, a, sizeof(float) * static_cast<size_t>(len));
+      std::memcpy(dr, c, sizeof(float) * static_cast<size_t>(len));
+    }
+  }
+
+  // Transport for a plugin block starting `offset` samples after the engine block's start.
+  void context(int64_t offset, Transport& out) const {
+    const ProcessContext& ctx = ctx_;
+    out = Transport{};
+    const double sr = ctx.sampleRate > 0 ? ctx.sampleRate : 44100.0;
+    const double tempo = ctx.tempo > 0 ? ctx.tempo : 120.0;
+    const double ppq = std::max(1, ctx.ppq);
+    const double qnPerSample = tempo / 60.0 / sr;
+    double qn = ctx.tick / ppq + (ctx.playing ? static_cast<double>(offset) * qnPerSample : 0.0);
+    out.sampleRate = sr;
+    out.tempo = tempo;
+    out.playing = ctx.playing;
+    out.recording = ctx.recording;
+    out.tsNum = std::max(1, ctx.tsNum);
+    out.tsDen = std::max(1, ctx.tsDen);
+    out.looping = ctx.looping && ctx.loopEnd > ctx.loopStart;
+    out.loopStartQn = ctx.loopStart / ppq;
+    out.loopEndQn = ctx.loopEnd / ppq;
+    if (out.looping && qn >= out.loopEndQn) qn = out.loopStartQn + std::fmod(qn - out.loopStartQn, out.loopEndQn - out.loopStartQn);
+    const double barQn = 4.0 * out.tsNum / out.tsDen;
+    out.projectQn = std::max(0.0, qn);
+    out.barNumber = static_cast<int32_t>(std::floor(out.projectQn / barQn + 1e-9));
+    out.barQn = out.barNumber * barQn;
+    out.projectSamples = static_cast<int64_t>(std::llround(out.projectQn * 60.0 / tempo * sr));
+    out.continuousSamples = clock_;
+    out.changed = ctx.jumped && offset <= 0;
+    out.offline = ctx.offline && opts_.notifyRender;
+  }
+
+  int indexOf(uint32_t id) const {
+    for (size_t k = 0; k < ids_.size(); ++k)
+      if (ids_[k] == id) return static_cast<int>(k);
+    return -1;
+  }
+  void suspend() {
+    suspended_.store(true);
+    while (busy_.load()) std::this_thread::yield();
+  }
+  void resume() { suspended_.store(false); }
+
+  std::shared_ptr<const HostedClass> cls_;
+  std::unique_ptr<Backend> b_;
+  bool sandboxed_ = false;
+  HostOptions opts_;
+  std::atomic<bool> reload_{false};
+  std::vector<uint32_t> ids_;
+  std::vector<bool> mapped_, modulated_;
+  std::vector<float> sent_;       // audio thread (UI while suspended)
+  std::vector<double> sentMod_;   // audio thread: modulation amounts sent
+  std::vector<float> ctrlKnown_;  // UI thread
+  // K-168 (UI thread): the last value the plugin's own interface gave each parameter, until the
+  // engine has sent it (NaN: none pending), and the pump it came in.
+  static constexpr uint64_t kOwnEditHold = 60;  // pumps (UI frames): about a second
+  std::vector<float> ownEdit_;
+  std::vector<uint64_t> ownEditPump_;
+  uint64_t pumps_ = 0;
+  std::unique_ptr<std::atomic<float>[]> audioVals_;
+  std::unique_ptr<std::atomic<float>[]> base_;  // song values of the last program build (modulation)
+  std::string lastData_;
+  std::vector<size_t> fixups_;  // K-78: see movedStateTook
+  bool loaded_ = false;
+  bool readbackPending_ = false;
+  bool programCapture_ = false;
+  bool crashReported_ = false;
+  bool presetsScanned_ = false;
+  bool readbackFromSong_ = false;  // the next readback reports songValues_ (state-less load)
+  std::vector<float> songValues_;
+  std::vector<PresetRef> presets_;
+  std::vector<HostEvent> events_;
+  std::atomic<bool> suspended_{false}, busy_{false};
+  std::thread::id creator_;
+  bool renderWorker_ = false;
+  int offlineApplied_ = 0;               // audio thread / UI while suspended
+  std::atomic<int> offlineRequest_{-1};  // audio → UI
+  // audio-thread scheduling
+  ProcessContext ctx_;
+  int64_t inClock_ = 0;   // input samples received
+  int64_t ctxClock_ = 0;  // inClock_ at the start of the current engine block
+  int64_t clock_ = 0;     // samples the plugin processed (continuous time)
+  std::unique_ptr<Pending[]> pending_;
+  int pendingCount_ = 0;
+  int fixedSize_ = 0, fill_ = 0, fifoBuses_ = 0;
+  std::vector<float> fifoIn_, fifoOut_;
+  std::unique_ptr<Generator::MidiOutEvent[]> midiOut_;
+  int midiOutCount_ = 0;
+  std::atomic<uint64_t> midiOutTotal_{0};
+  std::atomic<uint64_t> cpuNs_{0}, cpuFrames_{0};
+  std::atomic<float> cpuPeak_{0};
+};
+
+// ---------------------------------------------------------------- instrument
+
+class HostedGenerator final : public Generator {
+ public:
+  explicit HostedGenerator(std::unique_ptr<Core> core) : core_(std::move(core)) {
+    // Extra outputs as scanned (some formats only know them once prepared).
+    const int scanned = static_cast<int>(core_->hostedClass().auxOutputs.size());
+    auxCount_ = std::min(std::max(core_->backend()->auxOutputCount(), scanned), kMaxAuxOutputs);
+    aux_.assign(static_cast<size_t>(auxCount_) * 2 * AudioEngine::kMaxBlock, 0.0f);
+  }
+  bool active() const override { return true; }  // tails are the plugin's business
+  // K-144: per-note pitch as the plugin's options say (HostOptions::notePitch): note tuning, MPE
+  // channels (every note its own pitch bend) or nothing; otherwise the engine bends the channel.
+  bool supportsGlide() const override {
+    switch (core_->options().notePitch) {
+      case HostOptions::PitchMpe:
+      case HostOptions::PitchOff: return true;
+      case HostOptions::PitchChannelBend: return false;
+      default: return core_->backend()->supportsTuning();
+    }
+  }
+  bool mpe() const { return core_->options().notePitch == HostOptions::PitchMpe; }
+  float noteBendRange() const override { return mpe() ? static_cast<float>(core_->options().mpeBendRange) : 2.0f; }
+  void prepareHost(const PluginState& state, double sampleRate) override { core_->prepareHost(state, sampleRate); }
+  int latencySamples() const override { return core_->totalLatency(); }
+  bool stale() const override { return core_->stale(); }
+  int auxOutputCount() const override { return auxCount_; }
+  bool auxOutput(int k, const float*& L, const float*& R) const override {
+    if (k < 0 || k >= auxCount_) return false;
+    L = aux_.data() + static_cast<size_t>(k) * 2 * AudioEngine::kMaxBlock;
+    R = L + AudioEngine::kMaxBlock;
+    return true;
+  }
+  int takeMidiOut(MidiOutEvent* out, int max) override { return core_->takeMidiOut(out, max); }
+  Core& core() { return *core_; }
+
+ protected:
+  bool wholeBlock() const override { return true; }
+  bool handlesNotePan() const override { return core_->backend()->handlesNotePan(); }
+  void onNoteOn(uint32_t id, double pitch, float velocity) override { startNote(id, pitch, velocity, 0, nullptr); }
+  void onNoteOff(uint32_t id) override { stopNote(id, 0.5f); }
+  void onNoteOnEx(uint32_t id, double pitch, float velocity, const NoteProps& props) override {
+    startNote(id, pitch, velocity, std::clamp(props.color, 0, 15), &props);
+  }
+  void onCut(uint32_t id) override { stopNote(id, 0.0f); }
+  void onGlide(uint32_t id, double pitch, double seconds) override {
+    Note* n = find(id);
+    if (!n || core_->options().notePitch == HostOptions::PitchOff || (!mpe() && !core_->backend()->supportsTuning())) return;
+    n->glideTo = pitch;
+    n->glideLeft = std::max<int64_t>(1, static_cast<int64_t>(seconds * sampleRate_));
+    n->glideStep = (pitch - n->cur) / static_cast<double>(n->glideLeft);
+    n->glideFrom = eventOffset();
+  }
+  void onMidi(uint8_t s, uint8_t a, uint8_t b) override {
+    NoteEvent e;
+    e.type = NoteEvent::Midi;
+    e.midi[0] = s;
+    e.midi[1] = a;
+    e.midi[2] = b;
+    e.channel = static_cast<int8_t>(s & 0x0F);
+    queue(e, eventOffset());
+  }
+  // J-109: every note Gridline sent ends, then sustain off and All Notes Off
+  // (CC 123) on every MIDI channel, for notes the plugin holds by itself
+  // (its own arpeggiator / latch, notes a controller's raw MIDI started).
+  void onAllOff() override {
+    for (auto& n : notes_)
+      if (n.used) stopNote(n.id, 0.5f);
+    channelMessages(false);
+  }
+  // Panic: the same plus All Sound Off (CC 120): tails end too.
+  void onKill() override {
+    for (auto& n : notes_)
+      if (n.used) stopNote(n.id, 0.0f);
+    channelMessages(true);
+  }
+  void configure(const PluginState& state, const ChannelAux& aux, const ProcessContext& ctx) override {
+    (void)aux;
+    sampleRate_ = ctx.sampleRate;
+    if (entered_) core_->leave();  // (a block that never rendered)
+    entered_ = false;
+    if (core_->backend()->crashed()) return;  // silent: render adds nothing
+    entered_ = core_->enter();
+    if (entered_) {
+      try {
+        core_->beginBlock(ctx);
+        core_->sendParams(state);
+        announceMpe();
+        for (int i = 0; i < deferredCount_; ++i) core_->queueEvent(deferred_[i], 0);
+        deferredCount_ = 0;
+      } catch (...) {  // no allocation, lock or I/O here (Backend::markLost)
+        core_->backend()->markLost();
+        entered_ = false;
+        core_->leave();
+      }
+    }
+  }
+  // One call per block (wholeBlock): the events of the block are already
+  // queued with their offsets; Core splits the block at them when the
+  // "process maximum size buffers" option is off.
+  void render(float* L, float* R, int n) override {
+    blockStart_ += n;
+    if (!entered_) {
+      clearAux(0, n);
+      return;
+    }
+    emitGlides(n);
+    try {
+      core_->run(n, nullptr, nullptr, nullptr, nullptr, L, R, true, aux_.data(), auxCount_, 0);
+    } catch (...) {  // no allocation, lock or I/O here (Backend::markLost)
+      core_->backend()->markLost();
+      clearAux(0, n);
+    }
+    entered_ = false;
+    core_->leave();
+  }
+
+ private:
+  struct Note {
+    bool used = false;
+    uint32_t id = 0;
+    int32_t noteId = 0;
+    int16_t key = 60;
+    int8_t channel = 0;
+    double base = 60, cur = 60;  // started pitch, current pitch
+    double glideTo = 60, glideStep = 0;
+    int64_t glideLeft = 0;
+    int glideFrom = 0;  // offset in the block where the glide starts
+    int64_t startAt = 0;  // sample it started on (frames this instrument has run)
+  };
+  Note* find(uint32_t id) {
+    for (auto& n : notes_)
+      if (n.used && n.id == id) return &n;
+    return nullptr;
+  }
+  void queue(const NoteEvent& e, int offset) {
+    if (entered_)
+      core_->queueEvent(e, offset);
+    else if (deferredCount_ < kDeferred)
+      deferred_[deferredCount_++] = e;
+  }
+  void clearAux(int from, int n) {
+    for (int k = 0; k < auxCount_; ++k) {
+      float* dl = aux_.data() + static_cast<size_t>(k) * 2 * AudioEngine::kMaxBlock + from;
+      std::memset(dl, 0, sizeof(float) * static_cast<size_t>(n));
+      std::memset(dl + AudioEngine::kMaxBlock, 0, sizeof(float) * static_cast<size_t>(n));
+    }
+  }
+  void startNote(uint32_t id, double pitch, float velocity, int channel, const NoteProps* props) {
+    Note* slot = nullptr;
+    for (auto& n : notes_)
+      if (!n.used) {
+        slot = &n;
+        break;
+      }
+    if (!slot) {  // table full: release the oldest
+      stopNote(notes_[0].id, 0.5f);
+      slot = &notes_[0];
+    }
+    const int key = std::clamp(static_cast<int>(std::lround(pitch)), 0, 127);
+    if (mpe()) channel = mpeChannel();  // K-144: each note on a member channel of its own
+    // Most plugins know a note by its key alone, so an earlier note still held on this key ends
+    // first: its note-off, due now (clips back to back) or later (overlap), would otherwise end
+    // the new note. Notes starting on the same sample stay a stack, as they always were.
+    const int64_t startAt = blockStart_ + eventOffset();
+    for (auto& n : notes_)
+      if (n.used && n.key == key && n.channel == channel && n.startAt < startAt) stopNote(n.id, 0.5f);
+    *slot = Note{};
+    slot->used = true;
+    slot->startAt = startAt;
+    slot->id = id;
+    slot->noteId = nextNoteId_;
+    nextNoteId_ = (nextNoteId_ + 1) & 0x7fffffff;
+    slot->key = static_cast<int16_t>(key);
+    slot->channel = static_cast<int8_t>(channel);
+    slot->base = slot->cur = slot->glideTo = pitch;
+    NoteEvent e;
+    e.type = NoteEvent::NoteOn;
+    e.noteId = slot->noteId;
+    e.key = slot->key;
+    e.channel = slot->channel;
+    e.velocity = std::clamp(velocity, 0.0f, 1.0f);
+    e.tuning = pitch - key;
+    if (mpe()) {  // the note's pitch off its key as its channel's bend, before it starts
+      sendBend(slot->channel, e.tuning);
+      e.tuning = 0;
+    }
+    if (props) {
+      e.hasProps = true;
+      e.pan = props->pan;
+      e.modX = props->modX;
+      e.modY = props->modY;
+    }
+    queue(e, eventOffset());
+  }
+  void stopNote(uint32_t id, float velocity) {
+    Note* n = find(id);
+    if (!n) return;
+    NoteEvent e;
+    e.type = NoteEvent::NoteOff;
+    e.noteId = n->noteId;
+    e.key = n->key;
+    e.channel = n->channel;
+    e.velocity = velocity;
+    e.tuning = n->base - n->key;
+    queue(e, eventOffset());
+    n->used = false;
+  }
+  void channelMessages(bool soundOff) {
+    if (!core_->backend()->hasEventInput()) return;
+    for (int ch = 0; ch < 16; ++ch) {
+      NoteEvent e;
+      e.type = NoteEvent::Midi;
+      e.channel = static_cast<int8_t>(ch);
+      e.midi[0] = static_cast<uint8_t>(0xB0 | ch);
+      e.midi[1] = 64;  // sustain pedal up
+      e.midi[2] = 0;
+      queue(e, eventOffset());
+      e.midi[1] = 123;  // All Notes Off
+      queue(e, eventOffset());
+      if (soundOff) {
+        e.midi[1] = 120;  // All Sound Off
+        queue(e, eventOffset());
+      }
+    }
+  }
+  // Glides: one tuning value every 32 samples of the block (render span n).
+  void emitGlides(int n) {
+    for (auto& nt : notes_) {
+      if (!nt.used || nt.glideLeft <= 0) continue;
+      for (int pos = std::min(nt.glideFrom, n - 1); pos < n && nt.glideLeft > 0; pos += 32) {
+        const int64_t step = std::min<int64_t>(nt.glideLeft, std::min(32, n - pos));
+        nt.glideLeft -= step;
+        nt.cur = nt.glideLeft == 0 ? nt.glideTo : nt.cur + nt.glideStep * static_cast<double>(step);
+        if (mpe()) {  // K-144: the note's own channel bend (its key's offset included)
+          sendBend(nt.channel, nt.cur - nt.key, pos);
+          continue;
+        }
+        NoteEvent e;
+        e.type = NoteEvent::Tuning;
+        e.noteId = nt.noteId;
+        e.key = nt.key;
+        e.channel = nt.channel;
+        e.tuning = nt.cur - nt.base;
+        queue(e, pos);
+      }
+      nt.glideFrom = 0;
+    }
+  }
+
+  // K-144: MPE (lower zone): member channels 1..15 (MIDI channels 2..16), each note on the one
+  // that has been free the longest; the zone (RPN 6 on channel 0) and every member channel's bend
+  // range (RPN 0) are announced once.
+  int mpeChannel() {
+    int best = 1;
+    int64_t bestAt = INT64_MAX;
+    bool bestFree = false;
+    for (int c = 1; c < 16; ++c) {
+      bool busy = false;
+      for (const auto& n : notes_) busy = busy || (n.used && n.channel == c);
+      if (busy && bestFree) continue;
+      if ((!busy && !bestFree) || chanAt_[c] < bestAt) best = c, bestAt = chanAt_[c], bestFree = !busy;
+    }
+    chanAt_[best] = ++chanClock_;
+    return best;
+  }
+  void sendBend(int channel, double semis, int offset = -1) {
+    const double range = std::max(1, core_->options().mpeBendRange);
+    const int v = std::clamp(8192 + static_cast<int>(std::lround(semis / range * 8192.0)), 0, 16383);
+    if (v == lastBend_[channel & 15]) return;
+    lastBend_[channel & 15] = v;
+    NoteEvent e;
+    e.type = NoteEvent::Midi;
+    e.channel = static_cast<int8_t>(channel & 15);
+    e.midi[0] = static_cast<uint8_t>(0xE0 | (channel & 15));
+    e.midi[1] = static_cast<uint8_t>(v & 0x7F);
+    e.midi[2] = static_cast<uint8_t>(v >> 7);
+    queue(e, offset < 0 ? eventOffset() : offset);
+  }
+  void announceMpe() {
+    if (!mpe() || mpeAnnounced_ || !core_->backend()->hasEventInput()) return;
+    mpeAnnounced_ = true;
+    auto cc = [&](int ch, int num, int val) {
+      NoteEvent e;
+      e.type = NoteEvent::Midi;
+      e.channel = static_cast<int8_t>(ch);
+      e.midi[0] = static_cast<uint8_t>(0xB0 | ch), e.midi[1] = static_cast<uint8_t>(num), e.midi[2] = static_cast<uint8_t>(val);
+      core_->queueEvent(e, 0);
+    };
+    auto rpn = [&](int ch, int msb, int value) {
+      cc(ch, 101, 0), cc(ch, 100, msb), cc(ch, 6, value), cc(ch, 38, 0), cc(ch, 101, 127), cc(ch, 100, 127);
+    };
+    rpn(0, 6, 15);  // MPE configuration message: lower zone, 15 member channels
+    const int range = std::clamp(core_->options().mpeBendRange, 1, 96);
+    for (int c = 1; c < 16; ++c) rpn(c, 0, range);
+    for (auto& b : lastBend_) b = 8192;
+  }
+  bool mpeAnnounced_ = false;
+  int64_t chanAt_[16] = {};
+  int64_t chanClock_ = 0;
+  int lastBend_[16] = {8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192};
+
+  std::unique_ptr<Core> core_;
+  double sampleRate_ = 44100;
+  static constexpr int kDeferred = 512;
+  NoteEvent deferred_[kDeferred];  // events from outside a block (kill, panic): sent with the next one
+  int deferredCount_ = 0;
+  bool entered_ = false;
+  Note notes_[256];
+  int32_t nextNoteId_ = 1;
+  int64_t blockStart_ = 0;  // frames this instrument has run
+  int auxCount_ = 0;
+  std::vector<float> aux_;  // [output][L, R][kMaxBlock]
+};
+
+// ---------------------------------------------------------------- effect
+
+class HostedEffect final : public Effect {
+ public:
+  explicit HostedEffect(std::unique_ptr<Core> core) : core_(std::move(core)) {}
+  void process(const PluginState& state, const ProcessContext& ctx, float* L, float* R, int n) override {
+    run(state, ctx, L, R, n);
+  }
+  void processAux(const PluginState& state, const ChannelAux& aux, const ProcessContext& ctx, float* L, float* R, int n) override {
+    (void)aux;
+    run(state, ctx, L, R, n);
+  }
+  // J-109 (audio thread: panic, bad output): a plugin's tails are its own
+  // state; effects that take MIDI get All Notes Off / All Sound Off with the
+  // next block.
+  void reset() override { soundOff_ = true; }
+  void setSideIo(const SideIo& io) override { io_ = io; }
+  void prepareHost(const PluginState& state, double sampleRate) override { core_->prepareHost(state, sampleRate); }
+  int latencySamples() const override { return core_->totalLatency(); }
+  bool stale() const override { return core_->stale(); }
+  Core& core() { return *core_; }
+
+ private:
+  void run(const PluginState& state, const ProcessContext& ctx, float* L, float* R, int n) {
+    Backend* p = core_->backend();
+    if (p->crashed()) {  // a crashed sandboxed plugin is silent
+      std::memset(L, 0, sizeof(float) * static_cast<size_t>(n));
+      std::memset(R, 0, sizeof(float) * static_cast<size_t>(n));
+      return;
+    }
+    if (!core_->enter()) return;  // reconfiguring: pass through
+    try {
+      runEntered(state, ctx, L, R, n, p);
+    } catch (...) {  // no allocation, lock or I/O here (Backend::markLost)
+      p->markLost();
+      std::memset(L, 0, sizeof(float) * static_cast<size_t>(n));
+      std::memset(R, 0, sizeof(float) * static_cast<size_t>(n));
+    }
+    core_->leave();
+  }
+  void runEntered(const PluginState& state, const ProcessContext& ctx, float* L, float* R, int n, Backend* p) {
+    core_->beginBlock(ctx);
+    core_->sendParams(state);
+    if (soundOff_) {
+      soundOff_ = false;
+      if (p->hasEventInput())
+        for (int ch = 0; ch < 16; ++ch)
+          for (uint8_t cc : {uint8_t{123}, uint8_t{120}}) {
+            NoteEvent e;
+            e.type = NoteEvent::Midi;
+            e.channel = static_cast<int8_t>(ch);
+            e.midi[0] = static_cast<uint8_t>(0xB0 | ch);
+            e.midi[1] = cc;
+            core_->queueEvent(e, 0);
+          }
+    }
+    core_->run(n, L, R, io_.scL, io_.scR, L, R, false, nullptr, 0, 0);
+  }
+
+  std::unique_ptr<Core> core_;
+  SideIo io_;
+  bool soundOff_ = false;  // (audio thread) send All Sound Off with the next block
+};
+
+std::unique_ptr<Core> makeCore(const std::string& type) {
+  auto cls = hostedClass(type);
+  if (!cls) {
+    setError("plugin not installed or not scanned: " + type);
+    return nullptr;
+  }
+  // K-132: loading a plugin (adding or replacing one, a project opening) holds the interface up for
+  // as long as the plugin takes: long work, not a freeze.
+  crash::BusyScope busy("loading a plugin", 120);
+  std::string err;
+  const bool sandbox = runsInSandbox(type);
+  std::unique_ptr<Backend> b = sandbox ? createSandboxBackend(childExecutable(), cls->format, cls->bundle, cls->uid, &err, cls->name)
+                                       : createBackend(cls->format, cls->bundle, cls->uid, &err);
+  if (!b) {
+    setError(cls->name + ": " + err);
+    return nullptr;
+  }
+  return std::make_unique<Core>(cls, std::move(b), sandbox);
+}
+
+}  // namespace
+
+std::unique_ptr<Generator> createHostedGenerator(const std::string& type) {
+  std::unique_ptr<Generator> out;
+  const bool worker = tRenderWorker;
+  auto make = [&] {
+    auto core = makeCore(type);
+    if (!core) return;
+    core->setRenderWorker(worker);
+    out = std::make_unique<HostedGenerator>(std::move(core));
+  };
+  if (worker) callOnUiThread(make);
+  else make();
+  return out;
+}
+
+std::unique_ptr<Effect> createHostedEffect(const std::string& type) {
+  std::unique_ptr<Effect> out;
+  const bool worker = tRenderWorker;
+  auto make = [&] {
+    auto core = makeCore(type);
+    if (!core) return;
+    core->setRenderWorker(worker);
+    out = std::make_unique<HostedEffect>(std::move(core));
+  };
+  if (worker) callOnUiThread(make);
+  else make();
+  return out;
+}
+
+HostedInstance* hostedInstance(Generator* g) {
+  auto* h = dynamic_cast<HostedGenerator*>(g);
+  return h ? &h->core() : nullptr;
+}
+
+HostedInstance* hostedInstance(Effect* fx) {
+  auto* h = dynamic_cast<HostedEffect*>(fx);
+  return h ? &h->core() : nullptr;
+}
+
+// ---------------------------------------------------------------- scanning service
+
+namespace {
+using ScanClock = std::chrono::steady_clock;
+constexpr double kScanTimeoutSeconds = 60;              // one entry; longer is a hung plugin (blacklisted)
+// K-73: tests shorten it (GRIDLINE_SCAN_TIMEOUT, seconds).
+double scanTimeout() {
+  if (const char* e = std::getenv("GRIDLINE_SCAN_TIMEOUT"); e && *e) return std::clamp(std::atof(e), 0.5, 600.0);
+  return kScanTimeoutSeconds;
+}
+constexpr auto kSaveEvery = std::chrono::seconds(2);    // K-71: the cache file is written at most this often during a scan
+
+struct Service {
+  // K-71: two locks. `lock` guards the status, the slots and the flags, and the cache against a
+  // change while it is read; it is held only for short reads and changes, never across file I/O,
+  // a stat or a child wait, so the interface's scanStatus() / cacheEntries() never wait long.
+  // `writeLock` lets one writer at a time change the cache (scan threads, initHosting) and is held
+  // while the cache is checked against the disk and saved. The cache changes only with both held.
+  std::mutex lock;
+  std::mutex writeLock;
+  std::string cacheFile;
+  ScanCache cache;
+  bool dirty = false;                    // writeLock: changed since the last save
+  ScanClock::time_point lastSave{};      // writeLock
+  ScanClock::duration saveTook{};        // writeLock: how long the last save took (K-73)
+  ScanStatus status;
+  struct Slot {
+    std::string entry;  // empty: idle
+    ScanClock::time_point start{};
+  };
+  std::vector<Slot> slots;  // K-71: what each scanner child scans now
+  std::thread worker;
+  std::atomic<bool> cancel{false};  // J-103: quit: the running scan stops after killing its children
+  std::atomic<bool> running{false};  // K-73: status.running, readable without `lock`
+  bool closed = false;              // J-103: after shutdownScan() no scan starts any more
+  bool pending = false;             // K-13: scan again when the running one is done (requestScan)
+};
+Service& service() {
+  static auto* s = new Service;  // never destroyed (shutdownScan() joins the worker before main returns)
+  return *s;
+}
+// K-150: the interface's reads take `lock` through here, which keeps the longest wait for it.
+std::atomic<int64_t> gReadLongestWaitNs{0};
+std::unique_lock<std::mutex> lockForRead(Service& s) {
+  std::unique_lock<std::mutex> g(s.lock, std::try_to_lock);
+  if (g.owns_lock()) return g;
+  const auto t0 = ScanClock::now();
+  g.lock();
+  const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(ScanClock::now() - t0).count();
+  int64_t prev = gReadLongestWaitNs.load();
+  while (ns > prev && !gReadLongestWaitNs.compare_exchange_weak(prev, ns)) {
+  }
+  return g;
+}
+// A failed entry counts once; an entry that loaded counts its plugins that did not (K-180).
+int failedOf(const ScanResult& e) { return e.ok ? static_cast<int>(e.failed.size()) : 1; }
+int countFailed(const ScanCache& c) {
+  int n = 0;
+  for (const auto& e : c.entries()) n += failedOf(e);
+  return n;
+}
+int countClasses() {
+  std::lock_guard<std::mutex> g(gClassLock);
+  return static_cast<int>(classMap().size());
+}
+
+// K-71: scanner children at once: a hung or slow plugin does not hold up the rest.
+int scanJobs() {
+  if (const char* e = std::getenv("GRIDLINE_SCAN_JOBS"); e && *e) return std::clamp(std::atoi(e), 1, 8);
+  const int cores = static_cast<int>(std::thread::hardware_concurrency());
+  return std::clamp(cores / 2, 2, 4);
+}
+
+// K-71: the worker's searches stop on quit and show the folder they are in.
+DiscoveryScope searchScope(Service& sv) {
+  return DiscoveryScope(&sv.cancel, [&sv](const std::string& folder) {
+    std::lock_guard<std::mutex> g(sv.lock);
+    sv.status.searching = folder;
+  });
+}
+
+// Entries of every enabled format in its search folders (K-13: PluginFolders.h).
+std::vector<std::pair<std::string, std::string>> discoverAll() {
+  PluginPrefs prefs = pluginPrefs();
+  std::vector<std::pair<std::string, std::string>> out;
+  for (const Format& f : formats()) {
+    if (prefs.disabledFormats.count(f.id)) continue;
+    for (auto& e : discoverFormat(f, prefs)) out.push_back({f.id, e});
+  }
+  return out;
+}
+
+// Writes the cache file (writeLock held): when it changed, at most every kSaveEvery unless `now`.
+// K-73: a big cache (thousands of plugins, tens of MB) takes a while to write, and every scanner
+// child waits for writeLock meanwhile: saved at most once in eight times what the last save took.
+void saveCache(Service& sv, bool now) {
+  const auto every = std::max<ScanClock::duration>(kSaveEvery, 8 * sv.saveTook);
+  if (!sv.dirty || (!now && ScanClock::now() - sv.lastSave < every)) return;
+  const auto t0 = ScanClock::now();
+  sv.cache.save();  // reads the cache: no other writer while writeLock is held
+  sv.dirty = false;
+  sv.lastSave = ScanClock::now();
+  sv.saveTook = sv.lastSave - t0;
+}
+
+// K-71: the same classes as the cached result (a rescan of an unchanged plugin).
+bool sameScan(const ScanResult& a, const ScanResult& b) {
+  if (a.ok != b.ok || a.classes.size() != b.classes.size()) return false;
+  Json ja = toJson(a), jb = toJson(b);
+  ja.object.erase("mtime");
+  jb.object.erase("mtime");
+  return jsonStringify(ja, 0) == jsonStringify(jb, 0);
+}
+
+void finishEntry(Service& sv, ScanResult r) {
+  std::lock_guard<std::mutex> w(sv.writeLock);
+  // K-71: an unchanged plugin is registered already (the browser's plugin list only grows).
+  ScanResult* old = sv.cache.slot(r.bundle, r.format);
+  if (!old || !sameScan(*old, r)) registerScanResult(r);
+  const int classes = countClasses();
+  // K-150: the searches and counts over the cache (thousands of plugins) run before `lock` (the
+  // cache changes only with writeLock held, so they stay true); under it the entry changes in
+  // constant time, and the replaced result is freed after it. The less the scan holds `lock`, the
+  // less a busy machine can stop it there while the interface waits.
+  const int failed = countFailed(sv.cache) - (old ? failedOf(*old) : 0) + failedOf(r);
+  {
+    std::lock_guard<std::mutex> g(sv.lock);
+    if (old) std::swap(*old, r);  // r: the replaced result
+    else sv.cache.append(std::move(r));
+    ++sv.status.cacheChanges;
+    sv.status.classes = classes;
+    sv.status.failed = failed;
+    sv.status.generation = gGeneration.load();
+    ++sv.status.done;
+  }
+  sv.dirty = true;
+  saveCache(sv, false);
+}
+
+// Scans the entries, a few at a time (K-71), each in its own child process.
+void scanEntries(Service& sv, const std::string& exe, const std::vector<std::pair<std::string, std::string>>& todo) {
+  if (todo.empty()) return;
+  const size_t jobs = std::min(static_cast<size_t>(scanJobs()), todo.size());
+  {
+    std::lock_guard<std::mutex> g(sv.lock);
+    sv.slots.assign(jobs, Service::Slot{});
+  }
+  std::atomic<size_t> next{0};
+  auto run = [&sv, &exe, &todo, &next](size_t slot) {
+    for (;;) {
+      if (sv.cancel.load()) return;  // J-103: quitting (the rest is scanned at the next start)
+      const size_t i = next++;
+      if (i >= todo.size()) return;
+      const auto& [format, entry] = todo[i];
+      {
+        std::lock_guard<std::mutex> g(sv.lock);
+        sv.slots[slot] = {entry, ScanClock::now()};
+      }
+      ScanResult r;
+      try {
+        r = scanIsolated(exe, format, entry, scanTimeout(), &sv.cancel);
+      } catch (const std::exception& e) {  // K-73: (a path the system cannot spell, no temp folder) one entry fails, not the app
+        r = ScanResult{};
+        r.format = format;
+        r.bundle = entry;
+        r.error = std::string("cannot be scanned: ") + e.what();
+      }
+      {
+        std::lock_guard<std::mutex> g(sv.lock);
+        sv.slots[slot] = {};
+      }
+      if (sv.cancel.load()) return;  // a cancelled scan is not a result: never cached
+      finishEntry(sv, std::move(r));
+    }
+  };
+  std::vector<std::thread> helpers;
+  for (size_t s = 1; s < jobs; ++s) {
+    try {
+      helpers.emplace_back(run, s);
+    } catch (const std::exception&) {
+      break;  // no more threads: fewer children at once
+    }
+  }
+  run(0);
+  for (auto& t : helpers) t.join();
+  std::lock_guard<std::mutex> g(sv.lock);
+  sv.slots.clear();
+}
+}  // namespace
+
+void initHosting(const std::string& configDir) {
+  loadPluginPrefs(configDir);
+  Service& s = service();
+  ScanCache cache(configDir + "/plugin-cache.json");
+  cache.load();
+  std::lock_guard<std::mutex> w(s.writeLock);
+  for (const auto& e : cache.entries())
+    if (findFormat(e.format)) registerScanResult(e);
+  const int classes = countClasses();
+  std::lock_guard<std::mutex> g(s.lock);
+  s.cacheFile = cache.file();
+  s.cache = std::move(cache);
+  ++s.status.cacheChanges;
+  s.dirty = false;
+  s.status.classes = classes;
+  s.status.failed = countFailed(s.cache);
+  s.status.generation = gGeneration.load();
+}
+
+namespace {
+// One scan over the search folders: entries that are new or changed (every entry when forced)
+// are scanned; entries no longer found leave the cache and the class list.
+void scanPass(Service& sv, const std::string& exe, bool force) {
+  std::vector<std::pair<std::string, std::string>> found;
+  {
+    DiscoveryScope scope = searchScope(sv);  // K-71: on this worker, never the interface's thread
+    found = discoverAll();
+  }
+  if (sv.cancel.load()) return;  // a search cut short is not what the folders hold
+  std::vector<std::pair<std::string, std::string>> todo;
+  {
+    std::lock_guard<std::mutex> w(sv.writeLock);  // K-71: the stats of stale() run without `lock`
+    std::map<std::string, std::vector<std::string>> byFormat;
+    for (const auto& [fid, e] : found) byFormat[fid].push_back(e);
+    for (const Format& f : formats()) {
+      const std::vector<std::string>& mine = byFormat[f.id];
+      for (auto& e : force ? mine : sv.cache.stale(mine, f.id)) todo.push_back({f.id, e});
+    }
+    // Forget entries that were removed (or whose folder or format was switched off).
+    const std::set<std::pair<std::string, std::string>> have(found.begin(), found.end());
+    std::vector<std::pair<std::string, std::string>> gone;
+    for (const auto& e : sv.cache.entries())
+      if (!have.count({e.format, e.bundle})) gone.push_back({e.format, e.bundle});
+    if (!gone.empty()) {
+      {
+        std::lock_guard<std::mutex> g(sv.lock);
+        sv.cache.remove(gone);
+        ++sv.status.cacheChanges;
+      }
+      unregisterEntries(std::set<std::pair<std::string, std::string>>(gone.begin(), gone.end()));
+      sv.dirty = true;
+    }
+    const int classes = countClasses();
+    std::lock_guard<std::mutex> g(sv.lock);
+    sv.status.searching.clear();
+    sv.status.done = 0;
+    sv.status.total = static_cast<int>(todo.size());
+    sv.status.classes = classes;
+    sv.status.failed = countFailed(sv.cache);
+    sv.status.generation = gGeneration.load();
+  }
+  scanEntries(sv, exe, todo);
+}
+// K-13: a scan asked for while another ran (search folders changed): run it now.
+bool takePending(Service& sv) {
+  std::lock_guard<std::mutex> g2(sv.lock);
+  const bool p = sv.pending && !sv.cancel.load();
+  sv.pending = false;
+  return p;
+}
+void endWorker(Service& sv) {
+  {
+    std::lock_guard<std::mutex> w(sv.writeLock);
+    saveCache(sv, true);  // the end of a scan, or a cancel: what was scanned is kept
+  }
+  // The worker's last use of `lock`: a new scan joins it once `running` is false.
+  std::lock_guard<std::mutex> g2(sv.lock);
+  sv.status.searching.clear();
+  sv.slots.clear();
+  sv.status.running = false;
+  sv.running = false;
+  sv.status.generation = gGeneration.load();
+}
+
+// What a worker does: a pass over the search folders, given entries, or every entry found in
+// some folders ({format or "*", folder}).
+struct ScanJob {
+  bool force = false;
+  std::vector<std::pair<std::string, std::string>> entries, folders;
+};
+void runJob(Service& sv, const std::string& exe, const ScanJob& job) {
+  if (!job.folders.empty()) {
+    std::vector<std::pair<std::string, std::string>> entries;
+    {
+      DiscoveryScope scope = searchScope(sv);
+      const PluginPrefs prefs = pluginPrefs();
+      for (const auto& [format, folder] : job.folders)
+        for (const Format& f : formats()) {
+          if (format == "*" ? !folderSearchApplies(f.id) || prefs.disabledFormats.count(f.id) : format != f.id) continue;
+          for (auto& e : f.discover({folder})) entries.push_back({f.id, std::move(e)});
+        }
+    }
+    if (sv.cancel.load()) {
+    } else if (entries.empty()) {
+      scanPass(sv, exe, false);  // nothing (left) in it: a pass still drops what was found there before
+    } else {
+      {
+        std::lock_guard<std::mutex> g(sv.lock);
+        sv.status.searching.clear();
+        sv.status.done = 0;
+        sv.status.total = static_cast<int>(entries.size());
+      }
+      scanEntries(sv, exe, entries);
+    }
+  } else if (!job.entries.empty()) {
+    scanEntries(sv, exe, job.entries);
+  } else {
+    scanPass(sv, exe, job.force);
+  }
+  while (takePending(sv)) scanPass(sv, exe, false);
+  endWorker(sv);
+}
+void launch(const std::string& exe, ScanJob job) {
+  Service& s = service();
+  std::lock_guard<std::mutex> g(s.lock);
+  if (s.closed || s.status.running || exe.empty()) return;
+  if (s.worker.joinable()) s.worker.join();  // finished: past its last use of the lock (endWorker)
+  s.status.running = true;
+  s.running = true;
+  s.status.done = 0;
+  s.status.total = static_cast<int>(job.entries.size());
+  s.status.searching.clear();
+  s.pending = false;
+  s.worker = std::thread([exe, job = std::move(job)]() {
+    try {
+      runJob(service(), exe, job);
+    } catch (const std::exception&) {  // K-73: a search the system cannot finish ends the scan, not the app
+      endWorker(service());
+    }
+  });
+}
+}  // namespace
+
+void startScan(const std::string& exe, bool force) {
+  ScanJob job;
+  job.force = force;
+  launch(exe, std::move(job));
+}
+
+void requestScan(const std::string& exe) {
+  Service& s = service();
+  {
+    std::lock_guard<std::mutex> g(s.lock);
+    if (s.closed || exe.empty()) return;
+    if (s.status.running) {
+      s.pending = true;  // the running worker scans again when it is done
+      return;
+    }
+  }
+  startScan(exe, false);
+}
+
+void rescanEntry(const std::string& exe, const std::string& format, const std::string& entry) { rescanEntries(exe, {{format, entry}}); }
+
+void rescanEntries(const std::string& exe, const std::vector<std::pair<std::string, std::string>>& entries) {
+  if (entries.empty()) return;
+  ScanJob job;
+  job.entries = entries;
+  launch(exe, std::move(job));
+}
+
+std::vector<std::pair<std::string, std::string>> discoverPluginEntries() { return discoverAll(); }
+
+void rescanFolder(const std::string& exe, const std::string& format, const std::string& folder) {
+  if (format != "*" && (!findFormat(format) || !folderSearchApplies(format))) return;
+  ScanJob job;
+  job.folders = {{format, folder}};  // K-71: searched on the worker (a big folder takes a while)
+  launch(exe, std::move(job));
+}
+
+uint64_t hostedClassesGeneration() { return gGeneration.load(); }
+
+bool scanRunning() { return service().running.load(); }
+
+ScanStatus scanStatus() {
+  Service& s = service();
+  const auto now = ScanClock::now();
+  const auto g = lockForRead(s);
+  ScanStatus st = s.status;
+  const Service::Slot* longest = nullptr;
+  for (const auto& sl : s.slots) {
+    if (sl.entry.empty()) continue;
+    ++st.active;
+    if (!longest || sl.start < longest->start) longest = &sl;
+  }
+  if (longest) {
+    st.current = longest->entry;
+    st.currentSeconds = std::chrono::duration<double>(now - longest->start).count();
+  }
+  return st;
+}
+
+std::string scanCurrentLabel(const ScanStatus& st) {
+  if (st.current.empty()) return {};
+  const size_t slash = st.current.find_last_of("/\\");  // the path's last part
+  std::string out = slash == std::string::npos ? st.current : st.current.substr(slash + 1);
+  if (st.currentSeconds >= 5) out += "  " + std::to_string(static_cast<int>(st.currentSeconds)) + " s";
+  return out;
+}
+
+std::vector<std::pair<std::string, std::string>> blacklist() {
+  Service& s = service();
+  std::lock_guard<std::mutex> g(s.lock);
+  std::vector<std::pair<std::string, std::string>> out;
+  for (const auto& e : s.cache.entries())
+    if (!e.ok) out.push_back({e.bundle, e.error});
+  return out;
+}
+
+std::vector<CacheEntry> cacheEntries() {
+  Service& s = service();
+  const auto g = lockForRead(s);
+  std::vector<CacheEntry> out;
+  out.reserve(s.cache.entries().size());
+  for (const auto& e : s.cache.entries()) {
+    out.push_back({e.format, e.bundle, e.error, e.ok, static_cast<int>(e.classes.size()), {}});
+    if (e.ok)  // K-180: the plugins of the entry that did not load, each on its own
+      for (const auto& f : e.failed) out.push_back({e.format, e.bundle, f.error, false, 0, f.name.empty() ? f.uid : f.name});
+  }
+  return out;
+}
+
+double scanReadLongestWait(bool reset) {
+  const int64_t ns = reset ? gReadLongestWaitNs.exchange(0) : gReadLongestWaitNs.load();
+  return static_cast<double>(ns) * 1e-9;
+}
+
+void stopScan() {
+  Service& s = service();
+  std::thread t;
+  {
+    std::lock_guard<std::mutex> g(s.lock);
+    t = std::move(s.worker);
+  }
+  if (t.joinable()) t.join();
+}
+
+void shutdownScan() {
+  Service& s = service();
+  {
+    std::lock_guard<std::mutex> g(s.lock);
+    s.closed = true;
+  }
+  s.cancel = true;
+  stopScan();
+}
+
+}  // namespace gl::host

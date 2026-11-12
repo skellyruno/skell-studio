@@ -1,0 +1,1533 @@
+// Gridline — browser content in the app: content index, drag & drop of
+// browser files, double-click actions and tempo-synced preview (BrowserUi.h).
+#include <algorithm>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <cstring>
+#include <map>
+#include <thread>
+#include <mutex>
+#include <set>
+#include <sstream>
+#include "../../third_party/imgui/imgui_internal.h"
+#include "../core/Json.h"
+#include "../core/LayerRack.h"
+#include "../core/TrackModes.h"
+#include "../core/I18n.h"
+#include "../core/MidiFile.h"
+#include "../core/MidiImport.h"
+#include "../core/PluginParams.h"
+#include "../core/Presets.h"
+#include "../core/flp/Flp.h"
+#include "../core/flp/FlpPresets.h"
+#include "../engine/LoopFile.h"
+#include "../engine/LoopImport.h"
+#include "../engine/pitch/Kernel.h"
+#include "../packs/Packs.h"
+#include "../packs/PacksUi.h"
+#include "App.h"
+#include "BrowserUi.h"
+#include "../core/RemoteFs.h"
+#include "../core/ProjectFiles.h"
+#include "../core/HydrogenKit.h"
+#include "CollabUi.h"
+#include "DrumKitUi.h"
+#include "ExternalDragUi.h"
+#include "PluginUI.h"
+#include "Theme.h"
+#include "Widgets.h"
+
+namespace gl::browserui {
+
+namespace fs = std::filesystem;
+using browse::DropAction;
+using browse::DropItem;
+using browse::DropTarget;
+using browse::Kind;
+
+// ------------------------------------------------------------------ index
+
+browse::Index& index() {
+  static browse::Index ix;
+  return ix;
+}
+
+std::string flDataDir() {
+  static std::string dir = [] {
+    std::string base = flp::defaultFactoryData();
+    std::error_code ec;
+    if (!base.empty() && fs::is_directory(fs::path(base) / "Data" / "Patches", ec)) return (fs::path(base) / "Data").string();
+    return std::string();
+  }();
+  return dir;
+}
+
+std::string contentDir(App& a, const char* name) { return (fs::path(a.configDir()) / name).string(); }
+
+namespace {
+bool indexStarted = false;
+
+// K-144: a browser click on an .sfz / .sf2 plays a note of it. The map loads and renders on a
+// worker (big maps take a while); the frame loop hands the result to the preview player.
+struct InstrumentPreview {
+  std::mutex mu;
+  std::string want;   // the latest click
+  SamplePtr ready;    // rendered, not yet played
+  std::string readyFor;
+  bool busy = false;
+};
+InstrumentPreview& instrumentPreview() {
+  static InstrumentPreview p;
+  return p;
+}
+SamplePtr renderInstrumentNote(const std::string& path) {
+  PluginState st = defaultPluginState("gl.multisampler");
+  st.data = path;
+  ChannelAux aux;
+  packs::prepareAux(st, aux);
+  std::unique_ptr<Generator> g = packs::createGenerator("gl.multisampler");
+  if (!g) return nullptr;
+  ProcessContext ctx;
+  ctx.sampleRate = 44100;
+  ctx.tempo = 120;
+  const size_t total = 44100 * 2, held = 44100 * 6 / 5;
+  auto s = std::make_shared<Sample>();
+  s->path = path;
+  s->sampleRate = 44100;
+  s->left.assign(total, 0.0f);
+  s->right.assign(total, 0.0f);
+  g->noteOn(1, 60, 0.8f, 0);
+  for (size_t p = 0; p < total; p += 512) {
+    if (p >= held && p < held + 512) g->noteOff(1, 0);
+    const int n = static_cast<int>(std::min<size_t>(512, total - p));
+    g->process(st, aux, ctx, s->left.data() + p, s->right.data() + p, n);
+  }
+  float peak = 0;
+  for (size_t i = 0; i < total; ++i) peak = std::max({peak, std::fabs(s->left[i]), std::fabs(s->right[i])});
+  return peak > 1e-5f ? s : nullptr;
+}
+void previewInstrument(const std::string& path) {
+  InstrumentPreview& p = instrumentPreview();
+  std::lock_guard<std::mutex> lk(p.mu);
+  p.want = path;
+  if (p.busy) return;  // the worker picks the latest click up when it is done
+  p.busy = true;
+  std::thread([] {
+    InstrumentPreview& q = instrumentPreview();
+    for (;;) {
+      std::string path;
+      {
+        std::lock_guard<std::mutex> lk(q.mu);
+        path = q.want;
+        q.want.clear();
+        if (path.empty()) {
+          q.busy = false;
+          return;
+        }
+      }
+      SamplePtr s = renderInstrumentNote(path);
+      std::lock_guard<std::mutex> lk(q.mu);
+      q.ready = s;
+      q.readyFor = s ? std::string() : path;
+    }
+  }).detach();
+}
+void tickInstrumentPreview(App& a) {
+  InstrumentPreview& p = instrumentPreview();
+  SamplePtr s;
+  std::string failed;
+  {
+    std::lock_guard<std::mutex> lk(p.mu);
+    s = std::move(p.ready);
+    p.ready.reset();
+    failed.swap(p.readyFor);
+  }
+  if (s) a.engine.preview(s);
+  else if (!failed.empty()) a.notify(std::string(i18n::tr("No note to preview in ")) + fs::path(failed).filename().string(), true);
+}
+
+std::vector<std::pair<std::string, bool>> indexRoots(App& a) {
+  std::vector<std::pair<std::string, bool>> roots;
+  const std::string fl = flDataDir();
+  if (!fl.empty()) {
+    const fs::path p = fs::path(fl) / "Patches";
+    roots.push_back({(p / "Packs").string(), true});
+    roots.push_back({(p / "Impulses").string(), true});
+    roots.push_back({(p / "Misc").string(), true});
+    roots.push_back({(p / "Scores").string(), false});
+    roots.push_back({(p / "Channel presets").string(), false});
+    roots.push_back({(p / "Mixer presets").string(), false});
+    roots.push_back({(p / "Plugin presets").string(), false});
+    roots.push_back({(fs::path(fl) / "Demo projects").string(), false});
+  }
+  roots.push_back({presetRoot(a.configDir()), false});
+  for (const char* d : {"Recorded", "Rendered", "Sliced audio", "Edited audio", "Seltmann loops", "Clipboard files"}) roots.push_back({contentDir(a, d), true});
+  // User folders: only those added in the browser (never the default guesses).
+  std::ifstream in(fs::path(a.configDir()) / "browser-folders.txt");
+  for (std::string l; std::getline(in, l);)
+    if (!l.empty()) roots.push_back({l, true});
+  return roots;
+}
+}  // namespace
+
+void ensureIndex(App& a) {
+  if (indexStarted || thumbMode()) return;
+  indexStarted = true;
+  browse::Index& ix = index();
+  ix.setCacheFile((fs::path(a.configDir()) / "browser-index.json").string());
+  ix.load();
+  ix.setRoots(indexRoots(a));
+  ix.stopAtExit();  // K-W: inside a plugin nothing calls shutdownIndex()
+  ix.start();
+}
+
+namespace {
+double lastPass = 0;
+}
+
+void tickIndex(App& a) {
+  tickInstrumentPreview(a);
+  if (!indexStarted || index().busy()) return;
+  if (lastPass <= 0) lastPass = a.now;
+  if (a.now - lastPass > 240.0) {
+    lastPass = a.now;
+    refreshIndex(a);
+  }
+}
+
+void shutdownIndex() {
+  if (indexStarted) index().stop();
+}
+
+void refreshIndex(App& a) {
+  if (!indexStarted) return ensureIndex(a);
+  index().setRoots(indexRoots(a));
+  index().start();
+}
+
+// ------------------------------------------------------------- drop items
+
+namespace {
+
+struct Decoded {
+  DropItem item;
+  PluginState state;
+  ChainPreset chain;
+  Json layer;  // K-169: a layer preset
+  std::string name;
+  bool ok = false;
+  std::string error;
+};
+
+// Library preset (.json): its plugin type; FL preset (.fst): decoded.
+const Decoded& decodeItem(const std::string& path) {
+  static std::map<std::string, Decoded> cache;
+  auto it = cache.find(path);
+  if (it != cache.end()) return it->second;
+  if (cache.size() > 96) cache.clear();
+  Decoded d;
+  d.item.kind = browse::kindOf(path);
+  d.name = fs::path(path).stem().string();
+  if (d.item.kind == Kind::Preset && isForeignPresetFile(path)) {  // Serum presets: Plasma opens them
+    d.item.pluginType = foreignPresetType(path);
+    if (const PluginInfo* info = findPlugin(d.item.pluginType)) {
+      d.item.pluginKind = info->kind;
+      d.ok = loadPreset(path, d.item.pluginType, d.state);
+    }
+    if (!d.ok) d.item.kind = Kind::Other, d.error = "Not a Serum preset Plasma can open";
+  } else if (d.item.kind == Kind::Preset) {
+    std::ifstream in(path, std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    Json j;
+    if (jsonParse(ss.str(), j)) {
+      d.item.pluginType = j.text("type");
+      if (const PluginInfo* info = findPlugin(d.item.pluginType)) {
+        d.item.pluginKind = info->kind;
+        d.ok = loadPreset(path, d.item.pluginType, d.state);
+      }
+    }
+    if (!d.ok) d.item.kind = Kind::Other, d.error = "Unknown preset";
+  } else if (d.item.kind == Kind::Layer) {  // K-169
+    d.ok = layer::readPreset(path, d.layer, &d.error);
+    if (!d.ok) d.item.kind = Kind::Other;
+  } else if (d.item.kind == Kind::Chain) {
+    d.ok = loadChain(path, d.chain);
+    if (!d.ok) d.item.kind = Kind::Other;
+  } else if (d.item.kind == Kind::Fst) {
+    flp::PresetResult r;
+    if (flp::importFlPreset(path, r, flp::defaultFactoryData())) {
+      if (r.kind == flp::PresetResult::Plugin && findPlugin(r.state.type)) {
+        d.item.kind = Kind::Preset;
+        d.item.pluginType = r.state.type;
+        d.item.pluginKind = findPlugin(r.state.type)->kind;
+        d.state = r.state;
+        d.ok = true;
+      } else if (r.kind == flp::PresetResult::Chain) {
+        d.item.kind = Kind::Chain;
+        d.chain = r.chain;
+        d.ok = true;
+      } else {
+        d.item.kind = Kind::Other;
+        d.error = "No Gridline equivalent for this preset";
+      }
+    } else {
+      d.item.kind = Kind::Other;
+      d.error = r.error.empty() ? "Cannot read this FL Studio preset" : r.error;
+      if (!r.unmapped.empty()) d.error = "No Gridline equivalent for " + r.unmapped.front();
+    }
+  } else if (d.item.kind == Kind::Other && hydrogen::isKitFolder(path)) {  // K-162: a drum kit's folder
+    d.item.kind = Kind::DrumKit;
+    d.name = fs::path(path).filename().string();
+    d.ok = true;
+  } else {
+    d.ok = browse::listable(d.item.kind);
+  }
+  return cache.emplace(path, std::move(d)).first->second;
+}
+
+// Plugin shown by a plugin window / in a mixer slot.
+const PluginInfo* targetInfo(App& a, DropTarget target, const DropPlace& place) {
+  const Song& s = a.doc.song();
+  if (target == DropTarget::PluginWindow) return PluginTarget{place.owner, place.pluginSlot}.info(s);
+  if (target == DropTarget::Rack && place.channel != kNoId) return PluginTarget{place.channel, -1}.info(s);  // J-75: a channel row
+  if (target == DropTarget::MixerSlot)
+    if (const MixerTrack* m = s.mixerTrack(place.mixer); m && place.slot >= 0 && place.slot < kEffectSlots)
+      return findPlugin(m->slots[static_cast<size_t>(place.slot)].plugin.type);
+  return nullptr;
+}
+
+// Whether the target plugin takes a dropped sample (J-97): channel rows only
+// for the sample players, plugin windows for every plugin holding a sample.
+bool takesSample(DropTarget target, const PluginInfo* ti) {
+  if (!ti) return false;
+  if (target == DropTarget::Rack) return xdrop::rowTakesSample(ti->type);
+  if (target == DropTarget::PluginWindow) return xdrop::sampleSlot(ti->type) != xdrop::SampleSlot::None;
+  return ti->usesSample;
+}
+
+// Convolver: the impulse source is the "File" choice (the default is a generated space).
+void useFileSource(PluginState& st) {
+  if (st.type != "gl.convolver") return;
+  if (const PluginInfo* ci = findPlugin(st.type))
+    for (size_t i = 0; i < ci->params.size() && i < st.params.size(); ++i)
+      if (ci->params[i].kind == ParamKind::Choice)
+        for (size_t c = 0; c < ci->params[i].choices.size(); ++c)
+          if (ci->params[i].choices[c] == "File") st.params[i] = static_cast<float>(c);
+}
+
+int freeSlot(const MixerTrack& m) {
+  for (int k = 0; k < kEffectSlots; ++k)
+    if (m.slots[static_cast<size_t>(k)].plugin.empty()) return k;
+  return -1;
+}
+
+ObjectId mixerOf(App& a, const DropPlace& place) {
+  if (place.mixer != kNoId) return place.mixer;
+  if (a.selMixer != kNoId) return a.selMixer;
+  return a.doc.song().mixer.empty() ? kNoId : a.doc.song().mixer.front().id;
+}
+
+std::string payloadPath(const ImGuiPayload* pl) {
+  return pl && pl->Data ? std::string(static_cast<const char*>(pl->Data), static_cast<size_t>(pl->DataSize)) : std::string();
+}
+
+// J-97: replaces channel `ch`'s content in one undo step: its instrument
+// (`type`; FL "Replace"), optionally with a preset's state and / or a sample.
+// Routing, volume, pan, colour, steps and notes stay (they belong to the
+// channel, not its instrument). The channel takes `newName` only when its old
+// name was automatic (channelNameIsAutomatic).
+bool replaceChannel(App& a, ObjectId ch, const std::string& type, const PluginState* preset, const std::string& sample, const std::string& newName,
+                    const std::string& label) {
+  const Channel* c = a.doc.song().channel(ch);
+  if (!c || !findPlugin(type)) return false;
+  const bool rename = !newName.empty() && newName != c->name && channelNameIsAutomatic(*c);  // J-213: the rule the core replace uses
+  const bool newType = c->plugin.type != type;
+  a.doc.beginGroup(label);
+  bool ok = !newType || a.doc.setChannelPlugin(ch, type);
+  if (ok && (preset || !sample.empty() || rename))
+    ok = a.doc.editChannel(ch, label, [&](Channel& x) {
+      if (preset) {
+        const std::string keep = x.plugin.data;
+        x.plugin = *preset;
+        if (x.plugin.data.empty()) x.plugin.data = keep;  // presets without their own data keep the sample
+      }
+      if (!sample.empty()) x.plugin.data = xdrop::withSample(x.plugin.type, x.plugin.data, sample);
+      if (rename) x.name = newName;
+    });
+  a.doc.endGroup();
+  return ok;
+}
+
+// Adds a channel (instrument `type`, optional sample) at channel index `at`
+// (< 0: after the selected channel, as the add-channel button does).
+ObjectId addChannelAt(App& a, const std::string& type, const std::string& sample, int at) {
+  a.doc.beginGroup("add channel");
+  const ObjectId id = a.addInstrument(type, sample);
+  if (id != kNoId && at >= 0) a.doc.moveChannel(id, std::min(at, static_cast<int>(a.doc.song().channels.size()) - 1));
+  a.doc.endGroup();
+  return id;
+}
+
+}  // namespace
+
+bool loadChannelSample(App& a, ObjectId channel, const std::string& path, const char* label, bool keepSampleInstrument) {
+  const Channel* c = a.doc.song().channel(channel);
+  if (!c || path.empty()) return false;
+  const bool keep = keepSampleInstrument ? xdrop::sampleSlot(c->plugin.type) != xdrop::SampleSlot::None : xdrop::rowTakesSample(c->plugin.type);
+  const std::string type = keep ? c->plugin.type : std::string("gl.sampler");
+  return replaceChannel(a, channel, type, nullptr, path, fs::path(path).stem().string(), label ? label : "replace sample");
+}
+
+void fileDragSource(const std::string& path, const char* label) {
+  if (!ImGui::BeginDragDropSource()) return;
+  const bool audio = browse::kindOf(path) == Kind::Audio;
+  ImGui::SetDragDropPayload(audio ? "GL_FILE" : "GL_ITEM", path.data(), path.size());
+  const std::string name = label ? std::string(label) : fs::path(path).filename().string();
+  const Kind k = browse::kindOf(path);
+  const ui::Icon icon = audio ? ui::Icon::Wave
+                        : k == Kind::Midi || k == Kind::Score ? ui::Icon::Piano
+                        : k == Kind::Chain ? ui::Icon::Mixer
+                        : k == Kind::Layer ? ui::Icon::Rack  // K-169
+                        : k == Kind::DrumKit ? ui::Icon::CatDrums  // K-162
+                        : k == Kind::Project || k == Kind::Flp ? ui::Icon::Song
+                        : k == Kind::Image                     ? ui::Icon::Paint  // J-184
+                        : k == Kind::Instrument                ? ui::Icon::CatSampler  // K-144
+                                                               : ui::Icon::Settings;
+  ui::DragPreview(icon, name.c_str(), audio ? theme::rgb(theme::role::kPaint) : 0);
+  ImGui::EndDragDropSource();
+}
+
+DropAction dropActionFor(App& a, const std::string& path, DropTarget target, const DropPlace& place) {
+  const Decoded& d = decodeItem(path);
+  if (!d.ok) return DropAction::None;
+  const PluginInfo* ti = targetInfo(a, target, place);
+  return browse::dropAction(d.item, target, ti ? ti->type : "", takesSample(target, ti));
+}
+
+// ------------------------------------------------- several files (J-75)
+
+browse::DropItem dropItemFor(const xdrop::Item& it) {
+  browse::DropItem d;
+  if (it.dir) {
+    d.kind = xdrop::kindOf(it);  // a folder, or a drum kit's folder (K-162)
+  } else if (it.pending || it.path.empty()) {
+    d.kind = xdrop::kindOf(it);
+  } else {
+    const Decoded& dec = decodeItem(it.path);
+    d = dec.item;
+    if (!dec.ok && d.kind != Kind::Other) d.kind = Kind::Other;
+  }
+  return d;
+}
+
+namespace {
+
+struct HoverState {
+  HoverPlan plan;
+  int frame = -1;
+} gHover;
+
+// Seconds of audio files, from their headers (hover runs every frame).
+double cachedSeconds(const std::string& path) {
+  static std::map<std::string, double> cache;
+  auto it = cache.find(path);
+  if (it != cache.end()) return it->second;
+  if (cache.size() > 256) cache.clear();
+  double s = xdrop::audioHeaderSeconds(path);
+  if (s < 0) {
+    browse::FileMeta meta;
+    if (index().lookup(path, meta) && meta.seconds > 0) s = meta.seconds;
+  }
+  return cache[path] = s;
+}
+
+std::string targetName(App& a, DropTarget target, const DropPlace& place) {
+  const Song& s = a.doc.song();
+  if (target == DropTarget::Rack && place.channel != kNoId)
+    if (const Channel* c = s.channel(place.channel)) return c->name;
+  if (target == DropTarget::PluginWindow) {
+    if (place.pluginSlot < 0) {
+      if (const Channel* c = s.channel(place.owner)) return c->name;
+    } else if (const PluginInfo* i = PluginTarget{place.owner, place.pluginSlot}.info(s)) {
+      return i->name;
+    }
+  }
+  return "";
+}
+
+std::vector<xdrop::Item> payloadItems(const ImGuiPayload* pl) {
+  if (pl->IsDataType("GL_FILES") || xdragui::ownsPayload(pl)) return xdragui::items();
+  xdrop::Item it;
+  it.path = payloadPath(pl);
+  it.name = fs::path(it.path).filename().string();
+  return {it};
+}
+
+// J-110: the file of an audio clip source dragged from the playlist picker.
+// Empty (with `why`) when it is not audio or its file is not complete on disk
+// yet (a take still being written: the recorder writes it when it stops).
+std::vector<xdrop::Item> clipSourceItems(App& a, const ImGuiPayload* pl, std::string& why) {
+  if (!pl || !pl->Data || pl->DataSize != static_cast<int>(sizeof(ClipSrcPayload))) return {};
+  ClipSrcPayload ps{};
+  std::memcpy(&ps, pl->Data, sizeof ps);
+  if (ps.kind != static_cast<int>(ClipKind::Audio)) return {};
+  const Channel* ch = a.doc.song().channel(ps.id);
+  if (!ch || ch->plugin.data.empty()) return {};
+  std::string path = ch->plugin.data;
+  if (const size_t nl = path.find('\n'); nl != std::string::npos) path.resize(nl);
+  std::error_code ec;
+  const bool written = fs::is_regular_file(path, ec) && fs::file_size(path, ec) > 44 && !ec;
+  if (!written || (a.audioRecSession && a.audioRecFinishing)) {
+    why = i18n::tr("This recording is still being written: drop it again in a moment");
+    return {};
+  }
+  xdrop::Item it;
+  it.path = path;
+  it.name = fs::path(path).filename().string();
+  return {it};
+}
+
+void drawTargetHighlight(const ImRect& r) {
+  const auto& P = theme::pal();
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  ImRect b = r;
+  b.Expand(-1.5f);
+  dl->AddRectFilled(b.Min, b.Max, theme::withAlpha(P.hot, 0.08f), theme::kRadiusSm);
+  dl->AddRect(b.Min, b.Max, theme::withAlpha(P.hot, 0.85f), theme::kRadiusSm, 0, 2.0f);
+}
+
+}  // namespace
+
+xdrop::Mods currentMods() {
+  const ImGuiIO& io = ImGui::GetIO();
+  xdrop::Mods m;
+  m.shift = io.KeyShift;
+  m.alt = io.KeyAlt;
+  m.ctrl = io.KeyCtrl;
+  return m;
+}
+
+xdrop::Plan planFor(App& a, const std::vector<xdrop::Item>& items, DropTarget target, const DropPlace& place, const xdrop::Mods& mods) {
+  const Song& s = a.doc.song();
+  xdrop::Context ctx;
+  ctx.target = target;
+  if (const PluginInfo* ti = targetInfo(a, target, place)) {
+    ctx.targetType = ti->type;
+    ctx.targetUsesSample = takesSample(target, ti);
+  }
+  ctx.onChannel = target == DropTarget::Rack && place.channel != kNoId;
+  ctx.insertHere = target == DropTarget::Rack && place.channel == kNoId && place.insertAt >= 0;
+  ctx.targetName = targetName(a, target, place);
+  ctx.track = place.track;
+  ctx.tick = place.tick;
+  ctx.barTicks = std::max<Tick>(1, s.barTicks());
+  ctx.trackCount = std::max(1, static_cast<int>(s.tracks.size()));
+  ctx.fallbackLength = ctx.barTicks;
+  std::vector<browse::DropItem> kinds;
+  for (const xdrop::Item& it : items) {
+    kinds.push_back(dropItemFor(it));
+    Tick len = 0;
+    if (target == DropTarget::Playlist && !it.pending && kinds.back().kind == Kind::Audio) {
+      const double sec = cachedSeconds(it.path);
+      browse::FileMeta meta;
+      const double bpm = previewSync() ? (index().lookup(it.path, meta) && meta.bpm > 0 ? meta.bpm : browse::bpmFromName(it.name)) : 0;
+      if (sec > 0) len = std::max<Tick>(1, static_cast<Tick>(std::llround(sec * (bpm > 0 ? bpm : s.tempo) / 60.0 * s.ppq)));
+    }
+    ctx.lengths.push_back(len);
+  }
+  return xdrop::plan(items, kinds, ctx, mods);
+}
+
+const HoverPlan* hoverPlan(DropTarget target) {
+  if (gHover.frame != ImGui::GetFrameCount() || gHover.plan.target != target) return nullptr;
+  return &gHover.plan;
+}
+
+bool acceptFileDrop(App& a, DropTarget target, const DropPlace& place) { return acceptFileDrop(a, target, place, nullptr); }
+
+bool acceptFileDrop(App& a, DropTarget target, const DropPlace& place, DropFeedback* fb) {
+  const ImGuiPayload* cur = ImGui::GetDragDropPayload();
+  if (!cur) return false;
+  // J-110: the playlist picker's audio clip sources (recordings, renders, loops)
+  // load into a plugin window or onto a channel row like browser audio files.
+  const bool clipSrc = cur->IsDataType("GL_CLIPSRC") && (target == DropTarget::PluginWindow || (target == DropTarget::Rack && place.channel != kNoId));
+  const char* type = cur->IsDataType("GL_FILE")    ? "GL_FILE"
+                     : cur->IsDataType("GL_ITEM")  ? "GL_ITEM"
+                     : cur->IsDataType("GL_FILES") ? "GL_FILES"
+                     : clipSrc                     ? "GL_CLIPSRC"
+                                                   : nullptr;
+  if (!type) return false;
+  std::vector<xdrop::Item> items;
+  if (clipSrc) {
+    std::string why;
+    items = clipSourceItems(a, cur, why);
+    if (items.empty()) {
+      if (!why.empty()) {
+        ImGui::SetTooltip("%s", why.c_str());
+        a.setHint(why);
+        ImGui::SetMouseCursor(ImGuiMouseCursor_NotAllowed);
+      }
+      return false;
+    }
+  } else {
+    items = payloadItems(cur);
+  }
+  if (items.empty()) return false;
+  const xdrop::Mods mods = currentMods();
+  const xdrop::Plan p = planFor(a, items, target, place, mods);
+  if (!p.accepted()) {
+    if (!p.label.empty()) {
+      ImGui::SetTooltip("%s", p.label.c_str());
+      a.setHint(p.label);
+      ImGui::SetMouseCursor(ImGuiMouseCursor_NotAllowed);
+    }
+    return false;
+  }
+  const ImRect rect = GImGui->DragDropTargetRect;
+  const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(type, ImGuiDragDropFlags_AcceptNoDrawDefaultRect | ImGuiDragDropFlags_AcceptBeforeDelivery);
+  if (!pl) return false;
+  if (!pl->Delivery) {
+    // J-160: only the target that takes the drop lights up (a smaller target inside this one,
+    // such as a Platter deck inside its plugin window, wins and draws its own)
+    if (pl->Preview && (!fb || fb->highlight)) drawTargetHighlight(rect);
+    if (fb) fb->hovering = true;
+    ImGui::SetTooltip("%s", p.label.c_str());
+    a.setHint(p.label);
+    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    gHover.plan = HoverPlan{target, p, items};
+    gHover.frame = ImGui::GetFrameCount();
+    return false;
+  }
+  xdragui::markConsumed();
+  return performItems(a, items, target, place, mods);
+}
+
+void pluginWindowDropTarget(App& a, const PluginTarget& t) {
+  ImGuiWindow* w = ImGui::GetCurrentWindow();
+  if (!w || !ImGui::GetDragDropPayload()) return;
+  const ImGuiPayload* pl = ImGui::GetDragDropPayload();
+  if (!pl->IsDataType("GL_FILE") && !pl->IsDataType("GL_ITEM") && !pl->IsDataType("GL_FILES") && !pl->IsDataType("GL_PLUGIN") &&
+      !pl->IsDataType("GL_CLIPSRC"))  // J-110: audio clip sources from the playlist picker
+    return;
+  if (ImGui::BeginDragDropTargetCustom(w->Rect(), w->ID)) {
+    DropPlace place;
+    place.owner = t.owner;
+    place.pluginSlot = t.slot;
+    acceptFileDrop(a, DropTarget::PluginWindow, place);
+    acceptPluginDrop(a, DropTarget::PluginWindow, place);  // J-97: replace the shown instrument / effect
+    ImGui::EndDragDropTarget();
+  }
+}
+
+std::string draggedAudioFile(App& a, const ImGuiPayload* pl, std::string* why) {
+  if (!pl) return "";
+  auto audio = [](const std::string& p) { return !p.empty() && browse::kindOf(p) == Kind::Audio; };
+  if (pl->IsDataType("GL_CLIPSRC")) {
+    std::string w;
+    const std::vector<xdrop::Item> it = clipSourceItems(a, pl, w);
+    if (why) *why = w;
+    return !it.empty() && audio(it.front().path) ? it.front().path : std::string();
+  }
+  if (pl->IsDataType("GL_CHANNEL")) {  // a channel rack row: the sample it plays
+    if (!pl->Data || pl->DataSize != static_cast<int>(sizeof(ObjectId))) return "";
+    ObjectId id = kNoId;
+    std::memcpy(&id, pl->Data, sizeof id);
+    const Channel* c = a.doc.song().channel(id);
+    if (!c || c->plugin.type == "gl.platter" || xdrop::sampleSlot(c->plugin.type) == xdrop::SampleSlot::None) return "";
+    const std::string p = c->plugin.data.substr(0, c->plugin.data.find('\n'));
+    std::error_code ec;
+    return audio(p) && fs::is_regular_file(p, ec) ? p : std::string();
+  }
+  if (!pl->IsDataType("GL_FILE") && !pl->IsDataType("GL_ITEM") && !pl->IsDataType("GL_FILES")) return "";
+  bool waiting = false;
+  for (const xdrop::Item& it : payloadItems(pl)) {
+    if (it.dir) continue;
+    if (it.pending || it.path.empty()) {
+      waiting = waiting || xdrop::kindOf(it) == Kind::Audio;
+      continue;
+    }
+    if (audio(it.path)) return it.path;
+  }
+  if (waiting && why) *why = i18n::tr("This file is still on its way: drop it again in a moment");
+  return "";
+}
+
+namespace {
+
+// K-161: Ctrl held while dropping a sliced loop on the playlist: a plain audio clip instead of
+// a slicer channel and its pattern. Set by performItems for the steps of one drop.
+bool gPlainLoopClip = false;
+
+// K-161: what a dropped file says about itself as a loop (sliced, tagged, AIFF and WAV loops).
+bool loopFacts(const std::string& path, loopfile::Info& li) { return !remotefs::isRemote(path) && loopfile::read(path, li); }
+bool slicedLoop(const loopfile::Info& li) { return li.format == loopfile::Format::Sliced && !li.slices.empty(); }
+
+// K-161: a sliced loop as a slicer channel playing its pattern (and a pattern clip on the playlist
+// when `track` >= 0). One undo step with the rest of the drop.
+bool addSlicedLoop(App& a, const std::string& path, const loopfile::Info& li, int track, Tick start, int insertAt, ObjectId* made) {
+  loopimport::Result r;
+  a.doc.editSong("add sliced loop", [&](Song& sg) { r = loopimport::addSlicedLoop(sg, path, li, track, start); });
+  if (r.channel == kNoId) {
+    a.notify(i18n::tr("This loop has no slices"), true);
+    return false;
+  }
+  if (insertAt >= 0) a.doc.moveChannel(r.channel, std::min(insertAt, static_cast<int>(a.doc.song().channels.size()) - 1));
+  a.selectChannel(r.channel);
+  a.selectPattern(r.pattern);
+  if (made && r.clip != kNoId) *made = r.clip;
+  char msg[160];
+  if (r.joined > 0)
+    std::snprintf(msg, sizeof msg, i18n::tr("%d slices on a new slicer channel (%d short ones joined to fit the keys)"), r.slices, r.joined);
+  else
+    std::snprintf(msg, sizeof msg, i18n::tr("%d slices on a new slicer channel, playing in time with the song"), r.slices);
+  a.notify(msg);
+  return true;
+}
+
+// K-161: the notice for a loop set to follow the song tempo.
+void notifyFollows(App& a, double bpm) {
+  char msg[160];
+  std::snprintf(msg, sizeof msg, i18n::tr("Follows the song tempo from its own %.1f BPM (undo to keep it as it is)"), bpm);
+  a.notify(msg);
+}
+
+// One step of a drop. `made`: the clip an AudioClip / MidiPatternClip step added.
+bool runAction(App& a, const std::string& path, DropAction act, DropTarget target, const DropPlace& place, bool direct, ObjectId* made) {
+  const Decoded& d = decodeItem(path);
+  const std::string fname = fs::path(path).filename().string();
+  switch (act) {
+    case DropAction::None:
+      return false;
+    case DropAction::NewSamplerChannel:
+    {
+      loopfile::Info li;
+      const bool facts = loopFacts(path, li);
+      if (facts && slicedLoop(li)) {  // K-161: a sliced loop: slicer channel + its pattern
+        if (!addSlicedLoop(a, path, li, -1, 0, target == DropTarget::Rack ? place.insertAt : -1, nullptr)) return false;
+        a.showNewInstrument(a.selChannel);
+        return true;
+      }
+      const ObjectId id = addChannelAt(a, "gl.sampler", path, target == DropTarget::Rack ? place.insertAt : -1);
+      if (id != kNoId && facts && li.loop && li.bpm > 0) {  // K-161: a loop that states its tempo follows the song's
+        a.doc.editChannel(id, "follow the song tempo", [&](Channel& c) { loopimport::followTempo(c.plugin, li.bpm); });
+        notifyFollows(a, li.bpm);
+      }
+      a.showNewInstrument(id);
+      return id != kNoId;
+    }
+    case DropAction::ReplaceInstrument:  // J-97: another instrument's row becomes a sampler with the file
+      if (!replaceChannel(a, place.channel, "gl.sampler", nullptr, path, fs::path(path).stem().string(), "replace with sampler")) return false;
+      a.showNewInstrument(place.channel);  // K-125
+      return true;
+    case DropAction::ReplaceFromPreset: {  // J-97: the row's instrument from a preset (FL "Replace")
+      if (d.item.pluginType.empty() || !replaceChannel(a, place.channel, d.item.pluginType, &d.state, "", d.name, "replace instrument")) return false;
+      pui::presetLoaded(PluginTarget{place.channel, -1}, d.item.pluginType, d.name);  // J-213: the plugin view shows that preset
+      a.showNewInstrument(place.channel);  // K-125
+      return true;
+    }
+    case DropAction::AudioClip: {
+      loopfile::Info li;
+      const bool facts = loopFacts(path, li);
+      // K-161: a sliced loop: slicer channel + pattern clip (Ctrl: the audio as one clip).
+      if (facts && slicedLoop(li) && !gPlainLoopClip)
+        return addSlicedLoop(a, path, li, std::clamp(place.track, 0, kMaxPlaylistTracks - 1), std::max<Tick>(0, place.tick), -1, made);
+      SamplePtr s = sampleCache().get(path);
+      if (!s || s->frames() == 0) {
+        a.notify("Cannot decode " + fname, true);
+        return false;
+      }
+      browse::FileMeta meta;
+      const bool ownTempo = facts && li.loop && li.bpm > 0;  // K-161: the file states its tempo
+      const double bpm = ownTempo ? li.bpm : index().lookup(path, meta) && meta.bpm > 0 ? meta.bpm : browse::bpmFromName(fname);
+      a.doc.beginGroup("add audio clip");
+      ObjectId ch = a.addInstrument("gl.sampler", path);
+      const int track = std::clamp(place.track, 0, kMaxPlaylistTracks - 1);
+      const Tick start = std::max<Tick>(0, place.tick);
+      const bool sync = ownTempo || (previewSync() && bpm > 0);
+      if (ownTempo)  // K-161: stretched to the song tempo, its pitch kept
+        a.doc.editChannel(ch, "", [](Channel& c) {
+          if (c.plugin.params.size() > static_cast<size_t>(pp::SmpStretchMode)) c.plugin.params[pp::SmpStretchMode] = 1.0f;
+        });
+      a.doc.editSong("add audio clip", [&](Song& sg) {
+        Clip c;
+        c.id = sg.allocateId();
+        c.kind = ClipKind::Audio;
+        c.source = ch;
+        c.track = track;
+        c.start = start;
+        double seconds = s->seconds();
+        // K-161: a sliced loop as one clip: its loop region, as long as its beats.
+        if (facts && li.format == loopfile::Format::Sliced && li.loopEnd > li.loopStart && s->sampleRate > 0) {
+          c.audioStart = static_cast<double>(li.loopStart) / s->sampleRate;
+          c.audioEnd = static_cast<double>(li.loopEnd) / s->sampleRate;
+          seconds = c.audioEnd - c.audioStart;
+        }
+        const double beats = seconds * (sync ? bpm : sg.tempo) / 60.0;
+        c.length = std::max<Tick>(1, static_cast<Tick>(std::llround(beats * sg.ppq)));
+        if (sync) c.syncBpm = bpm;
+        if (!sg.tracks.empty()) c.track = std::min(track, static_cast<int>(sg.tracks.size()) - 1);
+        c.track = trackmodes::placeAudioClip(sg, c.track, ch);  // PL-08: audio tracks route it, instrument tracks pass it on
+        sg.playlist.push_back(c);
+        a.playlist.selected = {c.id};
+        if (made) *made = c.id;
+      });
+      a.doc.endGroup();
+      if (ownTempo) notifyFollows(a, bpm);
+      return true;
+    }
+    case DropAction::ReplaceSample:
+    case DropAction::LoadSample: {
+      PluginTarget t = act == DropAction::ReplaceSample ? PluginTarget{place.channel, -1} : PluginTarget{place.owner, place.pluginSlot};
+      if (t.isChannel()) {  // J-97: the channel keeps a name the user gave it
+        if (!loadChannelSample(a, t.owner, path, act == DropAction::ReplaceSample ? "replace sample" : "load sample", act == DropAction::LoadSample)) return false;
+        if (act == DropAction::ReplaceSample) a.selectChannel(t.owner);
+        // K-161: a slicer takes a loop file's own slices (sliced loops, tagged loops' beat markers).
+        loopfile::Info li;
+        const Channel* c = a.doc.song().channel(t.owner);
+        loopimport::Sliced sl;
+        if (c && c->plugin.type == "gl.slicer" && loopFacts(path, li) && loopimport::slicerFor(path, li, sl)) {
+          a.doc.editChannel(t.owner, "", [&](Channel& x) { x.plugin = sl.state; });
+          char msg[120];
+          std::snprintf(msg, sizeof msg, i18n::tr("Cut at the file's own %d slices"), static_cast<int>(sl.slices.size()));
+          a.notify(msg);
+        }
+        return true;
+      }
+      if (const PluginState* st = t.state(a.doc.song())) {
+        PluginState ns = *st;
+        ns.data = xdrop::withSample(ns.type, ns.data, path);  // J-97: the plugin's own settings after the path stay
+        useFileSource(ns);
+        setPluginState(a, t, ns, "load sample");
+        return true;
+      }
+      return false;
+    }
+    case DropAction::ConvolverIR: {
+      ObjectId mid = mixerOf(a, place);
+      const MixerTrack* m = a.doc.song().mixerTrack(mid);
+      if (!m) return false;
+      int k = target == DropTarget::MixerSlot && place.slot >= 0 ? place.slot : freeSlot(*m);
+      if (k < 0) {
+        a.notify("No free effect slot on this track", true);
+        return false;
+      }
+      PluginState ir = defaultPluginState("gl.convolver");
+      if (ir.empty()) return false;
+      ir.data = path;
+      useFileSource(ir);
+      a.doc.editMixerTrack(mid, "load impulse response", [&](MixerTrack& t) {
+        t.slots[static_cast<size_t>(k)].plugin = ir;
+        t.slots[static_cast<size_t>(k)].enabled = true;
+      });
+      a.fxEditor = {mid, k};
+      a.selMixer = mid;
+      return true;
+    }
+    case DropAction::ApplyPreset: {
+      PluginTarget t{place.owner, place.pluginSlot};
+      const PluginState* st = t.state(a.doc.song());
+      if (!st) return false;
+      PluginState ns = d.state;
+      if (ns.data.empty()) ns.data = st->data;  // presets without their own data keep the sample
+      setPluginState(a, t, ns, "load preset");
+      pui::presetLoaded(t, ns.type, d.name);  // J-213: the header shows the dropped preset
+      a.notify("Loaded preset " + d.name);
+      return true;
+    }
+    case DropAction::NewChannelFromPreset: {
+      a.doc.beginGroup("add channel from preset");
+      ObjectId id = addChannelAt(a, d.item.pluginType, "", target == DropTarget::Rack ? place.insertAt : -1);
+      if (id != kNoId) {
+        PluginState ns = d.state;
+        a.doc.editChannel(id, "", [&](Channel& c) {
+          c.plugin = ns;
+          c.name = d.name;
+        });
+        pui::presetLoaded(PluginTarget{id, -1}, ns.type, d.name);
+      }
+      a.doc.endGroup();
+      a.showNewInstrument(id);
+      return id != kNoId;
+    }
+    case DropAction::InsertEffectPreset: {
+      ObjectId mid = mixerOf(a, place);
+      const MixerTrack* m = a.doc.song().mixerTrack(mid);
+      if (!m) return false;
+      int k = target == DropTarget::MixerSlot && place.slot >= 0 ? place.slot : freeSlot(*m);
+      if (k < 0) {
+        a.notify("No free effect slot on this track", true);
+        return false;
+      }
+      PluginState ns = d.state;
+      a.doc.editMixerTrack(mid, "insert effect preset", [&](MixerTrack& t) {
+        t.slots[static_cast<size_t>(k)].plugin = ns;
+        t.slots[static_cast<size_t>(k)].enabled = true;
+      });
+      a.fxEditor = {mid, k};
+      a.selMixer = mid;
+      return true;
+    }
+    case DropAction::ApplyChain: {
+      ObjectId mid = mixerOf(a, place);
+      if (!a.doc.song().mixerTrack(mid)) return false;
+      const ChainPreset c = d.chain;
+      a.doc.editMixerTrack(mid, "load effect chain", [&c](MixerTrack& m) {
+        m.slots.assign(kEffectSlots, EffectSlot{});
+        for (size_t k = 0; k < c.slots.size() && k < m.slots.size(); ++k) {
+          m.slots[k].plugin = c.slots[k];
+          if (k < c.mix.size()) m.slots[k].mix = c.mix[k];
+        }
+      });
+      a.selMixer = mid;
+      a.notify("Loaded effect chain " + d.name);
+      return true;
+    }
+    case DropAction::ImportMidiChannels:
+    case DropAction::MidiPatternClip: {
+      if (act == DropAction::ImportMidiChannels && !direct) {  // one file: the import options dialog
+        a.importMidi(path);
+        return true;
+      }
+      MidiFileData m;
+      std::string err;
+      if (!readMidiFile(path, m, &err)) {
+        a.notify("MIDI import failed: " + err, true);
+        return false;
+      }
+      if (m.format == 0 || m.tracks.size() == 1) splitTracksByChannel(m);
+      MidiImportOptions o;
+      o.placeInPlaylist = act == DropAction::ImportMidiChannels;
+      o.tempo = o.timeSignature = o.markers = false;  // a dropped file adds a pattern; the song keeps its tempo and meter
+      MidiImportResult r;
+      a.doc.editSong("import MIDI", [&](Song& s) { r = importMidiIntoSong(s, m, fs::path(path).stem().string(), o); });
+      if (!r.error.empty() || r.pattern == kNoId) {
+        a.notify("MIDI import: " + (r.error.empty() ? std::string("no notes") : r.error), true);
+        return false;
+      }
+      if (act == DropAction::MidiPatternClip) {
+        const int tracks = std::max(1, static_cast<int>(a.doc.song().tracks.size()));
+        const ObjectId id = a.doc.addClip(r.pattern, std::clamp(place.track, 0, tracks - 1), std::max<Tick>(0, place.tick));
+        if (made) *made = id;
+      }
+      a.selectPattern(r.pattern);
+      a.syncEngine();
+      return true;
+    }
+    case DropAction::ImportMidiNotes: {
+      MidiFileData m;
+      std::string err;
+      if (!readMidiFile(path, m, &err)) {
+        a.notify("MIDI import failed: " + err, true);
+        return false;
+      }
+      const Song& s = a.doc.song();
+      const ObjectId pat = a.curPattern;
+      const ObjectId ch = target == DropTarget::Rack && place.channel != kNoId ? place.channel : a.selChannel;  // J-97: a rack row
+      const Pattern* p = s.pattern(pat);
+      if (!p || !s.channel(ch)) {
+        a.importMidi(path);
+        return true;
+      }
+      std::vector<Note> notes;
+      if (auto it = p->notes.find(ch); it != p->notes.end()) notes = it->second;
+      size_t added = 0;
+      for (const auto& tr : m.tracks)
+        for (const auto& mn : tr.notes) {
+          Note x;
+          x.start = static_cast<Tick>(std::llround(static_cast<double>(mn.start) * s.ppq / std::max(1, m.division)));
+          x.length = std::max<Tick>(1, static_cast<Tick>(std::llround(static_cast<double>(mn.length) * s.ppq / std::max(1, m.division))));
+          x.pitch = mn.pitch;
+          x.velocity = mn.velocity;
+          notes.push_back(x);
+          ++added;
+        }
+      std::stable_sort(notes.begin(), notes.end(), [](const Note& x, const Note& y) { return x.start < y.start; });
+      a.doc.setNotes(pat, ch, notes, "import MIDI notes");
+      a.notify("Imported " + std::to_string(added) + " notes from " + fname);
+      return added > 0;
+    }
+    case DropAction::OpenProject:
+      a.guardUnsaved([&a, path]() { a.openProject(path); });
+      return true;
+    case DropAction::AddBrowserFolder:
+      addBrowserFolder(a, path);
+      return true;
+    case DropAction::LoadDrumKit: {  // K-162: read on a worker; a plugin window or a channel row takes the kit
+      const ObjectId replace = target == DropTarget::PluginWindow && place.pluginSlot < 0 ? place.owner
+                               : target == DropTarget::Rack                               ? place.channel
+                                                                                          : kNoId;
+      drumkitui::load(a, path, replace, target == DropTarget::Rack ? place.insertAt : -1);
+      return true;
+    }
+    case DropAction::NewInstrumentChannel: {  // K-144: a Multisampler channel playing the map
+      const ObjectId id = addChannelAt(a, "gl.multisampler", path, target == DropTarget::Rack ? place.insertAt : -1);
+      a.showNewInstrument(id);
+      return id != kNoId;
+    }
+    case DropAction::ReplaceWithInstrument:
+      if (!replaceChannel(a, place.channel, "gl.multisampler", nullptr, path, fs::path(path).stem().string(), "replace with Multisampler")) return false;
+      a.showNewInstrument(place.channel);
+      return true;
+    case DropAction::LoadInstrumentMap: {
+      const PluginTarget t = target == DropTarget::Rack ? PluginTarget{place.channel, -1} : PluginTarget{place.owner, place.pluginSlot};
+      const PluginState* cur = t.state(a.doc.song());
+      if (!cur) return false;
+      PluginState ns = *cur;
+      ns.data = path;
+      setPluginState(a, t, ns, "load multisample instrument");
+      if (target == DropTarget::Rack) a.selectChannel(place.channel);
+      return true;
+    }
+    case DropAction::NewLayer: {  // K-169: the layer and its children, as one undo step
+      std::string err;
+      const ObjectId l = layer::loadPreset(a.doc, d.layer, target == DropTarget::Rack ? place.insertAt : -1, &err);
+      if (l == kNoId) {
+        a.notify(err.empty() ? std::string(i18n::tr("Cannot load this layer preset")) : err, true);
+        return false;
+      }
+      a.selectChannel(l);
+      a.settingsChannel = l;
+      a.notify(std::string(i18n::tr("Added the layer ")) + d.name);
+      return true;
+    }
+    case DropAction::LoadPicture: {  // J-184: decoded on a worker, applied as one undo step ("load picture")
+      const PluginTarget t = target == DropTarget::Rack ? PluginTarget{place.channel, -1} : PluginTarget{place.owner, place.pluginSlot};
+      if (!packs::loadPicture(a, t, path)) return false;
+      if (target == DropTarget::Rack) a.selectChannel(place.channel);
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+bool performDrop(App& a, const std::string& path, DropTarget target, const DropPlace& place) {
+  const Decoded& d = decodeItem(path);
+  if (!d.ok) {
+    a.notify(d.error.empty() ? "Cannot use " + fs::path(path).filename().string() : d.error, true);
+    return false;
+  }
+  const PluginInfo* ti = targetInfo(a, target, place);
+  const DropAction act = browse::dropAction(d.item, target, ti ? ti->type : "", takesSample(target, ti));
+  a.doc.beginGroup("drop from the browser");  // K-141: one undo step, also from the keyboard or a script
+  const bool done = runAction(a, path, act, target, place, false, nullptr);
+  a.doc.endGroup();
+  return done;
+}
+
+bool performItems(App& a, const std::vector<xdrop::Item>& items, DropTarget target, const DropPlace& place, const xdrop::Mods& mods) {
+  for (const xdrop::Item& it : items)
+    if (it.pending) {  // promised / downloading files: the drop happens once they are here
+      xdragui::defer(a, items, target, place, mods);
+      return true;
+    }
+  const xdrop::Plan p = planFor(a, items, target, place, mods);
+  if (!p.unsupported.empty()) {
+    std::string names;
+    for (size_t k = 0; k < p.unsupported.size() && k < 3; ++k) names += (k ? ", " : "") + xdrop::displayName(items[p.unsupported[k]]);
+    if (p.unsupported.size() > 3) names += ", …";
+    a.notify(std::string(i18n::tr("Unsupported file type: ")) + names, true);
+  }
+  if (!p.accepted()) {
+    if (p.unsupported.empty()) a.notify(p.label.empty() ? std::string(i18n::tr("Nothing here takes these files")) : p.label, true);
+    return false;
+  }
+  if (p.steps.size() == 1 && p.steps[0].action == DropAction::OpenProject)
+    return runAction(a, items[p.steps[0].item].path, DropAction::OpenProject, target, place, false, nullptr);
+  int midi = 0;
+  for (const xdrop::Step& s : p.steps) midi += s.action == DropAction::ImportMidiChannels;
+  a.doc.beginGroup(p.steps.size() > 1 ? "drop files" : "drop file");
+  bool any = false;
+  std::set<ObjectId> clips;
+  Tick prevEnd = -1;
+  int inserted = 0;  // J-97: new channels of a rack drop keep the drop order
+  for (const xdrop::Step& s : p.steps) {
+    DropPlace pl = place;
+    pl.track = s.track;
+    pl.tick = s.tick;
+    if (target == DropTarget::Rack && (s.action == DropAction::NewSamplerChannel || s.action == DropAction::NewChannelFromPreset)) {
+      // Between rows: at the gap; extra files dropped on a row (or Shift): right below it.
+      const int row = place.channel != kNoId ? a.doc.song().channelIndex(place.channel) : -1;
+      if (place.insertAt >= 0) pl.insertAt = place.insertAt + inserted++;
+      else if (row >= 0) pl.insertAt = row + 1 + inserted++;
+    }
+    // One after another: each clip starts where the one before really ends.
+    if (mods.shift && prevEnd >= 0 && (s.action == DropAction::AudioClip || s.action == DropAction::MidiPatternClip)) pl.tick = prevEnd;
+    ObjectId made = kNoId;
+    gPlainLoopClip = mods.ctrl;  // K-161
+    any = runAction(a, items[s.item].path, s.action, target, pl, midi > 1, &made) || any;
+    gPlainLoopClip = false;
+    if (made != kNoId) {
+      clips.insert(made);
+      const Song& sg = a.doc.song();
+      if (const Clip* c = sg.clip(made)) prevEnd = c->start + sg.clipLength(*c);
+    }
+  }
+  a.doc.endGroup();
+  if (!clips.empty()) a.playlist.selected = clips;
+  if (any && items.size() > 1) a.notify(p.label.rfind(i18n::tr("Drop to "), 0) == 0 ? p.label.substr(std::strlen(i18n::tr("Drop to "))) : p.label);
+  return any;
+}
+
+// ------------------------------------------------ plugins (GL_PLUGIN, J-97)
+
+namespace {
+
+enum class PlugAct { None, ReplaceChannel, NewChannel, InsertChannel, FreeSlot, Slot, NewTrackInstrument, ReplaceTrackInstrument };
+
+struct PlugPlan {
+  PlugAct act = PlugAct::None;
+  ObjectId owner = kNoId;  // channel (ReplaceChannel, ReplaceTrackInstrument) / mixer track (FreeSlot, Slot)
+  int slot = -1;
+  int track = -1;          // J-208: the playlist track (NewTrackInstrument, ReplaceTrackInstrument, a track's FreeSlot)
+  std::string label, why;
+};
+
+std::string fmtS(const char* f, const std::string& x) {
+  char buf[512];
+  std::snprintf(buf, sizeof buf, f, x.c_str());
+  return buf;
+}
+std::string fmtSS(const char* f, const std::string& x, const std::string& y) {
+  char buf[512];
+  std::snprintf(buf, sizeof buf, f, x.c_str(), y.c_str());
+  return buf;
+}
+
+PlugPlan planPlugin(App& a, const std::string& type, DropTarget target, const DropPlace& place) {
+  PlugPlan p;
+  const PluginInfo* info = findPlugin(type);
+  if (!info) {
+    p.why = i18n::tr("This plugin is not available");
+    return p;
+  }
+  const Song& s = a.doc.song();
+  if (!collabui::pluginAllowed(a, type)) {  // J-111 / J-208: installed plugins stay out of a collaborative project
+    p.why = i18n::tr("Installed plugins can't be used in a collaborative project");
+    return p;
+  }
+  const bool gen = info->kind == PluginKind::Generator, fx = info->kind == PluginKind::Effect;
+  const char* genOnly = i18n::tr("Effects go into mixer slots");
+  const char* fxOnly = i18n::tr("Instruments go into the channel rack");
+  if (info->kind == PluginKind::NoteFx) {
+    p.why = i18n::tr("Note effects go into a channel's note effect slots");
+    return p;
+  }
+  auto slotTarget = [&](ObjectId track, int k) {
+    const MixerTrack* m = s.mixerTrack(track);
+    if (!fx || !m || k < 0 || k >= kEffectSlots) {
+      if (!fx) p.why = fxOnly;
+      return;
+    }
+    p.act = PlugAct::Slot;
+    p.owner = track;
+    p.slot = k;
+    const PluginInfo* cur = findPlugin(m->slots[static_cast<size_t>(k)].plugin.type);
+    p.label = cur ? fmtSS(i18n::tr("Drop to replace %s with %s"), cur->name, info->name)
+                  : fmtS(i18n::tr("Drop to insert %s into this slot"), info->name);
+  };
+  // J-208: a playlist track takes the plugin as its own: an instrument makes the track an
+  // instrument track playing a new channel of it (an instrument track gets its instrument
+  // replaced); an effect goes into the first free slot of the track's mixer track.
+  if (target == DropTarget::Playlist && place.track >= 0) {
+    const int tr = place.track;
+    const PlaylistTrack* pt = tr < static_cast<int>(s.tracks.size()) ? &s.tracks[static_cast<size_t>(tr)] : nullptr;
+    const std::string tname = pt && !pt->name.empty() ? pt->name : fmtS(i18n::tr("Track %s"), std::to_string(tr + 1));
+    const TrackMode mode = trackmodes::modeOf(s, tr);
+    if (pt && pt->locked) {
+      p.why = i18n::tr("This track is locked");
+      return p;
+    }
+    if (fx) {
+      const MixerTrack* m = trackmodes::linkedMixer(s, tr);
+      if (!m) {
+        p.why = i18n::tr("Effects go onto instrument and audio tracks (their mixer track) or into mixer slots");
+        return p;
+      }
+      const int k = freeSlot(*m);
+      if (k < 0) {
+        p.why = i18n::tr("All effect slots of this track's mixer track are in use");
+        return p;
+      }
+      p.act = PlugAct::FreeSlot;
+      p.owner = m->id;
+      p.slot = k;
+      p.track = tr;
+      p.label = fmtSS(i18n::tr("Drop to insert %s on %s"), info->name, tname);
+      return p;
+    }
+    if (!gen) {
+      p.why = genOnly;
+      return p;
+    }
+    if (mode == TrackMode::Audio) {
+      p.why = i18n::tr("Audio tracks hold audio: drop the instrument on another track");
+      return p;
+    }
+    if (mode == TrackMode::Instrument) {
+      if (const Channel* c = trackmodes::linkedChannel(s, tr)) {
+        p.act = PlugAct::ReplaceTrackInstrument;
+        p.owner = c->id;
+        p.track = tr;
+        p.label = fmtSS(i18n::tr("Drop to replace %s with %s"), c->name, info->name);
+        return p;
+      }
+    }
+    for (const auto& c : s.playlist)
+      if (c.track == tr && c.kind != ClipKind::Pattern) {
+        p.why = i18n::tr("This track holds audio or automation clips: drop the instrument on another track");
+        return p;
+      }
+    p.act = PlugAct::NewTrackInstrument;
+    p.track = tr;
+    p.label = fmtSS(i18n::tr("Drop to play %s on %s"), info->name, tname);
+    return p;
+  }
+  switch (target) {
+    case DropTarget::Rack:
+    case DropTarget::Playlist:
+    case DropTarget::Workspace:
+      if (!gen) {
+        p.why = genOnly;
+        return p;
+      }
+      if (target == DropTarget::Rack && place.channel != kNoId) {
+        if (const Channel* c = s.channel(place.channel)) {
+          p.act = PlugAct::ReplaceChannel;
+          p.owner = c->id;
+          p.label = fmtSS(i18n::tr("Drop to replace %s with %s"), c->name, info->name);
+          return p;
+        }
+      }
+      if (target == DropTarget::Rack && place.insertAt >= 0) {
+        p.act = PlugAct::InsertChannel;
+        p.label = fmtS(i18n::tr("Drop to insert a %s channel here"), info->name);
+        return p;
+      }
+      p.act = PlugAct::NewChannel;
+      p.label = fmtS(i18n::tr("Drop to add a %s channel"), info->name);
+      return p;
+    case DropTarget::MixerTrack: {
+      const MixerTrack* m = s.mixerTrack(mixerOf(a, place));
+      if (!fx || !m) {
+        if (!fx) p.why = fxOnly;
+        return p;
+      }
+      const int k = freeSlot(*m);
+      if (k < 0) {
+        p.why = i18n::tr("All effect slots are in use");
+        return p;
+      }
+      p.act = PlugAct::FreeSlot;
+      p.owner = m->id;
+      p.slot = k;
+      p.label = fmtS(i18n::tr("Drop to insert %s into the first free slot"), info->name);
+      return p;
+    }
+    case DropTarget::MixerSlot:
+      slotTarget(place.mixer, place.slot);
+      return p;
+    case DropTarget::PluginWindow:
+      if (place.pluginSlot >= 0) {
+        slotTarget(place.owner, place.pluginSlot);
+      } else if (const Channel* c = s.channel(place.owner)) {
+        if (!gen) {
+          p.why = genOnly;
+          return p;
+        }
+        p.act = PlugAct::ReplaceChannel;
+        p.owner = c->id;
+        p.label = fmtSS(i18n::tr("Drop to replace %s with %s"), c->name, info->name);
+      }
+      return p;
+    case DropTarget::PianoRoll:
+    case DropTarget::Browser:
+      return p;
+  }
+  return p;
+}
+
+}  // namespace
+
+std::string pluginDropLabel(App& a, const std::string& type, DropTarget target, const DropPlace& place, std::string* why) {
+  const PlugPlan p = planPlugin(a, type, target, place);
+  if (why) *why = p.why;
+  return p.act == PlugAct::None ? std::string() : p.label;
+}
+
+bool performPluginDrop(App& a, const std::string& type, DropTarget target, const DropPlace& place) {
+  const PlugPlan p = planPlugin(a, type, target, place);
+  const PluginInfo* info = findPlugin(type);
+  switch (p.act) {
+    case PlugAct::None:
+      if (!p.why.empty()) a.notify(p.why, true);
+      return false;
+    case PlugAct::ReplaceChannel:
+      if (!replaceChannel(a, p.owner, type, nullptr, "", info ? info->name : type, "replace instrument")) return false;
+      a.showNewInstrument(p.owner);  // K-125: a new instrument opens its editor, wherever it is dropped
+      return true;
+    case PlugAct::NewChannel: {
+      const ObjectId id = a.addInstrument(type);
+      a.showNewInstrument(id);
+      return id != kNoId;
+    }
+    case PlugAct::InsertChannel: {
+      const ObjectId id = addChannelAt(a, type, "", place.insertAt);
+      a.showNewInstrument(id);
+      return id != kNoId;
+    }
+    case PlugAct::NewTrackInstrument: {  // J-208: one undo step (a new channel + the track's link)
+      std::string why;
+      const ObjectId ch = trackmodes::newInstrumentTrack(a.doc, p.track, type, &why);
+      if (ch == kNoId) {
+        a.notify(why.empty() ? std::string(i18n::tr("This instrument can't play on that track")) : why, true);
+        return false;
+      }
+      a.showNewInstrument(ch);
+      return true;
+    }
+    case PlugAct::ReplaceTrackInstrument:
+      if (!replaceChannel(a, p.owner, type, nullptr, "", info ? info->name : type, "replace instrument track")) return false;
+      a.showNewInstrument(p.owner);
+      return true;
+    case PlugAct::FreeSlot:
+    case PlugAct::Slot:
+      if (!a.doc.setSlotPlugin(p.owner, p.slot, type)) return false;
+      a.selMixer = p.owner;
+      return true;
+  }
+  return false;
+}
+
+bool acceptPluginDrop(App& a, DropTarget target, const DropPlace& place, DropFeedback* fb) {
+  const ImGuiPayload* cur = ImGui::GetDragDropPayload();
+  if (!cur || !cur->IsDataType("GL_PLUGIN")) return false;
+  const std::string type = payloadPath(cur);
+  std::string why;
+  const std::string label = pluginDropLabel(a, type, target, place, &why);
+  if (label.empty()) {
+    if (!why.empty()) {
+      ImGui::SetTooltip("%s", why.c_str());
+      a.setHint(why);
+      ImGui::SetMouseCursor(ImGuiMouseCursor_NotAllowed);
+    }
+    return false;
+  }
+  const ImRect rect = GImGui->DragDropTargetRect;
+  const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("GL_PLUGIN", ImGuiDragDropFlags_AcceptNoDrawDefaultRect | ImGuiDragDropFlags_AcceptBeforeDelivery);
+  if (!pl) return false;
+  if (!pl->Delivery) {
+    // J-160: only the target that takes the drop lights up (a smaller target inside this one,
+    // such as a Platter deck inside its plugin window, wins and draws its own)
+    if (pl->Preview && (!fb || fb->highlight)) drawTargetHighlight(rect);
+    if (fb) fb->hovering = true;
+    ImGui::SetTooltip("%s", label.c_str());
+    a.setHint(label);
+    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    return false;
+  }
+  return performPluginDrop(a, type, target, place);
+}
+
+void openFile(App& a, const std::string& path) {
+  if (remotefs::isRemote(path) && opensAsProject(path)) {  // K-42: nothing here looks at the drive; the loader does
+    a.guardUnsaved([&a, path] { a.openProject(path); });
+    return;
+  }
+  if (!collabui::projectFileIn(path).empty()) {  // J-111: a collaborative project folder opens
+    a.guardUnsaved([&a, path] { a.openProject(path); });
+    return;
+  }
+  const Decoded& d = decodeItem(path);
+  if (d.item.kind == Kind::DrumKit) {  // K-162: a kit file or folder: drum pad channels
+    drumkitui::load(a, path);
+    return;
+  }
+  if (fs::is_directory(path)) {
+    addBrowserFolder(a, path);
+    return;
+  }
+  if (!d.ok) {
+    a.notify(d.error.empty() ? "Cannot open " + fs::path(path).filename().string() : d.error, true);
+    return;
+  }
+  // J-184: pictures go to the open Pixel Tone window.
+  if (d.item.kind == Kind::Image) {
+    DropPlace pw;
+    if (a.fxEditor.first != kNoId && a.fxEditor.second >= 0) pw.owner = a.fxEditor.first, pw.pluginSlot = a.fxEditor.second;
+    else if (a.settingsChannel != kNoId) pw.owner = a.settingsChannel, pw.pluginSlot = -1;
+    if (pw.owner != kNoId && dropActionFor(a, path, DropTarget::PluginWindow, pw) == DropAction::LoadPicture) {
+      performDrop(a, path, DropTarget::PluginWindow, pw);
+      return;
+    }
+    a.notify(std::string(i18n::tr("Pictures play in Pixel Tone: drop this one onto a Pixel Tone editor or channel")) + " (" +
+                 fs::path(path).filename().string() + ")",
+             true);
+    return;
+  }
+  // K-144: .sfz / .sf2 load into the open Multisampler window, else a new Multisampler channel.
+  if (d.item.kind == Kind::Instrument) {
+    DropPlace pw;
+    if (a.settingsChannel != kNoId) pw.owner = a.settingsChannel, pw.pluginSlot = -1;
+    if (pw.owner != kNoId && dropActionFor(a, path, DropTarget::PluginWindow, pw) == DropAction::LoadInstrumentMap) {
+      performDrop(a, path, DropTarget::PluginWindow, pw);
+      return;
+    }
+    performDrop(a, path, DropTarget::Workspace, DropPlace{});
+    return;
+  }
+  // Presets go to the open plugin window when it shows the same plugin.
+  if (d.item.kind == Kind::Preset) {
+    DropPlace pw;
+    if (a.fxEditor.first != kNoId && a.fxEditor.second >= 0) pw.owner = a.fxEditor.first, pw.pluginSlot = a.fxEditor.second;
+    else if (a.settingsChannel != kNoId) pw.owner = a.settingsChannel, pw.pluginSlot = -1;
+    if (pw.owner != kNoId && dropActionFor(a, path, DropTarget::PluginWindow, pw) == DropAction::ApplyPreset) {
+      performDrop(a, path, DropTarget::PluginWindow, pw);
+      return;
+    }
+    if (d.item.pluginKind == PluginKind::Effect) {
+      performDrop(a, path, DropTarget::MixerTrack, DropPlace{});
+      return;
+    }
+  }
+  if (d.item.kind == Kind::Chain) {
+    performDrop(a, path, DropTarget::MixerTrack, DropPlace{});
+    return;
+  }
+  if (d.item.kind == Kind::Layer) {  // K-169: a new layer at the end of the rack
+    performDrop(a, path, DropTarget::Rack, DropPlace{});
+    return;
+  }
+  performDrop(a, path, DropTarget::Workspace, DropPlace{});
+}
+
+// Several files dropped where no window takes them: each the way a double
+// click in the browser opens it (projects open, samples become channels, …).
+void openFiles(App& a, const std::vector<xdrop::Item>& items) {
+  std::vector<xdrop::Item> rest;
+  for (const xdrop::Item& it : items) {
+    if (it.pending) {
+      xdragui::defer(a, items, DropTarget::Workspace, DropPlace{}, currentMods());
+      return;
+    }
+    const browse::DropItem d = dropItemFor(it);
+    if (d.kind == Kind::Project || d.kind == Kind::Flp || (it.dir && !collabui::projectFileIn(it.path).empty())) {
+      openFile(a, it.path);
+      return;
+    }
+    rest.push_back(it);
+  }
+  if (rest.size() == 1 && !rest[0].dir) {
+    const Kind k = dropItemFor(rest[0]).kind;
+    if (k == Kind::Other || k == Kind::Image)  // J-184: a picture let go where nothing takes it: as before
+      a.notify(std::string(i18n::tr("Unsupported file type: ")) + rest[0].name, true);
+    else
+      openFile(a, rest[0].path);
+    return;
+  }
+  performItems(a, rest, DropTarget::Workspace, DropPlace{}, currentMods());
+}
+
+// ----------------------------------------------------------------- preview
+
+bool& previewSync() {
+  static bool on = false;
+  return on;
+}
+
+void previewFile(App& a, const std::string& path) {
+  if (browse::kindOf(path) == Kind::Instrument && !remotefs::isRemote(path)) {  // K-144: a note of the map, rendered on a worker
+    previewInstrument(path);
+    return;
+  }
+  if (remotefs::isRemote(path)) {  // K-42: read on a background decoder and heard when it has arrived
+    a.previewWhenReady(path);
+    return;
+  }
+  SamplePtr s = sampleCache().get(path);
+  if (!s) {
+    a.notify("Cannot decode " + fs::path(path).filename().string(), true);
+    return;
+  }
+  // Remember what we learnt (files outside the indexed folders too).
+  browse::FileMeta meta;
+  if (!index().lookup(path, meta) || !meta.analysed) {
+    meta = browse::Index::describe(path, false);
+    meta.analysed = true;
+    meta.seconds = s->seconds();
+    meta.rate = s->sampleRate;
+    meta.channels = s->left == s->right ? 1 : 2;
+    meta.peaks = browse::encodePeaks(browse::computePeaks(s->left, s->right, 64));
+    if (meta.bpm <= 0) meta.bpm = browse::wavAcidTempo(path);
+    if (meta.bpm <= 0) {
+      auto tags = browse::autoTags(path);
+      if (std::find(tags.begin(), tags.end(), "loop") != tags.end()) meta.bpm = browse::bpmFromLength(meta.seconds);
+    }
+    index().put(meta);
+  }
+  // K-161: a sliced loop previews at the song tempo the way it plays: each slice on its beat, at its own speed.
+  if (previewSync()) {
+    loopfile::Info li;
+    const double songBpm = a.doc.song().tempo;
+    if (loopFacts(path, li) && slicedLoop(li) && li.beats > 0 && songBpm > 0 && s->sampleRate > 0) {
+      static std::string lastKey;
+      static SamplePtr last;
+      const std::string key = path + "@" + std::to_string(songBpm);
+      if (key != lastKey || !last) {
+        const double framesPerBeat = 60.0 / songBpm * 4.0 / (li.sigDen > 0 ? li.sigDen : 4) * s->sampleRate;
+        const size_t total = static_cast<size_t>(std::max(1.0, li.beats * framesPerBeat));
+        auto r = std::make_shared<Sample>();
+        r->path = s->path;
+        r->sampleRate = s->sampleRate;
+        r->left.assign(total, 0.0f);
+        r->right.assign(total, 0.0f);
+        for (size_t k = 0; k < li.slices.size(); ++k) {
+          const loopfile::Slice& sl = li.slices[k];
+          if (sl.muted) continue;
+          const size_t at = static_cast<size_t>(std::max(0.0, sl.beat * framesPerBeat));
+          const size_t until = k + 1 < li.slices.size() ? static_cast<size_t>(std::max(0.0, li.slices[k + 1].beat * framesPerBeat)) : total;
+          const size_t n = std::min({static_cast<size_t>(std::max<int64_t>(0, sl.length)), until > at ? until - at : 0, total - std::min(total, at),
+                                     s->frames() - std::min(s->frames(), static_cast<size_t>(sl.start)) });
+          const size_t fade = std::min<size_t>(n / 2, 64);
+          for (size_t i = 0; i < n; ++i) {
+            const float g = i + fade >= n ? static_cast<float>(n - i) / static_cast<float>(fade + 1) : 1.0f;  // no click where a slice is cut
+            r->left[at + i] += s->left[static_cast<size_t>(sl.start) + i] * g;
+            r->right[at + i] += s->right[static_cast<size_t>(sl.start) + i] * g;
+          }
+        }
+        last = r;
+        lastKey = key;
+      }
+      a.engine.preview(last);
+      return;
+    }
+  }
+  const double ratio = previewSync() && meta.bpm > 0 ? browse::syncRatio(meta.bpm, a.doc.song().tempo) : 1.0;
+  if (std::fabs(ratio - 1.0) < 1e-4) {
+    a.engine.preview(s);
+    return;
+  }
+  // Tempo sync: resample (speed follows the song tempo, like a synced loop).
+  static std::string lastKey;
+  static SamplePtr last;
+  const std::string key = path + "@" + std::to_string(ratio);
+  if (key != lastKey || !last) {
+    auto r = std::make_shared<Sample>();
+    r->path = s->path;
+    r->sampleRate = s->sampleRate;
+    const size_t n = static_cast<size_t>(static_cast<double>(s->frames()) / ratio);
+    r->left.resize(n);
+    r->right.resize(n);
+    // J-140: band-limited (was linear: aliasing when sped up, dull when slowed).
+    pitch::resample2(s->left.data(), s->right.data(), static_cast<int64_t>(s->frames()), 0.0, ratio, r->left.data(), r->right.data(),
+                     static_cast<int64_t>(n), pitch::Quality::Offline);
+    last = r;
+    lastKey = key;
+  }
+  a.engine.preview(last);
+}
+
+}  // namespace gl::browserui

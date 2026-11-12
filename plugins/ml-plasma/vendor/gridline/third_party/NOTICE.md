@@ -1,0 +1,74 @@
+# Third-party code in Gridline
+
+Gridline is GPL-3.0. The code below is vendored in this folder under its own licence, all
+GPL-3.0-compatible; each folder holds the licence text and a VERSION.txt with the exact version,
+where it comes from and whether it was changed.
+
+| Folder | Version | Licence | Used for |
+|---|---|---|---|
+| `imgui/` | Dear ImGui 1.92.9 (docking) | MIT | the interface |
+| `lua/` | Lua 5.4 | MIT | scripting (one patch, see README.gridline.md) |
+| `rtmidi/` | RtMidi | MIT-style | MIDI devices |
+| `signalsmith-stretch/`, `signalsmith-linear/` | Signalsmith Stretch / Linear | MIT | time stretching, pitch shifting |
+| `rubberband/` | Rubber Band Library 4.0.0 | GPL-2.0-or-later | the Rubber Band time mode (three patches, see README.gridline.md) |
+| `clap/` | CLAP headers | MIT | hosting CLAP plugins, the CLAP build |
+| `vst3/` | VST 3 plug-in interfaces | MIT | hosting VST3 plugins, the VST3 build |
+| `lv2/` | LV2 headers | ISC | hosting LV2 plugins |
+| `dr_libs/`, `stb/stb_vorbis.c` | dr_wav / dr_flac / dr_mp3, stb_vorbis | public domain or MIT-0 / MIT | audio decoding |
+| `nanosvg/` | nanosvg | zlib | interface icons |
+| `stb/stb_image.h`, `stb/stb_image_write.h` | 2.30 / 1.16 | public domain or MIT | profile pictures (J-111) |
+| `libjuice/` | libjuice 1.7.4 | MPL-2.0 | collaboration: ICE, STUN, TURN (J-111) |
+| `libplum/` | libplum 0.6.0 | MPL-2.0 | collaboration: router port mapping (J-111) |
+| `monocypher/` | Monocypher 4.0.2 | BSD-2-Clause or CC0-1.0 | collaboration: encryption, signatures (J-111) |
+
+MPL-2.0 (libjuice, libplum) is compatible with the GPL-3.0 through MPL-2.0 section 3.3; neither
+library carries an "Incompatible With Secondary Licenses" notice. Their source files are unmodified
+(libplum's internal helper names are renamed at compile time so both link into one program, see
+CMakeLists.txt); the MPL requires that the source of these files stays available, which this
+repository does.
+
+Not vendored, but credited: the layout of Serum 1 `.fxp` / VST2 chunks that Plasma reads
+(`src/packs/plasma/plasma_serum_dsp.cpp`: parameter order, modulation source ids, menu orders)
+follows the format notes of serum2vital (https://github.com/btesser/serum2vital, GPL-3.0).
+
+Not vendored, but credited: Platter's scratch model (`src/packs/platter/platter_dsp.cpp`: the
+jog wheel's speed from an alpha-beta filter on its ticks, with the filter values each controller
+mapping uses; the mouse's position loop with its throw and release; the ramp back to the motor;
+the level curve at low speeds) follows the approach of Mixxx (https://github.com/mixxxdj/mixxx,
+GPL-2.0-or-later). No Mixxx source is included; the code is Gridline's own.
+
+Not vendored, but included as data: the period table that tracker modules use for pitch
+(`src/core/TrackerTables.cpp`, 96 values) is taken from ft2-clone
+(https://github.com/8bitbubsy/ft2-clone, BSD-3-Clause, Copyright (c) 2016-2026, Olav Sørensen),
+because those values cannot be rebuilt from a formula and modules only play in tune with them.
+The full licence text is in that file. ft2-clone and libxmp were also used, outside Gridline, as
+reference players to check that imported modules sound the same; none of their code is included.
+
+## Programs shipped beside Gridline (Import from URL, J-192)
+
+The release packages carry two separate programs that Gridline runs for File > Import > Import
+from URL. They are not linked into Gridline and not kept in this repository: the release workflow
+fetches them (`tools/release/fetch-media-tools.py`, versions and SHA-256 in
+`tools/release/media-tools.json`), and Gridline installs the same files on first use where a
+package has none (`docs/import-url.md`). Each package's `tools` folder holds their licence texts
+(`LICENSES/`) and `SOURCES.txt` with the exact source and build settings.
+
+| Program | Version | Licence | Source |
+|---|---|---|---|
+| yt-dlp | 2026.10.26 (official release binary) | Unlicense (public domain) | https://github.com/yt-dlp/yt-dlp |
+| FFmpeg (`ffmpeg`, `ffprobe`) | 9.0.2, built from the unmodified source, audio only, without GPL or nonfree parts | LGPL-2.1-or-later | https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz |
+
+On Linux and the BSDs Gridline also runs this `ffmpeg` (or the system's) to decode M4A and AAC
+samples, as a separate program; on macOS and Windows the system's own decoders (AudioToolbox,
+Media Foundation) read them. No decoder library is linked or vendored for these formats.
+
+FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project. Gridline is not
+affiliated with the FFmpeg or yt-dlp projects.
+
+Not vendored, but credited: Split stems (`src/engine/stems/`) runs the Hybrid Transformer Demucs
+models (https://github.com/facebookresearch/demucs, code MIT, Copyright (c) Meta Platforms, Inc.
+and affiliates). Gridline's implementation is its own C++ written from the published architecture
+and checked against the reference output; no Demucs source is included. The trained model weights
+are not part of Gridline and are never shipped with it: they are downloaded on request from their
+official address (dl.fbaipublicfiles.com), and the Demucs authors provide them for research use, a
+note Gridline shows before every download (docs/stems.md).

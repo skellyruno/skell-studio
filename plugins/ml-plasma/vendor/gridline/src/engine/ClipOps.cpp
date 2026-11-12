@@ -1,0 +1,717 @@
+// Gridline — audio clip workflow (J-8). See ClipOps.h.
+#include "ClipOps.h"
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <filesystem>
+#include "../core/ClipLoop.h"
+#include "../core/ClipRate.h"
+#include "../core/PluginParams.h"
+#include "../core/TrackReceipt.h"
+#include "../packs/edison/edison.h"
+#include "ClipSource.h"
+#include "Render.h"
+#include "Sample.h"
+#include "TimeStretch.h"
+
+namespace fs = std::filesystem;
+
+namespace gl {
+
+namespace ed = packs::edison;
+
+namespace {
+
+double par(const Channel& ch, int k, double d) {
+  return ch.plugin.type == "gl.sampler" && k < static_cast<int>(ch.plugin.params.size())
+             ? static_cast<double>(ch.plugin.params[static_cast<size_t>(k)])
+             : d;
+}
+
+// Playback mapping of an audio clip (same as the engine's compile step).
+struct ClipMap {
+  double speed = 1;       // source seconds per playback second
+  double secPerTick = 0;  // > 0: tempo-synced
+};
+
+ClipMap clipMap(const Song& song, const Channel& ch, const Clip& c) {
+  ClipMap m;
+  const ClipRate r = clipRate(ch, c);  // J-164: shared with the engine and the waveform
+  if (c.syncBpm > 0)
+    m.secPerTick = 60.0 / (c.syncBpm * song.ppq) / r.timeFactor;
+  else
+    m.speed = r.speed;
+  return m;
+}
+
+// Source window (seconds) of an audio clip.
+// K-85: inside the channel's start / end handles, of the sound its sample page makes.
+bool sourceWindow(const Song& song, const Clip& c, SamplePtr& smp, double& a, double& b) {
+  ClipSource src;
+  const bool ok = clipWindow(song, c, &src, a, b);
+  smp = src.sample;
+  return ok;
+}
+
+ObjectId addSamplerChannel(Song& song, const std::string& name, const std::string& path, ObjectId mixer, Rgb color) {
+  Channel ch;
+  ch.id = song.allocateId();
+  ch.name = name;
+  ch.color = color;
+  ch.plugin = defaultPluginState("gl.sampler");
+  ch.plugin.data = path;
+  ch.mixerTrack = mixer != kNoId && song.mixerTrack(mixer) ? mixer : song.masterId();
+  song.channels.push_back(ch);
+  return ch.id;
+}
+
+bool writeAudio(const std::string& dir, const std::string& name, const ed::Audio& a, std::string& path) {
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  path = ed::renderPath(dir, cleanFileName(name), ed::audioHash(a));
+  return ed::writeWavFile(path, ed::makeContent(a), 32);
+}
+
+}  // namespace
+
+std::string cleanFileName(const std::string& s) {
+  std::string o;
+  for (char ch : s) {
+    const unsigned char u = static_cast<unsigned char>(ch);
+    o += (std::isalnum(u) || ch == ' ' || ch == '-' || ch == '_' || u >= 0x80) ? ch : '_';
+  }
+  while (!o.empty() && o.back() == ' ') o.pop_back();
+  return o.empty() ? std::string("audio") : o;
+}
+
+double clipSourceStart(const Song& song, const Clip& c) {
+  double a = 0, b = 0;
+  if (c.kind == ClipKind::Audio && clipWindow(song, c, nullptr, a, b)) return a;
+  return std::max(0.0, c.audioStart);
+}
+
+double clipSourceAt(const Song& song, const Clip& c, const TempoMap& map, double tick) {
+  const Channel* ch = song.channel(c.source);
+  const double a = clipSourceStart(song, c);
+  if (!ch) return a;
+  const ClipMap m = clipMap(song, *ch, c);
+  const double p = m.secPerTick > 0 ? (tick - static_cast<double>(c.start)) * m.secPerTick
+                                    : (map.secondsAt(tick) - map.secondsAt(static_cast<double>(c.start))) * m.speed;
+  if (!c.warp.empty()) {  // K-85: through the warp markers (as the engine plays it)
+    const std::vector<WarpPoint> w = clipWarp(song, c);
+    if (!w.empty()) return warpSourceAt(w, warpTimeAt(w, a) + p);
+  }
+  return a + p;
+}
+
+namespace {
+// K-85: the clip's own (warped) seconds from its source start to `srcEnd`:
+// what its speed, stretch and tempo act on (source seconds when unwarped).
+double playedSpan(const Song& song, const Clip& c, double srcEnd) {
+  return warpedSpan(clipWarp(song, c), clipSourceStart(song, c), srcEnd);
+}
+
+// Ticks from the clip's start until it has played `span` of its own
+// (warped) seconds.
+Tick ticksForSpan(const Song& song, const Clip& c, double span) {
+  const Channel* ch = song.channel(c.source);
+  if (!ch) return 0;
+  const ClipMap m = clipMap(song, *ch, c);
+  if (m.secPerTick > 0) return std::max<Tick>(1, static_cast<Tick>(std::llround(span / m.secPerTick)));
+  TempoMap map;
+  map.build(song);
+  const double s0 = map.secondsAt(static_cast<double>(c.start));
+  const double end = map.tickAtSeconds(s0 + span / std::max(1e-6, m.speed));
+  return std::max<Tick>(1, static_cast<Tick>(std::llround(end - static_cast<double>(c.start))));
+}
+}  // namespace
+
+Tick audioClipNaturalLength(const Song& song, const Clip& c) {
+  SamplePtr smp;
+  double a = 0, b = 0;
+  if (!sourceWindow(song, c, smp, a, b)) return 0;
+  return ticksForSpan(song, c, warpedSpan(clipWarp(song, c), a, b));
+}
+
+Tick audioLoopLength(const Song& song, const Clip& c, const TempoMap& map) {
+  if (c.kind != ClipKind::Audio || !c.loop) return 0;
+  SamplePtr smp;
+  double a = 0, b = 0;
+  if (!sourceWindow(song, c, smp, a, b)) return 0;
+  const Channel* ch = song.channel(c.source);
+  const ClipMap m = clipMap(song, *ch, c);
+  const double span = warpedSpan(clipWarp(song, c), a, b);  // K-85
+  double ticks = 0;
+  if (m.secPerTick > 0) {
+    ticks = span / m.secPerTick;
+  } else {
+    const double s0 = map.secondsAt(static_cast<double>(c.start));
+    ticks = map.tickAtSeconds(s0 + span / std::max(1e-6, m.speed)) - static_cast<double>(c.start);
+  }
+  if (!std::isfinite(ticks)) return 0;
+  return std::max<Tick>(1, static_cast<Tick>(std::llround(std::min(ticks, 4.0e15))));
+}
+
+std::vector<Clip> audioLoopPasses(const Song& song, const Clip& c, const TempoMap& map) {
+  const Tick n = audioLoopLength(song, c, map);
+  if (n <= 0) return {c};
+  SamplePtr smp;
+  double a = 0, b = 0;
+  sourceWindow(song, c, smp, a, b);
+  std::vector<Clip> out;
+  const std::vector<ClipPass> passes = loopPasses(c.offset, song.clipLength(c), n);
+  for (size_t k = 0; k < passes.size(); ++k) {
+    const ClipPass& p = passes[k];
+    Clip x = c;
+    x.loop = false;
+    x.offset = 0;
+    x.start = c.start + p.at;
+    x.length = p.len;
+    x.audioEnd = b;
+    x.audioStart = a;
+    if (p.content > 0) x.audioStart = std::clamp(clipSourceAt(song, c, map, static_cast<double>(c.start + p.content)), a, b);
+    if (k > 0) x.fadeIn = 0, x.fadeInManual = true, x.fadeInTension = 0;  // the clip's fades: at its own edges only
+    if (k + 1 < passes.size()) x.fadeOut = 0, x.fadeOutManual = true, x.fadeOutTension = 0;
+    out.push_back(x);
+  }
+  return out;
+}
+
+Clip withClipLoop(const Song& song, const TempoMap& map, Clip c, bool on) {
+  if (c.loop == on) return c;
+  if (c.kind == ClipKind::Audio) {
+    SamplePtr smp;
+    double a = 0, b = 0;
+    if (on && sourceWindow(song, c, smp, a, b)) {
+      const double end = clipSourceAt(song, c, map, static_cast<double>(c.start + song.clipLength(c)));
+      if (end > a + 1e-6 && end < b - 1e-6) c.audioEnd = end;  // loops what it shows
+      c.offset = 0;
+    } else if (!on && c.offset != 0) {
+      const Tick n = audioLoopLength(song, c, map);
+      if (n > 0) c.audioStart = std::max(0.0, clipSourceAt(song, c, map, static_cast<double>(c.start + wrapLoopOffset(c.offset, n))));
+      c.offset = 0;
+    }
+  } else if (on) {  // K-140: a cut clip repeats the part it shows
+    c.loopStart = c.loopLength = 0;
+    if (clipCutShort(song, c)) c.loopStart = c.offset, c.loopLength = song.clipLength(c);
+  } else {  // the first pass's content where the clip starts; the window goes
+    const LoopWindow w = clipLoopWindow(song, c);
+    if (c.loopLength > 0 && w.len > 0) c.offset = wrapLoopOffset(c.offset, w.len, w.from);
+    c.loopStart = c.loopLength = 0;
+  }
+  c.loop = on;
+  return c;
+}
+
+void prepareAutomationLoops(Song& song, const std::vector<Clip>& clips, const std::set<ObjectId>& sel) {
+  std::map<ObjectId, Tick> want;
+  for (const Clip& c : clips)
+    if (c.kind == ClipKind::Automation && sel.count(c.id) && !(c.loop ? c.loopLength > 0 : clipCutShort(song, c)))  // (K-140: a cut clip loops on its own)
+      if (const AutomationClip* a = song.automation(c.source); a && a->loop <= 0)
+        want[a->id] = std::max(want[a->id], std::max<Tick>(1, c.offset + song.clipLength(c)));
+  for (const auto& [id, len] : want)
+    if (AutomationClip* a = song.automation(id)) a->loop = len;
+}
+
+bool setClipsLoop(Song& song, const std::set<ObjectId>& clips, bool on) {
+  if (on) prepareAutomationLoops(song, std::vector<Clip>(song.playlist), clips);
+  TempoMap map;
+  map.build(song);
+  bool changed = false;
+  for (Clip& c : song.playlist)
+    if (clips.count(c.id) && c.loop != on) {
+      c = withClipLoop(song, map, c, on);
+      changed = true;
+    }
+  return changed;
+}
+
+Tick loopFirstPass(const Song& song, const Clip& c, const TempoMap& map) {
+  if (!c.loop) return 0;
+  if (c.kind == ClipKind::Audio) {
+    const Tick n = audioLoopLength(song, c, map);
+    return n > 0 ? n - wrapLoopOffset(c.offset, n) : 0;
+  }
+  const LoopWindow w = clipLoopWindow(song, c);
+  return w.len > 0 ? w.from + w.len - wrapLoopOffset(c.offset, w.len, w.from) : 0;
+}
+
+int unloopWithinFirstPass(const Song& song, std::vector<Clip>& clips, const std::set<ObjectId>& sel, const TempoMap& map) {
+  int n = 0;
+  for (Clip& c : clips) {
+    if (!c.loop || !sel.count(c.id)) continue;
+    const Tick first = loopFirstPass(song, c, map);
+    if (first <= 0 || song.clipLength(c) > first) continue;
+    c = withClipLoop(song, map, c, false);
+    ++n;
+  }
+  return n;
+}
+
+ObjectId splitClipAt(Song& song, ObjectId id, Tick at) {
+  Clip* c = song.clip(id);
+  if (!c) return kNoId;
+  const Tick len = song.clipLength(*c);
+  if (at <= c->start || at >= c->start + len) return kNoId;
+  Clip right = *c;
+  right.id = song.allocateId();
+  right.start = at;
+  right.length = c->start + len - at;
+  if (c->kind == ClipKind::Audio && c->loop) {  // K-114: the right part loops the same audio from where it is
+    TempoMap map;
+    map.build(song);
+    const Tick n = audioLoopLength(song, *c, map);
+    right.offset = n > 0 ? wrapLoopOffset(c->offset + (at - c->start), n) : 0;
+    right.fadeIn = 0;
+    right.fadeInManual = false, right.fadeInShape = 0, right.fadeInTension = 0;
+  } else if (c->kind == ClipKind::Audio) {
+    TempoMap map;
+    map.build(song);
+    right.audioStart = std::max(0.0, clipSourceAt(song, *c, map, static_cast<double>(at)));
+    right.fadeIn = 0;
+    right.fadeInManual = false, right.fadeInShape = 0, right.fadeInTension = 0;  // J-38
+  } else {
+    right.offset = c->offset + (at - c->start);
+    right.offset = wrapClipOffset(song, *c, right.offset);  // Q-1 (K-140: within the clip's own loop)
+  }
+  c = song.clip(id);  // (allocateId does not move clips, but keep it obviously valid)
+  c->length = at - c->start;
+  if (c->kind == ClipKind::Audio) c->fadeOut = 0, c->fadeOutManual = false, c->fadeOutShape = 0, c->fadeOutTension = 0;
+  song.playlist.push_back(right);
+  return right.id;
+}
+
+std::vector<ObjectId> sliceClipAtGrid(Song& song, ObjectId id, Tick grid) {
+  const Clip* c = song.clip(id);
+  if (!c || grid <= 0) return {};
+  std::vector<ObjectId> out{id};
+  const Tick end = c->start + song.clipLength(*c);
+  ObjectId cur = id;
+  for (Tick t = (c->start / grid + 1) * grid; t < end; t += grid) {
+    ObjectId r = splitClipAt(song, cur, t);
+    if (r == kNoId) break;
+    out.push_back(r);
+    cur = r;
+  }
+  return out;
+}
+
+std::vector<ObjectId> sliceClipAtTransients(Song& song, ObjectId id, double sensitivity) {
+  const Clip* c = song.clip(id);
+  SamplePtr smp;
+  double a = 0, b = 0;
+  if (!c || !sourceWindow(song, *c, smp, a, b)) return {};
+  ed::Audio au = ed::fromSample(*smp);
+  const Clip base = *c;
+  const bool rev = clipPlaysReversed(*song.channel(base.source), base);
+  // K-85: the window is in the clip's direction; reversed, it reads the file from its last frame back.
+  const double last = static_cast<double>(smp->frames() - 1) / smp->sampleRate;
+  const double fa = rev ? std::max(0.0, last - b) : a, fb = rev ? last - a : b;
+  const auto r0 = static_cast<int64_t>(std::llround(fa * smp->sampleRate));
+  const auto r1 = std::min<int64_t>(au.frames(), static_cast<int64_t>(std::llround(fb * smp->sampleRate)));
+  std::vector<int64_t> on = ed::detectOnsets(au, {r0, r1}, sensitivity);
+  // Onsets → song ticks (the clip's mapping is monotonic: invert by bisection).
+  TempoMap map;
+  map.build(song);
+  const Tick len = song.clipLength(base);
+  std::vector<Tick> cuts;
+  for (int64_t f : on) {
+    double src = static_cast<double>(f) / smp->sampleRate;
+    if (rev) src = last - src;  // reversed clips read from the end
+    double lo = static_cast<double>(base.start), hi = static_cast<double>(base.start + len);
+    for (int k = 0; k < 48; ++k) {
+      double mid = 0.5 * (lo + hi);
+      (clipSourceAt(song, base, map, mid) < src ? lo : hi) = mid;
+    }
+    Tick t = static_cast<Tick>(std::llround(hi));
+    if (t > base.start && t < base.start + len) cuts.push_back(t);
+  }
+  std::sort(cuts.begin(), cuts.end());
+  cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+  std::vector<ObjectId> out{id};
+  ObjectId cur = id;
+  for (Tick t : cuts) {
+    ObjectId r = splitClipAt(song, cur, t);
+    if (r == kNoId) continue;
+    out.push_back(r);
+    cur = r;
+  }
+  return out;
+}
+
+int fitClipToTempo(Song& song, ObjectId id) {
+  Clip* c = song.clip(id);
+  SamplePtr smp;
+  double a = 0, b = 0;
+  if (!c || !sourceWindow(song, *c, smp, a, b)) return 0;
+  TempoMap map;
+  map.build(song);
+  const double bpm = map.bpmAt(static_cast<double>(c->start));
+  const double secs = warpedSpan(clipWarp(song, *c), a, b);  // K-85: its warped length
+  if (!(secs > 0)) return 0;
+  // Beats in the audio at the song tempo (quarter-note beats of the tempo).
+  const int beats = std::max(1, static_cast<int>(std::llround(secs * bpm / 60.0)));
+  const double tfCh = std::max(0.01, par(*song.channel(c->source), pp::SmpTimeStretch, 1));
+  c->stretch = 1.0;
+  c->rateFit = 1.0;
+  c->syncBpm = beats * 60.0 / secs;
+  c->tempoLock = true;  // J-193: a fit is a stretch
+  c->length = std::max<Tick>(1, static_cast<Tick>(std::llround(beats * song.ppq * tfCh)));
+  return beats;
+}
+
+float normalizeClip(Song& song, ObjectId id, double targetDb) {
+  Clip* c = song.clip(id);
+  SamplePtr smp;
+  double a = 0, b = 0;
+  if (!c || !sourceWindow(song, *c, smp, a, b)) return 0.f;
+  const size_t i0 = static_cast<size_t>(std::llround(a * smp->sampleRate));
+  const size_t i1 = std::min(smp->frames(), static_cast<size_t>(std::llround(b * smp->sampleRate)));
+  float peak = 0;
+  for (size_t i = i0; i < i1; ++i) peak = std::max({peak, std::fabs(smp->left[i]), std::fabs(smp->right[i])});
+  if (peak <= 1e-9f) return 0.f;
+  c->gain = static_cast<float>(std::pow(10.0, targetDb / 20.0) / peak);
+  return c->gain;
+}
+
+bool setClipStretch(Song& song, ObjectId id, double timeFactor, bool keepPitch) {
+  // J-157: a channel that keeps the pitch keeps its engine (Stretch or Rubber Band).
+  int mode = keepPitch ? 1 : 0;
+  if (const Clip* c = song.clip(id); c && keepPitch)
+    if (const Channel* ch = song.channel(c->source); ch && ch->plugin.type == "gl.sampler")
+      if (stretch::modeOf(par(*ch, pp::SmpStretchMode, 0)) == stretch::Mode::RubberBand) mode = static_cast<int>(stretch::Mode::RubberBand);
+  if (!setClipStretchMode(song, id, timeFactor, mode)) return false;
+  // J-193: a stretched clip keeps its bars when the tempo changes.
+  TempoMap map;
+  map.build(song);
+  if (Clip* c = song.clip(id)) lockClipToTempo(song, *c, map);
+  return true;
+}
+
+bool lockClipToTempo(const Song& song, Clip& c, const TempoMap& map) {
+  const Channel* ch = song.channel(c.source);
+  if (c.kind != ClipKind::Audio || !ch) return false;
+  if (c.syncBpm > 0) {  // already follows the tempo: only its pitch rule changes
+    c.tempoLock = true;
+    return true;
+  }
+  const Tick len = song.clipLength(c);
+  const double span = playedSpan(song, c, clipSourceAt(song, c, map, static_cast<double>(c.start + len)));  // K-85
+  if (len <= 0 || !(span > 0)) return false;
+  // Source seconds per tick as it plays now -> the tempo at which the
+  // clip's stretch plays it (Program.cpp: secPerTick = 60 / (syncBpm * ppq) / timeFactor).
+  const double secPerTick = span / static_cast<double>(len);
+  const double tf = clipRate(*ch, c).timeFactor;
+  const double bpm = 60.0 / (secPerTick * std::max(1, song.ppq) * tf);
+  if (!std::isfinite(bpm) || bpm <= 0) return false;
+  c.syncBpm = std::clamp(bpm, 1e-3, 1000.0);
+  c.tempoLock = true;
+  return true;
+}
+
+bool setClipFollowsTempo(Song& song, ObjectId id, bool follow) {
+  Clip* c = song.clip(id);
+  if (!c || c->kind != ClipKind::Audio) return false;
+  const Channel* ch = song.channel(c->source);
+  if (!ch) return false;
+  TempoMap map;
+  map.build(song);
+  if (follow) {
+    if (c->syncBpm > 0 && c->tempoLock) return false;
+    return lockClipToTempo(song, *c, map);
+  }
+  if (c->syncBpm <= 0) return false;
+  // Off: the speed the tempo gives it now becomes its own (fixed seconds).
+  const Tick len = song.clipLength(*c);
+  const double span = playedSpan(song, *c, clipSourceAt(song, *c, map, static_cast<double>(c->start + len)));  // K-85
+  const double secs = map.secondsAt(static_cast<double>(c->start + len)) - map.secondsAt(static_cast<double>(c->start));
+  Clip off = *c;
+  off.syncBpm = 0;
+  off.tempoLock = false;
+  if (span > 0 && secs > 0) {
+    const double speed = span / secs;  // source seconds per playback second, wanted
+    const ClipRate r = clipRate(*ch, off);
+    // rate.speed = k / (stretch * channel time); keep everything but the stretch.
+    const double k = r.speed * r.timeFactor;
+    const double tfCh = r.timeFactor / std::max(1e-9, off.stretch);
+    const double want = k / (speed * std::max(1e-9, tfCh));
+    off.stretch = std::clamp(want, 0.0625, 16.0);
+    *c = off;
+    if (std::fabs(off.stretch - want) > 1e-9)  // clamped: the length follows the audio instead
+      if (Tick n = ticksForSpan(song, *c, span); n > 0) song.clip(id)->length = n;
+    return true;
+  }
+  *c = off;
+  return true;
+}
+
+bool resetClipStretch(Song& song, ObjectId id) {
+  Clip* c = song.clip(id);
+  if (!c || c->kind != ClipKind::Audio || !song.channel(c->source)) return false;
+  if (c->syncBpm > 0 && !c->tempoLock) {  // an older synced clip: as before (stays synced)
+    const Channel* ch = song.channel(c->source);
+    return setClipStretchMode(song, id, 1.0, static_cast<int>(std::lround(par(*ch, pp::SmpStretchMode, 0))));
+  }
+  TempoMap map;
+  map.build(song);
+  const double span = playedSpan(song, *c, clipSourceAt(song, *c, map, static_cast<double>(c->start + song.clipLength(*c))));  // K-85
+  c->syncBpm = 0;
+  c->tempoLock = false;
+  c->stretch = 1.0;
+  c->rateFit = 1.0;
+  if (span > 0)
+    if (Tick n = ticksForSpan(song, *c, span); n > 0) song.clip(id)->length = n;
+  return true;
+}
+
+int refitClipsToTempo(Song& song, const std::vector<Clip>& before, const TempoMap& oldMap, const TempoMap& newMap) {
+  int changed = 0;
+  for (const Clip& b : before) {
+    if (b.kind != ClipKind::Audio || b.syncBpm > 0) continue;
+    Clip* c = song.clip(b.id);
+    if (!c || !(*c == b)) continue;  // gone, or changed by the same edit (already placed for the new tempo)
+    const Channel* ch = song.channel(b.source);
+    SamplePtr smp;
+    double a = 0, end = 0;
+    if (!ch || !sourceWindow(song, b, smp, a, end)) continue;
+    const double speed = clipRate(*ch, b).speed;
+    if (!(speed > 0)) continue;
+    // The audio it played: up to its clip end under the old tempo (within
+    // about a tick of the window's end: all of it; a tail past it: none).
+    const Tick len = song.clipLength(b);
+    const double endTick = static_cast<double>(b.start + len);
+    const double played = clipSourceAt(song, b, oldMap, endTick);
+    const double tickSrc = speed * 60.0 / (oldMap.bpmAt(std::max(0.0, endTick - 0.5)) * std::max(1, song.ppq));
+    // K-85: compared and refitted in the clip's warped seconds (its speed acts on them)
+    const std::vector<WarpPoint> w = clipWarp(song, b);
+    double cut = played;
+    if (warpedSpan(w, played, end) <= 0.51 * tickSrc) cut = end;
+    if (!(cut > a)) continue;
+    Clip n = b;
+    if (cut < end - 1e-9) n.audioEnd = cut;  // the cut stays exactly where it was (no drift over many tempo edits)
+    const double s0 = newMap.secondsAt(static_cast<double>(b.start));
+    const double t1 = newMap.tickAtSeconds(s0 + warpedSpan(w, a, cut) / speed);
+    n.length = std::max<Tick>(1, static_cast<Tick>(std::llround(t1 - static_cast<double>(b.start))));
+    if (n == b) continue;
+    *c = n;
+    ++changed;
+  }
+  return changed;
+}
+
+bool setClipStretchMode(Song& song, ObjectId id, double timeFactor, int mode) {
+  Clip* c = song.clip(id);
+  if (!c || c->kind != ClipKind::Audio || !(timeFactor > 0)) return false;
+  Channel* ch = song.channel(c->source);
+  if (!ch) return false;
+  // J-164: the clip keeps playing the same stretch of its audio: its length
+  // follows the speed change only (a time mode switch keeps it, "Time" x2
+  // doubles it, a trimmed clip stays trimmed), never snaps to the natural length.
+  TempoMap map;
+  map.build(song);
+  const double span = playedSpan(song, *c, clipSourceAt(song, *c, map, static_cast<double>(c->start + song.clipLength(*c))));  // K-85
+  if (ch->plugin.type == "gl.sampler" && ch->plugin.params.size() > static_cast<size_t>(pp::SmpStretchMode))
+    ch->plugin.params[pp::SmpStretchMode] = static_cast<float>(stretch::choiceOf(stretch::modeOf(mode)));  // J-153 / J-157: Resample, Stretch or Rubber Band
+  c = song.clip(id);
+  c->stretch = std::clamp(timeFactor, 0.0625, 16.0);
+  if (span > 0)
+    if (Tick n = ticksForSpan(song, *c, span); n > 0) song.clip(id)->length = n;
+  return true;
+}
+
+std::string renderClipStretch(Song& song, ObjectId id, double timeFactor, double semitones, int mode, const std::string& dir) {
+  Clip* c = song.clip(id);
+  SamplePtr smp;
+  double a = 0, b = 0;
+  if (!c || !sourceWindow(song, *c, smp, a, b) || !(timeFactor > 0)) return "";
+  ed::Audio src = ed::fromSample(*smp);
+  const auto f0 = static_cast<int64_t>(std::llround(a * smp->sampleRate));
+  const auto f1 = std::min<int64_t>(src.frames(), static_cast<int64_t>(std::llround(b * smp->sampleRate)));
+  ed::Audio win = ed::makeAudio(src.rate, src.channels, f1 - f0);
+  std::copy(src.L.begin() + f0, src.L.begin() + f1, win.L.begin());
+  std::copy(src.R.begin() + f0, src.R.begin() + f1, win.R.begin());
+  const auto sm = static_cast<ed::Stretch>(std::clamp(mode, 0, static_cast<int>(ed::Stretch::Count) - 1));
+  ed::Audio out = ed::stretchAudio(win, timeFactor, semitones, sm, 1);
+  if (out.frames() == 0) return "";
+  const Channel old = *song.channel(c->source);
+  std::string path;
+  if (!writeAudio(dir, old.name + " stretched", out, path)) return "";
+  {  // J-219: the stretched file is [a, b) of the original (Track Receipt)
+    receipt::Origin o;
+    o.source = old.plugin.data;
+    o.start = a, o.end = b;
+    o.speed = out.frames() > 0 ? (b - a) / (static_cast<double>(out.frames()) / out.rate) : 1.0;
+    o.reverse = c->reverse;
+    o.kind = "stretch";
+    receipt::writeOrigin(path, o);
+  }
+  // K-85: the markers follow into the stretched file ([a, b) scaled by its
+  // length), so the rendered clip keeps its warp.
+  std::vector<WarpMarker> warp;
+  if (!c->warp.empty() && b > a) {
+    const double k = static_cast<double>(out.frames()) / out.rate / (b - a);
+    const std::vector<WarpPoint> fw = warpPoints(c->warp, false, 0.0);
+    const double t0 = warpTimeAt(fw, a);
+    for (const WarpMarker& m : c->warp)
+      if (m.at > a && m.at < b) warp.push_back({m.id, (m.at - a) * k, (m.to - t0) * k});
+    if (!warp.empty()) {  // the window's ends pin the sections it cuts through
+      warp.push_back({0, 0.0, 0.0});
+      warp.push_back({0, (b - a) * k, (warpTimeAt(fw, b) - t0) * k});
+    }
+    normalizeWarp(warp, static_cast<double>(out.frames()) / out.rate);
+  }
+  ObjectId ch = addSamplerChannel(song, old.name + " (stretched)", path, old.mixerTrack, old.color);
+  c = song.clip(id);
+  c->warp = std::move(warp);
+  c->source = ch;
+  c->audioStart = 0;
+  c->audioEnd = 0;
+  c->stretch = 1.0;
+  c->rateFit = 1.0;
+  c->syncBpm = 0;
+  c->pitch = 0;
+  c->speedPitch = 0;  // J-164
+  if (Tick n = audioClipNaturalLength(song, *c); n > 0) song.clip(id)->length = n;
+  return path;
+}
+
+namespace {
+// J-219: a render names the files that went into it (Track Receipt maps its
+// uses back to them; which parts of them is not known).
+void noteRender(const Song& song, const std::set<ObjectId>& keep, const std::string& path) {
+  receipt::Origin o;
+  o.rangeKnown = false;
+  o.kind = "render";
+  std::set<std::string> seen;
+  for (const auto& c : song.playlist) {
+    if (!keep.count(c.id) || c.muted) continue;
+    std::vector<ObjectId> chans;
+    if (c.kind == ClipKind::Audio) chans.push_back(c.source);
+    else if (const Pattern* p = song.pattern(c.pattern)) {
+      for (const auto& [ch, st] : p->steps) chans.push_back(ch);
+      for (const auto& [ch, n] : p->notes) chans.push_back(ch);
+    }
+    for (ObjectId id : chans)
+      if (const Channel* ch = song.channel(id); ch && !ch->plugin.data.empty() && ch->plugin.data.front() == '/' && seen.insert(ch->plugin.data).second)
+        o.sources.push_back(ch->plugin.data);
+  }
+  if (o.sources.empty()) return;
+  o.source = o.sources.front();
+  receipt::writeOrigin(path, o);
+}
+
+// Renders `keep` clips over [a, b) with a neutral master. Empty on failure.
+bool renderSpan(const Song& song, const std::set<ObjectId>& keep, Tick a, Tick b, double sr, ed::Audio& out) {
+  Song r = song;
+  std::vector<Clip> kept;
+  for (const auto& c : r.playlist)
+    if (keep.count(c.id) && !c.muted) {
+      Clip k = c;
+      k.start -= a;
+      kept.push_back(k);
+    }
+  if (kept.empty()) return false;
+  r.playlist = std::move(kept);
+  for (auto& t : r.tracks) t.muted = false;
+  r.live.areaEnd = 0;
+  if (!r.mixer.empty()) {  // master: unity, no effects
+    MixerTrack& m = r.mixer[0];
+    m.volume = 0.8f;
+    m.pan = 0;
+    m.stereoSep = 0;
+    m.muted = false;
+    m.eqGain = {0.0f, 0.0f, 0.0f};
+    for (auto& s : m.slots) s.enabled = false;
+  }
+  RenderOptions opt;
+  opt.sampleRate = static_cast<int>(sr);
+  AudioBuffer buf = renderSong(r, opt);
+  TempoMap map;
+  map.build(r);
+  const auto n = static_cast<int64_t>(std::llround(map.secondsAt(static_cast<double>(b - a)) * sr));
+  if (n <= 0) return false;
+  out = ed::makeAudio(sr, 2, n);
+  for (int64_t i = 0; i < n && static_cast<size_t>(i) < buf.frames; ++i) {
+    out.L[static_cast<size_t>(i)] = buf.at(0, static_cast<size_t>(i));
+    out.R[static_cast<size_t>(i)] = buf.channels > 1 ? buf.at(1, static_cast<size_t>(i)) : buf.at(0, static_cast<size_t>(i));
+  }
+  return true;
+}
+}  // namespace
+
+std::string renderClipsToWav(const Song& song, const std::set<ObjectId>& keep, Tick a, Tick b, double sr, const std::string& dir,
+                             const std::string& name) {
+  ed::Audio au;
+  if (b <= a || !renderSpan(song, keep, a, b, sr, au)) return "";
+  std::string path;
+  if (!writeAudio(dir, name, au, path)) return std::string();
+  noteRender(song, keep, path);
+  return path;
+}
+
+ObjectId consolidateClips(Song& song, const std::set<ObjectId>& clips, const std::string& dir, double sr, bool replace) {
+  Tick a = 0, b = 0;
+  int track = -1;
+  std::string name;
+  bool first = true;
+  for (const auto& c : song.playlist) {
+    if (!clips.count(c.id) || c.muted || c.kind == ClipKind::Automation) continue;
+    const Tick e = c.start + song.clipLength(c);
+    if (first || c.start < a) {
+      a = c.start;
+      track = c.track;
+      name = c.kind == ClipKind::Audio && song.channel(c.source) ? song.channel(c.source)->name
+             : song.pattern(c.pattern)                           ? song.pattern(c.pattern)->name
+                                                                 : std::string("Clip");
+    }
+    b = first ? e : std::max(b, e);
+    first = false;
+  }
+  if (first || b <= a) return kNoId;
+  ed::Audio au;
+  if (!renderSpan(song, clips, a, b, sr, au)) return kNoId;
+  std::string path;
+  if (!writeAudio(dir, name + " consolidated", au, path)) return kNoId;
+  noteRender(song, clips, path);
+  ObjectId ch = addSamplerChannel(song, name + " (rendered)", path, kNoId, 0x8A9BA8);
+  if (replace) song.playlist.erase(std::remove_if(song.playlist.begin(), song.playlist.end(), [&](const Clip& c) {
+                                     return clips.count(c.id) && c.kind != ClipKind::Automation;
+                                   }),
+                                   song.playlist.end());
+  Clip c;
+  c.id = song.allocateId();
+  c.kind = ClipKind::Audio;
+  c.source = ch;
+  c.track = std::max(0, track);
+  c.start = a;
+  c.length = b - a;
+  song.playlist.push_back(c);
+  return c.id;
+}
+
+ObjectId bounceTrack(Song& song, int track, const std::string& dir, double sr) {
+  std::set<ObjectId> ids;
+  for (const auto& c : song.playlist)
+    if (c.track == track && !c.muted && c.kind != ClipKind::Automation) ids.insert(c.id);
+  if (ids.empty()) return kNoId;
+  ObjectId id = consolidateClips(song, ids, dir, sr, false);
+  if (id == kNoId) return kNoId;
+  // First empty track below the source.
+  int dest = -1;
+  for (int t = track + 1; t < kMaxPlaylistTracks && dest < 0; ++t) {
+    bool used = false;
+    for (const auto& c : song.playlist) used = used || (c.track == t && c.id != id);
+    if (!used) dest = t;
+  }
+  if (dest < 0) dest = track;
+  if (static_cast<int>(song.tracks.size()) <= dest) song.tracks.resize(static_cast<size_t>(dest) + 1);
+  for (auto& c : song.playlist) {
+    if (ids.count(c.id)) c.muted = true;
+    if (c.id == id) c.track = dest;
+  }
+  if (song.tracks[static_cast<size_t>(track)].name.empty() == false)
+    song.tracks[static_cast<size_t>(dest)].name = song.tracks[static_cast<size_t>(track)].name + " (bounced)";
+  return id;
+}
+
+}  // namespace gl

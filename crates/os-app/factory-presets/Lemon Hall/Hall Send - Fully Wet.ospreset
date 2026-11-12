@@ -1,0 +1,12 @@
+OSPRESET 1
+plugin=Lemon Hall	id=clap:org.openstudio.lemon-hall	format=clap	body=params
+Decay = 260
+Pre-delay = 180
+Early balance = 250
+Diffusion = 850
+Low cut = 100
+High cut = 7200
+HF decay ratio = 350
+Modulation = 300
+Width = 1000
+Mix = 1000

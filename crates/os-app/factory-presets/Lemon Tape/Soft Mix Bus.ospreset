@@ -1,0 +1,8 @@
+OSPRESET 1
+plugin=Lemon Tape	id=clap:org.openstudio.lemon-tape	format=clap	body=params
+Input = 525
+Soften = 250
+Head bump = 150
+Flutter = 25
+Output = 475
+Mix = 500

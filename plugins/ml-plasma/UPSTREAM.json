@@ -1,0 +1,19 @@
+{
+  "project": "Gridline / Plasma",
+  "author": "lolitemaultes",
+  "repository": "https://github.com/lolitemaultes/Gridline",
+  "commit": "5ed1fa53f52df0009d2c6294a5e0b6e6861dba35",
+  "retrieved": "2026-11-11",
+  "license": "GPL-3.0-only",
+  "modifications": [
+    "ML plugin identity and editor branding",
+    "AQUILA palette",
+    "private stock-plugin embedding and visibility",
+    "isolated editor preferences",
+    "capture host automation before saving native state",
+    "standalone-target SDL header dependency",
+    "offline renderer skips physical MIDI",
+    "audio-thread native reset clears voices, tails, pending events and delay history",
+    "CLAP state notifications for editor asset, bulk, preset and undo/redo changes"
+  ]
+}

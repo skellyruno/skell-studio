@@ -1,0 +1,5 @@
+Airwindows ToTape6 by Chris Johnson. MIT.
+Source revision: 94cb6793893027fb418ffac7cdbfcb9b4c82aadb
+https://github.com/airwindows/airwindows/tree/94cb6793893027fb418ffac7cdbfcb9b4c82aadb/plugins/WinVST/ToTape6
+
+Original source files are unchanged. Only ToTape6Proc.cpp is compiled. The Lemon adapter replaces the VST2 SDK shell with a small C ABI, uses deterministic PRNG seeds on reset, bounds flutter at very high rates and floors DSP rate to 22050 Hz for stability. No VST2 SDK is used. Rust supplies smoothed parameter updates and exact dry bypass.

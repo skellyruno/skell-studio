@@ -1,7 +1,7 @@
 name: Skell Studio — branding and engine compile gates
 on:
   push:
-    branches: [main]
+    branches: [main, dev/skell-fast-windows-cache]
     paths:
       - ".github/workflows/skell-studio-verify.yml"
       - "crates/os-app/**"
@@ -33,13 +33,29 @@ jobs:
   windows-check:
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      # Cache Rust compiler outputs across ephemeral GitHub runners.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+      LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Restore Rust dependencies (including failed-check builds)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skell-windows-check
+          cache-on-failure: true
+          # Initial branch run may create the cache; normal verification runs
+          # subsequently reuse it. Other branches only restore caches.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev/skell-fast-windows-cache' }}
+      - name: Enable shared compiler-output cache
+        uses: mozilla-actions/sccache-action@v0.0.11
       - name: Verify Skell Studio Windows code compiles
         shell: pwsh
-        env:
-          OPENSTUDIO_NO_PLUGIN_BUILD: "1"
-          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
         run: cargo check --locked -p os-app --bin skell-studio
+      - name: Show cache hits and misses
+        if: always()
+        shell: pwsh
+        run: sccache --show-stats

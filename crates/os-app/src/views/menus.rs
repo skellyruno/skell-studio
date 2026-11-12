@@ -456,7 +456,7 @@ const HELP: &[Item] = &[
     it(crate::change_log::LABEL, "").on(),
     it("Check for updates", "").on().cmd(MenuCmd::CheckUpdates),
     SEP,
-    it("AQUILA website", "").on().cmd(MenuCmd::Web(crate::help_links::WEBSITE_URL)),
+    it("Skell Studio website", "").on().cmd(MenuCmd::Web(crate::help_links::WEBSITE_URL)),
     it("About...", "").cmd(MenuCmd::Settings(crate::views::settings::ABOUT)),
     it("Community Discord", "").on(),
 ];

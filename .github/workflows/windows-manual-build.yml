@@ -1,0 +1,25 @@
+name: Windows DAW - manual test build
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build standalone DAW
+        shell: pwsh
+        env:
+          OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        run: cargo build --locked --release -p os-app --bin lemonstudio
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SkellStudio-Windows-DAW-Engineering-Baseline
+          path: target/release/lemonstudio.exe
+          if-no-files-found: error
+          retention-days: 14

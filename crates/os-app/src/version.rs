@@ -21,7 +21,7 @@ pub const CHANNEL: Option<&str> = option_env!("LEMON_CHANNEL");
 pub const NIGHTLY: bool = cfg!(lemon_nightly);
 
 /// The program's name, where the system shows it (the window's title, the file association).
-pub const NAME: &str = if NIGHTLY { "AQUILA Nightly" } else { "AQUILA" };
+pub const NAME: &str = if NIGHTLY { "Skell Studio Nightly" } else { "Skell Studio" };
 
 /// The version as Lemon Studio shows it: "2026.11.7.1 nightly", "1.0.0", or "0.0.1" for a build from source.
 pub fn text() -> &'static str {

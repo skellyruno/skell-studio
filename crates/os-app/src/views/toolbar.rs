@@ -1388,10 +1388,7 @@ fn window_buttons(ui: &mut Ui, c: &Ctx, which: Range<usize>) -> bool {
             }
         }
         let ink = if super::lemon(ui) && !c.s.vintage_2005 {
-            if hov || !c.s.toolbar.flat {
-                studio_tile(ui, r.inset(1.0), if hov { ui.t.button_hi } else { ui.t.toolbar.mix(ui.t.button, 0.45) });
-            }
-            if hov { ui.t.accent } else { ui.t.glyph }
+            super::skell_chrome::tool(ui, r.inset(1.0), false, hov)
         } else {
             super::tool_face(ui, r, if hov { super::Look::Hot } else { super::Look::Off })
         };
@@ -1400,7 +1397,23 @@ fn window_buttons(ui: &mut Ui, c: &Ctx, which: Range<usize>) -> bool {
             ui.c.fill_rect_gradient(r.inset(2.),Color::rgb(0x87999e),Color::rgb(0x344d55),11.);
             ui.c.stroke_rrect(r.inset(4.),9.,1.,Color::rgb(0x293f46));
             icons::draw(ui.c,icon,Rect::new(r.x+7.,r.y+8.,16.,16.),if hov {ui.t.accent}else{Color::rgb(0xc3d7d0)});
-        } else {icons::draw(ui.c, icon, Rect::new(r.x + 5.0, r.y + 6.5, 20.0, 20.0), ink);}
+        } else if super::lemon(ui) {
+            // This is the first-party Skell Studio workspace switcher.
+            // The icon and text share the original 30x33 click target.
+            let names = ["ARR", "KEYS", "RACK", "MIX", "FILES",
+                         "PROJ", "PLUG", "TAP", "TOUCH"];
+            icons::draw(ui.c, icon,
+                Rect::new(r.x + 7.0, r.y + 3.5, 16.0, 16.0), ink);
+            ui.c.text_center(
+                Font::condensed(8, 4),
+                Rect::new(r.x + 1.0, r.y + 21.0, r.w - 2.0, 10.0),
+                if hov { ui.t.accent } else { ui.t.text_dim },
+                names[i],
+            );
+        } else {
+            icons::draw(ui.c, icon,
+                Rect::new(r.x + 5.0, r.y + 6.5, 20.0, 20.0), ink);
+        }
     }
     // FL's news panel (x 1304..1470, with its separator) is left out: it suggested an online service Lemon Studio
     // does not have. A tips panel may take its place (spec: ui/main-window.md §3).

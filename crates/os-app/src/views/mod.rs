@@ -23,6 +23,7 @@ pub mod patterns;
 pub mod perf;
 pub mod plugin_palette;
 pub mod playlist;
+pub mod skell_chrome;
 pub mod project_forms;
 pub mod rack;
 pub mod remote_box;

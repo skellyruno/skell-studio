@@ -97,6 +97,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn never_migrate_upstream_settings_without_consent() {
+        assert!(legacy_dir().is_none());
+        assert_eq!(profile_name(None), "Skell Studio");
+    }
+
+    #[test]
     fn development_profile_is_isolated_for_direct_launch() {
         assert_eq!(profile_name(Some(std::path::Path::new("skell-studio-development.exe"))), "Skell Studio Public Preview");
         assert_eq!(profile_name(Some(std::path::Path::new("SKELL-STUDIO-DEVELOPMENT.exe"))), "Skell Studio Public Preview");

@@ -7,13 +7,13 @@
 //! out on GitHub: the releases (the site has no changelog of its own and links to them too), bug reports and the
 //! source code. Diagnostics writes a report instead (`crate::diagnostics`).
 
-pub const WEBSITE_URL: &str = "https://getlemonstudio.app/";
-pub const HELP_INDEX_URL: &str = "https://getlemonstudio.app/wiki/";
+pub const WEBSITE_URL: &str = "https://skellyr.uno/";
+pub const HELP_INDEX_URL: &str = "https://github.com/skellyruno/skell-studio#readme";
 pub const SHORTCUTS_URL: &str = "https://getlemonstudio.app/wiki/reference/keyboard-shortcuts/";
 pub const TROUBLESHOOTING_URL: &str = "https://getlemonstudio.app/wiki/reference/troubleshooting/";
-pub const WHATS_NEW_URL: &str = "https://github.com/ItsAlphaNeon/Lemon-Studio/releases";
-pub const REPORT_BUG_URL: &str = "https://github.com/ItsAlphaNeon/Lemon-Studio/issues/new/choose";
-pub const SOURCE_CODE_URL: &str = "https://github.com/ItsAlphaNeon/Lemon-Studio";
+pub const WHATS_NEW_URL: &str = "https://github.com/skellyruno/skell-studio/commits/main/";
+pub const REPORT_BUG_URL: &str = "https://github.com/skellyruno/skell-studio/issues/new/choose";
+pub const SOURCE_CODE_URL: &str = "https://github.com/skellyruno/skell-studio";
 
 /// HELP ▸ Tutorials ▸, as (entry, page): the wiki's pages for starting out, in the order it gives them.
 pub const TUTORIALS: [(&str, &str); 5] = [
@@ -118,7 +118,7 @@ mod tests {
             ("Keyboard shortcuts", super::SHORTCUTS_URL),
             ("Troubleshooting", super::TROUBLESHOOTING_URL),
             ("Report a bug", super::REPORT_BUG_URL),
-            ("AQUILA website", super::WEBSITE_URL),
+            ("Skell Studio website", super::WEBSITE_URL),
         ] {
             assert!(works(HELP_MENU, item_at(HELP_MENU, at(label)).unwrap()));
             app.menu_item(HELP_MENU, at(label));
@@ -130,7 +130,9 @@ mod tests {
     #[test]
     fn help_goes_to_the_website() {
         let pages = [super::HELP_INDEX_URL, super::SHORTCUTS_URL, super::TROUBLESHOOTING_URL, super::PLUGINS_URL];
-        for url in pages.into_iter().chain(super::TUTORIALS.map(|(_, url)| url)) {
+        assert!(pages[0].starts_with("https://github.com/skellyruno/skell-studio"));
+        // Upstream instructional references remain available until Skell-specific documentation ships.
+        for url in pages.into_iter().skip(1).chain(super::TUTORIALS.map(|(_, url)| url)) {
             assert!(url.starts_with("https://getlemonstudio.app/wiki/"), "{url}");
         }
     }

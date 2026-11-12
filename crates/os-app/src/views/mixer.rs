@@ -454,8 +454,15 @@ fn title_tools(ui: &mut Ui, s: &State, r: Rect) {
         let b=Rect::new(r.x+50.0+i as f32*26.0,y-9.0,23.0,18.0);
         let hover=ui.hit(b,Action::Mix(MHit::View(mode)),label);
         let active=mx::view(s)==mode;
-        ui.c.fill_rrect(b,3.0,if active {ui.t.accent} else if hover {ui.t.button_hi} else {ui.t.s(0x292f32)});
-        let ink=if active {ui.t.s(0x182024)} else {ui.t.text};
+        let ink = if super::lemon(ui) && !s.vintage_2005 {
+            super::skell_chrome::tool(ui, b, active, hover)
+        } else {
+            ui.c.fill_rrect(b, 3.0,
+                if active { ui.t.accent }
+                else if hover { ui.t.button_hi }
+                else { ui.t.s(0x292f32) });
+            if active { ui.t.s(0x182024) } else { ui.t.text }
+        };
         if mode==crate::rack_mixer::VIEW {
             // One vertical console module with stacked knobs, deliberately unlike either grid icon.
             ui.c.stroke_rrect(Rect::new(b.x+7.,b.y+2.,9.,14.),1.,1.,ink);

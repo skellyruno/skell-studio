@@ -1597,13 +1597,8 @@ fn tool_face(ui: &mut Ui, b: Rect, on: bool, hov: bool) -> Color {
     if os_ui::kit::custom_button_in(ui.c, t, b, state, t.appearance.playlist_buttons) {
         return os_ui::kit::ink(t, state);
     }
-    if super::lemon(ui) {
-        if on {
-            lk::lit_in(ui.c, ui.t, b.outset(1.0), lk::r_btn(t), hov);
-        } else if hov {
-            ui.c.fill_rrect(b.outset(1.0), lk::r_btn(t), t.button_hi);
-        }
-        return if on { lk::ink_on_lit(ui.t) } else { t.glyph };
+    if super::lemon(ui) && !t.style.vintage_2005 {
+        return super::skell_chrome::tool(ui, b, on, hov);
     }
     if on {
         ui.c.fill_rrect(b.outset(1.0), 3.0, t.glyph.with_alpha(40));

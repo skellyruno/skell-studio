@@ -507,15 +507,9 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         let state = os_ui::kit::State::hover(hov).with_on(on);
         let c = if os_ui::kit::custom_button_in(ui.c, t, b, state, t.appearance.piano_buttons) {
             os_ui::kit::ink(t, state)
-        } else if super::lemon(ui) {
-            // Lemon: the active tool is a lit rounded square with a dark glyph.
-            let bg = b.outset(1.0);
-            if on {
-                lk::lit_in(ui.c, ui.t, bg, lk::r_btn(t), hov);
-            } else if hov {
-                ui.c.fill_rrect(bg, lk::r_btn(t), t.button_hi);
-            }
-            if on { lk::ink_on_lit(ui.t) } else { t.glyph }
+        } else if super::lemon(ui) && !t.style.vintage_2005 {
+            // The same hardware button is used by the playlist and mixer.
+            super::skell_chrome::tool(ui, b, on, hov)
         } else if on {
             t.pill
         } else if hov {

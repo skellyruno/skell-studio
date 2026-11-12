@@ -296,7 +296,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
         r.y + 12.,
         r.w - 98.,
         t.text,
-        if change_log { crate::change_log::LABEL } else { "AQUILA User Guide" },
+        if change_log { crate::change_log::LABEL } else { "Skell Studio User Guide" },
     );
     button(
         ui,
@@ -310,7 +310,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
         r.y + 41.,
         r.w - 32.,
         t.text_dim,
-        if change_log { "AQUILA release history · available offline" }
+        if change_log { "Skell Studio release history · available offline" }
         else { "Browse topics or search by feature, task, or shortcut. Available offline." },
     );
 

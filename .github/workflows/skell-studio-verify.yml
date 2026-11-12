@@ -7,6 +7,8 @@ on:
       - "crates/os-app/**"
       - "crates/os-theme/**"
       - "crates/os-paths/**"
+      - "plugins/smith/**"
+      - "crates/os-hostlink/**"
       - "Cargo.toml"
       - "Cargo.lock"
   workflow_dispatch:

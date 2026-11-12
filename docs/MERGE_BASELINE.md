@@ -4,8 +4,8 @@
 
 | Archive | SHA-256 |
 | --- | --- |
-| ML-Studio-michael-lane.zip | *(See `docs/merge_provenance.json` inside the combined source package for SHA-256.)* |
-| ADE-Studio-michael-lane.zip | *(See `docs/merge_provenance.json` inside the combined source package for SHA-256.)* |
+| ML-Studio-michael-lane.zip | `25b667c080781ded47368ef07c060b4db4ed8efa4651a16d522f91667c201335` |
+| ADE-Studio-michael-lane.zip | `f81745dd9445fdb05ad89f9daa13c8c9561ebaf081b2678434e6e91b447d6302` |
 
 ## Strategy
 

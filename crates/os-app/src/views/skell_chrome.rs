@@ -60,3 +60,43 @@ pub fn meter_well(ui: &mut Ui, rect: Rect, selected: bool) {
     ui.c.stroke_rrect(rect.inset(0.5), 3.0, 1.0,
         if selected { t.accent.with_alpha(170) } else { t.window_border });
 }
+
+/// Shared, responsive button face for arrangement, piano and mixer tools.
+/// We deliberately draw only visuals: each caller retains its existing hit
+/// rect, shortcut, accessibility hint, custom skins and state transitions.
+pub fn tool(ui: &mut Ui, rect: Rect, selected: bool, hovered: bool) -> Color {
+    let t = ui.t;
+    if rect.w < 4.0 || rect.h < 4.0 {
+        return if selected { t.accent } else { t.glyph };
+    }
+    let radius = (rect.h * 0.23).clamp(2.0, 4.5);
+    let face = if selected {
+        t.button.mix(t.accent, if hovered { 0.23 } else { 0.15 })
+    } else if hovered {
+        t.button_hi
+    } else {
+        t.button
+    };
+    ui.c.fill_rect_gradient(rect, face.shade(0.12), face.shade(-0.14), radius);
+    ui.c.stroke_rrect(rect.inset(0.5), radius, 1.0,
+        if selected { t.accent.with_alpha(220) }
+        else if hovered { t.text_dim.with_alpha(130) }
+        else { t.window_border.with_alpha(110) });
+    if selected && rect.w > 10.0 && rect.h > 9.0 {
+        // A slim "energized" underline, independent of all hover animations.
+        ui.c.fill_rrect(
+            Rect::new(rect.x + 3.0, rect.bottom() - 2.7, (rect.w - 6.0).max(1.0), 1.5),
+            0.75, t.accent,
+        );
+    }
+    if selected || hovered { t.accent } else { t.glyph }
+}
+
+/// Uniform low-contrast title-band trim. No extra window hit regions.
+pub fn title_trim(ui: &mut Ui, rect: Rect) {
+    if rect.w < 35.0 || rect.h < 20.0 { return; }
+    let t = ui.t;
+    ui.c.fill_rect(Rect::new(rect.x, rect.y + 21.0, rect.w, 1.0), t.window_border);
+    ui.c.fill_rect(Rect::new(rect.x + 1.0, rect.y + 21.0,
+        (rect.w * 0.27).min(210.0), 1.0), t.accent.with_alpha(150));
+}

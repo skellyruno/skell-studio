@@ -8,6 +8,7 @@ on:
       - "crates/os-theme/**"
       - "crates/os-paths/**"
       - "plugins/smith/**"
+      - "plugins/lemon-chop/**"
       - "crates/os-hostlink/**"
       - "Cargo.toml"
       - "Cargo.lock"

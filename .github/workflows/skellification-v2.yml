@@ -11,7 +11,7 @@ permissions:
   contents: write
 concurrency:
   group: skell-ui-v2-apply
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   linux-tests:
     runs-on: ubuntu-latest

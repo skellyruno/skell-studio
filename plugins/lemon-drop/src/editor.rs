@@ -911,7 +911,15 @@ mod win32 {
                     }
                     1
                 }
-                Cmd::Changed | Cmd::Note | Cmd::Automate | Cmd::Audio | Cmd::Resizable | Cmd::SetSize | Cmd::Notes => 0,
+                Cmd::Changed
+                | Cmd::Note
+                | Cmd::Automate
+                | Cmd::Audio
+                | Cmd::Resizable
+                | Cmd::SetSize
+                | Cmd::Notes
+                | Cmd::BrowseSample
+                | Cmd::SampleFit => 0,
             }
         }
 

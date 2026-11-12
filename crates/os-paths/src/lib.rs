@@ -120,10 +120,7 @@ mod tests {
             }
         }
         assert_eq!(user_file("monitor.txt").map(|f| f.file_name().unwrap().to_owned()), user_dir().map(|_| "monitor.txt".into()));
-        // The old folder sits next to it.
-        if let (Some(old), Some(new)) = (legacy_dir(), user_dir()) {
-            assert_eq!(old.parent(), new.parent());
-            assert_eq!(old.file_name().and_then(|n| n.to_str()), Some(LEGACY));
-        }
+        // A distinct product must never take over an upstream profile.
+        assert!(legacy_dir().is_none());
     }
 }

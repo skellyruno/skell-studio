@@ -238,14 +238,25 @@ pub fn draw_with_default(
     }
 }
 
-/// The ML emblem in a single tint for toolbar and workspace chrome.
+/// Skell Studio's provisional geometric skull mark, drawn natively at any DPI.
+/// This replaces the inherited ML monogram. A final shared SkellCore skull can
+/// replace the geometry without requiring callers to change.
 pub fn logo(cv: &mut Canvas, cx: f32, cy: f32, r: f32, c: Color) {
-    let mut g = Glyph::new();
-    let scale = 2.0 * r / 880.0;
+    let scale = 2.0 * r / 900.0;
     let (x, y) = (cx - r, cy - r);
-    g.commands("M 0 438 L 153 288 L 254 393 L 428 201 L 428 650 L 668 650 L 439 878 L 209 650 L 350 650 L 350 408 L 254 523 L 153 408 L 153 591 Z", x, y, scale, None);
-    g.commands("M 180 262 L 442 0 L 878 438 L 823 495 L 542 202 L 542 505 L 813 505 L 715 603 L 464 603 L 464 139 L 447 123 L 251 329 Z", x, y, scale, None);
-    cv.glyph(c, &g);
+    let mut head = Glyph::new();
+    head.commands("M 245 95 L 345 35 L 560 35 L 660 95 L 757 240 L 748 440 L 683 562 L 617 611 L 617 744 L 554 796 L 492 756 L 454 796 L 403 756 L 351 796 L 287 747 L 287 611 L 219 560 L 152 438 L 141 240 Z", x, y, scale, None);
+    cv.glyph(c, &head);
+    let mut sockets = Glyph::new();
+    sockets.commands("M 223 319 L 392 333 L 361 464 L 285 483 L 216 425 Z", x, y, scale, None);
+    sockets.commands("M 510 333 L 680 319 L 686 425 L 617 483 L 542 464 Z", x, y, scale, None);
+    sockets.commands("M 450 476 L 498 548 L 402 548 Z", x, y, scale, None);
+    cv.glyph(Color::rgb(0x0a100b), &sockets);
+    let mut teeth = Glyph::new();
+    teeth.commands("M 349 633 L 369 633 L 369 746 L 349 764 Z", x, y, scale, None);
+    teeth.commands("M 444 633 L 464 633 L 464 764 L 444 769 Z", x, y, scale, None);
+    teeth.commands("M 539 633 L 559 633 L 559 764 L 539 746 Z", x, y, scale, None);
+    cv.glyph(Color::rgb(0x0a100b), &teeth);
 }
 
 #[cfg(test)]

@@ -223,7 +223,7 @@ struct Status { busy:bool, cancel:bool, changed:bool, index:Option<usize>, messa
 static STATUS: OnceLock<Mutex<Status>>=OnceLock::new();
 fn status()->&'static Mutex<Status>{STATUS.get_or_init(Default::default)}
 fn cache()->Result<PathBuf,String>{
-    let dir=os_paths::user_dir().ok_or("Cannot find AQUILA's user folder")?.join("Plugin Downloads");
+    let dir=os_paths::user_dir().ok_or("Cannot find Skell Studio's user folder")?.join("Plugin Downloads");
     fs::create_dir_all(&dir).map_err(|e|e.to_string())?;Ok(dir)
 }
 fn report(message:String){let mut s=status().lock().unwrap();s.message=message;s.changed=true;}

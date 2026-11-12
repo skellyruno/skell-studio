@@ -22,7 +22,7 @@ pub const EXT: &str = ".lmn";
 pub const LEMON_EXT: &str = ".lemon";
 /// The type's description and the open verb's name (spec).
 const DESCRIPTION: &str = "AQUILA project";
-const FRIENDLY_NAME: &str = "AQUILA";
+const FRIENDLY_NAME: &str = "Skell Studio";
 /// The per-user classes, where every write goes (`Root::Classes`).
 const CLASSES: &str = r"Software\Classes";
 /// Windows' "Open with ▸ Always" choice for `.lmn` (`Root::User`), value `ProgId`.
@@ -464,8 +464,8 @@ mod tests {
         assert!(blocked(PROGRAM, &seen()) && !ticked(PROGRAM, &seen()));
         reg::put("HKCU", choice, "ProgId", "lemonstudio.lmnproject");
         assert!(ticked(PROGRAM, &seen()), "AQUILA's own type, any case");
-        reg::put("HKCU", choice, "ProgId", r"Applications\lemonstudio.exe");
-        reg::put("HKCU", r"Software\Classes\Applications\lemonstudio.exe\shell\open\command", "", &format!("\"{PROGRAM}\" \"%1\""));
+        reg::put("HKCU", choice, "ProgId", r"Applications\skell-studio.exe");
+        reg::put("HKCU", r"Software\Classes\Applications\skell-studio.exe\shell\open\command", "", &format!("\"{PROGRAM}\" \"%1\""));
         assert!(ticked(PROGRAM, &seen()), "a type that runs this program");
         reg::put("HKCU", choice, "ProgId", "Unknown.Type");
         assert!(blocked(PROGRAM, &seen()), "a type without a command is another program's");

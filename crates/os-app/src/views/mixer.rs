@@ -646,7 +646,12 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let body = tint.map_or(base, |c| mix(base, c, 0.12));
     let header = tint.map_or(ui.t.s(0x343b40), |c| mix(ui.t.s(0x303639), c, 0.24));
     let lemon = super::lemon(ui);
-    if console || t.style.vintage_2005 {
+    if lemon && !t.style.vintage_2005 {
+        // One native Skell panel across narrow, wide and rack mixers.
+        super::skell_chrome::panel(ui,
+            Rect::new(left,ly.y(HEAD_Y1)+1.,width,bottom-ly.y(HEAD_Y1)-1.),
+            selected || also, tint);
+    } else if console || t.style.vintage_2005 {
         console_skin::panel(ui,Rect::new(left,ly.y(HEAD_Y1)+1.,width,bottom-ly.y(HEAD_Y1)-1.),body,selected);
     } else if lemon {
         // Lemon (spec: ui/lemon-design.md §8): each strip is a rounded card on the dark gap colour.
@@ -719,6 +724,9 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         (ly.y(METER_Y1) - ly.y(METER_Y0) - 26.0).clamp(38.0, meter_max));
     let meter=if standard {Rect::new(left+14.,ly.y(PANEL_Y0)+29.,width-28.,(ly.y(LED_Y)-ly.y(PANEL_Y0)-45.).max(40.))}else{meter};
     if show_meters {
+        if lemon && !s.vintage_2005 {
+            super::skell_chrome::meter_well(ui, meter.outset(2.0), selected);
+        }
         ui.live(Live::Meter(n), meter.outset(if full {4.0}else{2.0}));
         let levels = s.mixer.meters.get(usize::from(n)).map_or([0.0; 2], |m| m.vu);
         let clipped = s.mixer.meters.get(usize::from(n)).is_some_and(|m| m.hold.iter().any(|&db| db >= 0.0));
@@ -1064,7 +1072,21 @@ fn fader_value(db: f32) -> f32 {
 
 /// Fader handle centred on (cx, cy): 14 × 23.
 fn fader_handle(ui: &mut Ui, cx: f32, cy: f32, selected: bool, hov: bool) {
-    os_ui::kit::fader_handle(ui.c, ui.t, cx, cy, selected, os_ui::kit::State::hover(hov));
+    if super::lemon(ui) && !ui.t.style.vintage_2005 {
+        // Weighted metal fader cap; hit/automation area belongs to the caller.
+        let face = Rect::new(cx - 8.0, cy - 12.0, 16.0, 24.0);
+        ui.c.fill_rrect(face.outset(1.5), 3.5, ui.t.sunken);
+        ui.c.fill_rect_gradient(face,
+            if hov { ui.t.text_dim } else { ui.t.s(0x728374) },
+            ui.t.s(0x253327), 3.0);
+        ui.c.stroke_rrect(face, 3.0, 1.0,
+            if selected { ui.t.accent } else { ui.t.window_border });
+        ui.c.fill_rect(Rect::new(face.x + 2.0, cy - 2.0, 12.0, 4.0), ui.t.s(0x0a110c));
+        ui.c.fill_rect(Rect::new(face.x + 3.0, cy, 10.0, 1.0),
+            if selected { ui.t.accent } else { ui.t.text });
+    } else {
+        os_ui::kit::fader_handle(ui.c, ui.t, cx, cy, selected, os_ui::kit::State::hover(hov));
+    }
 }
 
 fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
@@ -1081,7 +1103,9 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
         return;
     }
     let themed = ui.mixer_finish == Finish::Theme;
-    if themed {
+    if super::lemon(ui) && !s.vintage_2005 {
+        super::skell_chrome::panel(ui, r, false, None);
+    } else if themed {
         if !os_ui::kit::panel_finish(ui.c, t, r, t.mixer_panel) {
             ui.c.fill_rect(r, t.mixer_panel);
         }
@@ -1100,6 +1124,11 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
         None => format!("Mixer - Insert {n}"),
     };
     ui.c.fill_rect(Rect::new(r.x, r.y, r.w, 23.0), t.window_title);
+    if super::lemon(ui) && !s.vintage_2005 && r.w > 80.0 {
+        ui.c.fill_rect(Rect::new(r.x + 6.0, r.y + 21.0, r.w - 12.0, 1.0),
+            t.accent.with_alpha(112));
+        super::skell_chrome::screw(ui, r.right() - 9.0, r.y + 10.0, 3.0);
+    }
     if !mx::traditional(s) || mx::inspector_left() {
     let font = os_ui::kit::title_font(t, console_font(ui,s,17));
     let width = r.w - if mx::inspector_left() { 4.0 } else { 70.0 };
@@ -1144,7 +1173,15 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
         let ha = ui.hit(Rect::new(row.x, row.y, 19.0, row.h), Action::Mix(MHit::SlotArrow(k)), hint.clone());
         let hn = ui.hit(Rect::new(row.x + 19.0, row.y, row.w - 64.0, row.h), Action::Mix(MHit::SlotName(k)), hint);
         let hov = ha || hn;
-        if themed {
+        if super::lemon(ui) && !s.vintage_2005 {
+            // FX slots have separated edges, a filled insert indicator and
+            // an accent on hover, without altering knob/LED interaction.
+            super::skell_chrome::panel(ui, row, hov, plugin.is_some().then_some(t.accent));
+            if plugin.is_some() && row.h >= 11.0 {
+                ui.c.fill_rrect(Rect::new(row.x + 2.0, row.y + 3.0,
+                    2.0, (row.h - 6.0).max(1.0)), 1.0, t.accent);
+            }
+        } else if themed {
             let fill = if hov { t.slot.shade(0.10) } else { t.slot };
             os_ui::kit::bordered(ui.c, row, t.style.radius_small.min(row.h * 0.5), t.window_border, fill);
         } else if ui.mixer_finish == Finish::CleanModern && mx::view(s)==mx::WIDE {

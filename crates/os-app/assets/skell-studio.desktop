@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Skell Studio
+GenericName=Digital Audio Workstation
+Comment=Pattern-based music production
+Exec=skell-studio %f
+Icon=skell-studio
+Terminal=false
+Categories=AudioVideo;Audio;Midi;Music;
+StartupWMClass=skell-studio
+Keywords=DAW;music;audio;sequencer;

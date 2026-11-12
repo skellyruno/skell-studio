@@ -44,17 +44,17 @@ fn cc(t: &os_theme::Palette, v: u32) -> Color {
     }
     use os_theme::design::lemon as brand;
     match v {
-        CLIP_BORDER => Color::rgb(0x1e1e1e),
-        TITLE_TOP | TITLE_BOTTOM => Color::rgb(0x5c5c5c),
+        CLIP_BORDER => Color::rgb(0x1e3425),
+        TITLE_TOP | TITLE_BOTTOM => Color::rgb(0x30513a),
         TITLE_TEXT => Color::rgb(0xf2f2f2),
         SEL_TITLE => t.brand_sel(brand::MAIN),
         SEL_TEXT => t.brand_sel(brand::COLORED_DARK),
-        SEL_BODY => Color::rgb(0x2e2810),
-        MUTED_TITLE => Color::rgb(0x2b2b2b),
-        MUTED_TEXT => Color::rgb(0x767676),
-        DEFAULT_BODY => Color::rgb(0x1c1c1c),
-        NOTE => Color::rgb(0xd6d6d6),
-        WAVE => Color::rgb(0xe6e6e6),
+        SEL_BODY => Color::rgb(0x112818),
+        MUTED_TITLE => Color::rgb(0x1c2a20),
+        MUTED_TEXT => Color::rgb(0x819181),
+        DEFAULT_BODY => Color::rgb(0x101a12),
+        NOTE => Color::rgb(0xb5ebb0),
+        WAVE => Color::rgb(0xc6efc0),
         CURVE => t.brand_lit(brand::HIGHLIGHT),
         _ => t.s(v),
     }
@@ -1458,7 +1458,13 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     }
     let (top, bottom) = if super::lemon(ui) { (base, base) } else { (base.shade(0.035), base.shade(-0.03)) };
     let k = if t.style.vintage_2005 { 0.0 } else if super::lemon(ui) { lk::r_btn(t) + 1.0 } else { RADIUS }.min(bh / 2.0);
-    ui.c.fill_rect_gradient(hr, top, bottom, k);
+    // Skell track cards are machined, low-glare panels with a selection rail.
+    // All hit regions, drag handles and group geometry remain unchanged.
+    if super::lemon(ui) && !s.vintage_2005 {
+        super::skell_chrome::panel(ui, hr, s.playlist.header_selection.contains(&row), colored);
+    } else {
+        ui.c.fill_rect_gradient(hr, top, bottom, k);
+    }
     if t.style.vintage_2005 {
         // FL4's pattern list is a single quiet panel; retain Lemon's mute and edit targets.
         ui.c.fill_rect(hr,if colored.is_some(){base}else{Color::rgb(0x5f686d)});
@@ -1527,8 +1533,25 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
             (toggle.x - hr.x - 4.0).max(1.0)
         } else if short { hr.w - 26.0 } else { hr.w - 4.0 };
         let indent=if lead {15.}else{0.}+if short {15.}else{0.};
-        if lead {icons::draw(ui.c,Icon::Folder,Rect::new(hr.x+2.+if short{15.}else{0.},hr.y+3.,13.,13.),text);}
-        ui.c.text_clip(Font::new(16), hr.x + 2.0+indent, hr.y + 1.0, name_w-indent, text, &pl::track_name(s, row));
+        if super::lemon(ui) && !s.vintage_2005 && !short && hr.w > 86.0 {
+            // Clear track numbering; leave the lower controls and folder indicator clickable.
+            let number = Rect::new(hr.x + 5.0, hr.y + 4.0, 23.0, 16.0);
+            ui.c.fill_rrect(number, 3.0, if lead { t.button_hi } else { t.sunken });
+            ui.c.text_center(Font::new(10), number,
+                if s.playlist.header_selection.contains(&row) { t.accent } else { t.text_dim },
+                &format!("{:02}", u32::from(row) + 1));
+            if lead {
+                icons::draw(ui.c, Icon::Folder,
+                    Rect::new(hr.x + 31.0, hr.y + 5.0, 12.0, 12.0), text);
+            }
+            let label_x = hr.x + if lead { 46.0 } else { 33.0 };
+            ui.c.text_clip(Font::new(13), label_x, hr.y + 5.0,
+                (hr.right() - label_x - 24.0).max(0.0),
+                text, &pl::track_name(s, row));
+        } else {
+            if lead {icons::draw(ui.c,Icon::Folder,Rect::new(hr.x+2.+if short{15.}else{0.},hr.y+3.,13.,13.),text);}
+            ui.c.text_clip(Font::new(16), hr.x + 2.0+indent, hr.y + 1.0, name_w-indent, text, &pl::track_name(s, row));
+        }
     }
     {
         let grip=if short{Rect::new(hr.x+1.,hr.y+1.,14.,13.)}else{Rect::new(hr.x+5.,led.y,18.,13.)};
@@ -1559,6 +1582,11 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
         } else {super::led(ui, led.cx(), led.cy(), on);}
     }
     crate::vocal::keys(ui,s,g,row,hr);
+    if super::lemon(ui) && !s.vintage_2005 && hr.w >= 100.0 && hr.h >= 40.0 {
+        // The track colour gets a compact identity marker, never a giant colour slab.
+        ui.c.fill_rrect(Rect::new(hr.x + 6.0, hr.y + 26.0, 3.0, 8.0),
+            1.5, colored.unwrap_or(t.accent).with_alpha(if on { 220 } else { 70 }));
+    }
     ui.hit(Rect::new(hr.x,hr.bottom()-3.,hr.w,4.),Action::PlRowResize(row),"Drag to resize this Playlist track");
 }
 

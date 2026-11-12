@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! Embeds `assets/lemonstudio.ico` (a nightly's: `lemonstudio-nightly.ico`) as icon resource 1 and the version
+//! Embeds `assets/skell-studio.ico` (a nightly's: `lemonstudio-nightly.ico`) as icon resource 1 and the version
 //! (`LEMON_VERSION`, else the workspace's) as the version resource (Windows). Uses the Windows SDK's `rc.exe` (or `$RC`);
 //! without it the build goes on and the exe just has no icon. Also sets `cfg(plugin_windows)` where plugin windows exist,
 //! `cfg(lemon_updater)` when `LEMON_UPDATER` names the updater to carry (release builds, `crate::update`), and
@@ -160,8 +160,8 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=assets/lemonstudio.rc");
     println!("cargo:rerun-if-changed=assets/lemonstudio.manifest");
-    println!("cargo:rerun-if-changed=assets/lemonstudio.ico");
-    println!("cargo:rerun-if-changed=assets/lemonstudio-nightly.ico");
+    println!("cargo:rerun-if-changed=assets/skell-studio.ico");
+    println!("cargo:rerun-if-changed=assets/skell-studio-nightly.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows")
         || std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc")
     {
@@ -173,7 +173,7 @@ fn main() {
     };
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let out = out_dir.join("lemonstudio.res");
-    let (ico, name) = if nightly { ("assets/lemonstudio-nightly.ico", "Skell Studio Nightly") } else { ("assets/lemonstudio.ico", "Skell Studio") };
+    let (ico, name) = if nightly { ("assets/skell-studio-nightly.ico", "Skell Studio Nightly") } else { ("assets/skell-studio.ico", "Skell Studio") };
     let ico = std::path::absolute(ico).expect("icon path");
     let script = out_dir.join("lemonstudio.rc");
     std::fs::write(&script, resource_script(&ico, &version, name)).expect("resource script");

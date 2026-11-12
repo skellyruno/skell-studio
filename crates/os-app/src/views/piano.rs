@@ -237,6 +237,14 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
             let rad = 3.5f32.min(nr.w / 2.0).min(nr.h / 2.0);
             ui.c.fill_rrect(nr, rad, rim);
             ui.c.fill_rect_gradient(body, top, bottom, (rad - 1.0).max(0.0));
+            if body.w > 12.0 && body.h > 7.0 {
+                // Narrow glass reflection and clear selected rim at any zoom.
+                ui.c.fill_rect(Rect::new(body.x + 3.0, body.y + 1.0,
+                    body.w - 6.0, 1.0), top.mix(Color::rgb(0xf0fff1), 0.32));
+                if selected {
+                    ui.c.stroke_rrect(nr.inset(0.5), rad, 1.0, t.accent);
+                }
+            }
         } else {
             ui.c.fill_rrect(nr, 2.0, rim);
             ui.c.fill_rect_gradient(body, top, bottom, 1.0);
@@ -681,11 +689,11 @@ fn keyboard_shaped(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
     ui.c.push_clip(k);
     // White keys: a stepped horizontal gradient (§4), with a dark right edge. Lemon: flat keys.
     let lemon = super::lemon(ui);
-    let bands = if lemon { 1 } else { 6 };
+    let bands = if lemon { 4 } else { 6 };
     for i in 0..bands {
         let x = k.x + (k.w - 1.0) * i as f32 / bands as f32;
         let w = (k.w - 1.0) / bands as f32 + 1.0;
-        let c = if lemon { t.key_white } else { t.key_white_left.mix(t.key_white, i as f32 / (bands - 1) as f32) };
+        let c = t.key_white_left.mix(t.key_white, i as f32 / (bands - 1) as f32);
         ui.c.fill_rect(Rect::new(x, k.y, w, k.h), c);
     }
     ui.c.fill_rect(Rect::new(k.right() - 1.0, k.y, 1.0, k.h), ui.t.s(0x7e8289));
@@ -834,6 +842,10 @@ fn grid_rows(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, clip: Rect, selecting
         let line_y = bottom - pixel;
         ui.c.fill_rect(Rect::new(gr.x, y, gr.w, g.row), fill);
         ui.c.fill_rect(Rect::new(gr.x, line_y, gr.w, pixel), sub(t, white, 0x0a));
+        // Octave roots are visible but subdued even with bright custom note colours.
+        if super::lemon(ui) && !selecting && key.rem_euclid(12) == 0 {
+            ui.c.fill_rect(Rect::new(gr.x, y, gr.w, pixel), t.accent.with_alpha(52));
+        }
         bands.push((y, (line_y - y).max(0.0), fill));
     }
     let bar = if selecting { ui.t.s(0x0e080c) } else { bar_line(t) };
@@ -858,6 +870,10 @@ fn velocity_panel(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], 
     }
     // Label column.
     ui.c.fill_rect(l.label, t.window_title);
+    if super::lemon(ui) && l.label.h > 10.0 {
+        ui.c.fill_rect(Rect::new(l.label.right() - 2.0, l.label.y + 3.0,
+            2.0, (l.label.h - 6.0).max(0.0)), t.accent.with_alpha(125));
+    }
     let btn = Rect::new(l.label.x, l.label.y, l.label.w, 22.0);
     let hov = ui.hit(btn, Action::PianoLaneMenu, "Event panel: choose which note property to edit");
     ui.c.text(Font::new(16), l.label.x + 12.0, l.label.y + 2.0, if hov || s.lane_menu { ui.t.tx(0xffffff) } else { t.text }, "Control");

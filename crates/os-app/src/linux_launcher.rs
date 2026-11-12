@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-pub(crate) const ICON: &[u8] = include_bytes!("../assets/lemonstudio.png");
+pub(crate) const ICON: &[u8] = include_bytes!("../assets/skell-studio.png");
 
 pub(crate) fn refresh() {
     let absolute = |name| std::env::var_os(name).map(PathBuf::from).filter(|path| path.is_absolute());
@@ -19,19 +19,19 @@ pub(crate) fn refresh() {
 
 fn refresh_icon(data_home: &Path, data_dirs: impl Iterator<Item = PathBuf>) -> io::Result<()> {
     let launcher = std::iter::once(data_home.to_owned()).chain(data_dirs)
-        .find_map(|base| fs::read_to_string(base.join("applications/lemonstudio.desktop")).ok());
+        .find_map(|base| fs::read_to_string(base.join("applications/skell-studio.desktop")).ok());
     let uses_app_icon = launcher.as_deref().and_then(|text| {
         let group = text.lines().skip_while(|line| line.trim() != "[Desktop Entry]").skip(1);
         group.take_while(|line| !line.trim_start().starts_with('['))
             .find_map(|line| line.trim().strip_prefix("Icon=").map(str::trim))
-    }) == Some("lemonstudio");
+    }) == Some("skell-studio");
     if !uses_app_icon {
         return Ok(());
     }
 
     let theme = data_home.join("icons/hicolor");
     let icons = theme.join("256x256/apps");
-    let destination = icons.join("lemonstudio.png");
+    let destination = icons.join("skell-studio.png");
     if fs::symlink_metadata(&destination).is_ok_and(|meta| !meta.is_file())
         || fs::read(&destination).is_ok_and(|current| current == ICON)
     {
@@ -40,7 +40,7 @@ fn refresh_icon(data_home: &Path, data_dirs: impl Iterator<Item = PathBuf>) -> i
 
     fs::create_dir_all(&icons)?;
     let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos();
-    let pending = icons.join(format!(".lemonstudio-{}-{stamp}.tmp", std::process::id()));
+    let pending = icons.join(format!(".skell-studio-{}-{stamp}.tmp", std::process::id()));
     let mut file = fs::OpenOptions::new().create_new(true).write(true).open(&pending)?;
     let written = file.write_all(ICON);
     drop(file);

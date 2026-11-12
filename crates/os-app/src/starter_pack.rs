@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use os_ui::{Font, Rect};
 use crate::app::{Action, App, Ui};
 
-const NAME: &str = "AQUILA Starter Pack";
+const NAME: &str = "Skell Studio Starter Pack";
 const CREDITS: &str = include_str!("../assets/starter-pack/Credits.txt");
 const MANIFEST: &str = include_str!("../assets/starter-pack/catalog.json");
 #[derive(Debug, Deserialize)]
@@ -60,7 +60,7 @@ fn fetch(agent: &ureq::Agent, s: &Sample, cache: &Path, base: u64) -> Result<Pat
     // Independent temp names permit two app processes to download without sharing unfinished writes.
     let temp=cache.join(format!("{}.part",unique()));
     let result=(|| {
-        let response=agent.get(&s.url).set("User-Agent","LemonStudio-StarterPack/1").call().map_err(|_|"Could not download samples. Check your connection and click Download to retry.".to_string())?;
+        let response=agent.get(&s.url).set("User-Agent","SkellStudio-StarterPack/1").call().map_err(|_|"Could not download samples. Check your connection and click Download to retry.".to_string())?;
         if response.status()!=200 {return Err("The sample server is unavailable. Please retry later.".into())}
         let mut out=fs::OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|e|e.to_string())?;
         let mut last=u64::MAX;
@@ -82,7 +82,7 @@ fn fetch(agent: &ureq::Agent, s: &Sample, cache: &Path, base: u64) -> Result<Pat
 }
 fn installed(dest: &Path) -> bool {
     fs::symlink_metadata(dest).is_ok_and(|m|m.is_dir() && !m.file_type().is_symlink())
-        && fs::read_to_string(dest.join("Lemon pack version.txt")).is_ok_and(|s|s==hash(MANIFEST.as_bytes()))
+        && fs::read_to_string(dest.join("Skell pack version.txt")).is_ok_and(|s|s==hash(MANIFEST.as_bytes()))
         && catalog().iter().all(|s|dest.join(&s.path).is_file())
 }
 fn install(root: &Path) -> Result<PathBuf,String> {
@@ -93,7 +93,7 @@ fn install(root: &Path) -> Result<PathBuf,String> {
         return Err("A Starter Pack folder already exists. Keep or rename it before downloading again; your files were not changed.".into())
     }
     let cache=root.join("Sample Downloads").join("Starter Pack v1"); plain_dir(&cache)?;
-    let stage=samples.join(format!(".lemon-starter-{}",unique()));
+    let stage=samples.join(format!(".skell-starter-{}",unique()));
     fs::create_dir(&stage).map_err(|e|e.to_string())?;
     let result=(|| {
         let agent=ureq::AgentBuilder::new().redirects(0).timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(15)).build();
@@ -110,7 +110,7 @@ fn install(root: &Path) -> Result<PathBuf,String> {
         }
         cancelled()?; report("Adding sounds to your library...".into(),total());
         fs::write(stage.join("Credits and License.txt"),CREDITS).map_err(|e|e.to_string())?;
-        fs::write(stage.join("Lemon pack version.txt"),hash(MANIFEST.as_bytes())).map_err(|e|e.to_string())?;
+        fs::write(stage.join("Skell pack version.txt"),hash(MANIFEST.as_bytes())).map_err(|e|e.to_string())?;
         if dest.exists() { if installed(&dest) {return Ok(dest.clone())} return Err("Destination appeared during download. Existing files were preserved.".into()) }
         fs::rename(&stage,&dest).map_err(|e|e.to_string())?;
         Ok(dest.clone())

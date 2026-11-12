@@ -21,14 +21,14 @@ pub const EXT: &str = ".lmn";
 /// while the box is ticked.
 pub const LEMON_EXT: &str = ".lemon";
 /// The type's description and the open verb's name (spec).
-const DESCRIPTION: &str = "AQUILA project";
+const DESCRIPTION: &str = "Skell Studio project";
 const FRIENDLY_NAME: &str = "Skell Studio";
 /// The per-user classes, where every write goes (`Root::Classes`).
 const CLASSES: &str = r"Software\Classes";
 /// Windows' "Open with ▸ Always" choice for `.lmn` (`Root::User`), value `ProgId`.
 const USER_CHOICE: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.lmn\UserChoice";
 /// The hint bar's text when a `UserChoice` keeps another program after a tick (spec).
-pub const BLOCKED_HINT: &str = "Windows opens .lmn files with another program: choose AQUILA under Open with ▸ Choose another app";
+pub const BLOCKED_HINT: &str = "Windows opens .lmn files with another program: choose Skell Studio under Open with ▸ Choose another app";
 
 /// Where a read looks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

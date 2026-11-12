@@ -408,7 +408,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         for (offset, icon, action, hint) in [
             (0., Icon::Minimize, Action::Minimize, "Minimize"),
             (32., Icon::Restore, Action::Maximize, "Restore / maximize"),
-            (64., Icon::Close, Action::Close, "Exit AQUILA"),
+            (64., Icon::Close, Action::Close, "Exit Skell Studio"),
         ] {
             let r=Rect::new(width-window_w+offset,8.,30.,24.);
             let hover=ui.hit(r,action,hint);
@@ -451,9 +451,9 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         ui.hit(r, Action::Bar(BarHit::Logo), "Logo - drag onto the palette to take it off");
         frame(ui, r.inset(2.0));
     } else {
-        ui.hit(r, Action::MenuItem(menus::HELP_MENU, menus::HELP_ABOUT), "About AQUILA");
+        ui.hit(r, Action::MenuItem(menus::HELP_MENU, menus::HELP_ABOUT), "About Skell Studio");
     }
-    icons::logo(ui.c, lx, mid, radius, if lemon { t.toolbar_edge } else { t.toolbar_line });
+    icons::logo(ui.c, lx, mid, radius, if lemon { t.accent } else { t.toolbar_line });
 }
 
 /// A group separator at band x `x` of row `row`.
@@ -501,7 +501,7 @@ fn caption(ui: &mut Ui, c: &Ctx) {
     for (x, icon, action, hint) in [
         (4.0, Icon::Minimize, Action::Minimize, "Minimize"),
         (24.0, Icon::Restore, Action::Maximize, "Restore / maximize"),
-        (44.0, Icon::Close, Action::Close, "Exit AQUILA"),
+        (44.0, Icon::Close, Action::Close, "Exit Skell Studio"),
     ] {
         let r = a.r(Rect::new(x, 11.0, 19.0, 19.0));
         let hov = ui.hit(r, action, hint);

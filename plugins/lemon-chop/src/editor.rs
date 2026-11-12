@@ -1679,6 +1679,7 @@ mod win32 {
                 | Cmd::Audio
                 | Cmd::Resizable
                 | Cmd::SampleFit | Cmd::BrowseSample
+                | Cmd::Notes
                 | Cmd::SetSize => 0,
             }
         }

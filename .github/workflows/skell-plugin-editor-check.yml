@@ -1,0 +1,44 @@
+name: Skell Studio — hosted plugin editor compile
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/skell-plugin-editor-check.yml"
+      - "plugins/lemon-slicer/**"
+      - "plugins/lemon-drop/**"
+      - "crates/os-hostlink/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/skell-plugin-editor-check.yml"
+      - "plugins/lemon-slicer/**"
+      - "plugins/lemon-drop/**"
+      - "crates/os-hostlink/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skell-plugin-editors-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-plugins:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Check host-link editor command handling
+        shell: pwsh
+        run: cargo check --locked -p lemon-slicer -p lemon-drop

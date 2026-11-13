@@ -12,6 +12,18 @@ on:
       - "crates/os-hostlink/**"
       - "Cargo.toml"
       - "Cargo.lock"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/skell-studio-verify.yml"
+      - "crates/os-app/**"
+      - "crates/os-theme/**"
+      - "crates/os-paths/**"
+      - "plugins/smith/**"
+      - "plugins/lemon-chop/**"
+      - "crates/os-hostlink/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
   workflow_dispatch:
 permissions:
   contents: read

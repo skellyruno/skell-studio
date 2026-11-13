@@ -733,6 +733,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     if show_meters {
         if lemon && !s.vintage_2005 {
             super::skell_chrome::meter_well(ui, meter.outset(2.0), selected);
+            super::skell_chrome::meter_scale(ui, meter.outset(2.0), selected);
         }
         ui.live(Live::Meter(n), meter.outset(if full {4.0}else{2.0}));
         let levels = s.mixer.meters.get(usize::from(n)).map_or([0.0; 2], |m| m.vu);

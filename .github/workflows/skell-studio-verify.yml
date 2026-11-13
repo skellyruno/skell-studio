@@ -1,7 +1,7 @@
 name: Skell Studio — branding and engine compile gates
 on:
   push:
-    branches: [main]
+    branches: [main, dev/skell-verified-upgrade]
     paths:
       - ".github/workflows/skell-studio-verify.yml"
       - "crates/os-app/**"

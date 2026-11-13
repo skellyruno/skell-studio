@@ -1184,6 +1184,7 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
             // FX slots have separated edges, a filled insert indicator and
             // an accent on hover, without altering knob/LED interaction.
             super::skell_chrome::panel(ui, row, hov, plugin.is_some().then_some(t.accent));
+            super::skell_chrome::status_stripe(ui, row, plugin.is_some());
             if plugin.is_some() && row.h >= 11.0 {
                 ui.c.fill_rrect(Rect::new(row.x + 2.0, row.y + 3.0,
                     2.0, (row.h - 6.0).max(1.0)), 1.0, t.accent);

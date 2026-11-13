@@ -6,6 +6,8 @@ on:
       - ".github/workflows/check-file-associations.yml"
       - "crates/os-app/src/file_assoc.rs"
       - "plugins/lemon-chop/src/editor.rs"
+      - "plugins/lemon-slicer/src/editor.rs"
+      - "plugins/lemon-drop/src/editor.rs"
   workflow_dispatch:
 permissions:
   contents: read

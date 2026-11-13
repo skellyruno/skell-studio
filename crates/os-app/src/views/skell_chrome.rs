@@ -100,3 +100,26 @@ pub fn title_trim(ui: &mut Ui, rect: Rect) {
     ui.c.fill_rect(Rect::new(rect.x + 1.0, rect.y + 21.0,
         (rect.w * 0.27).min(210.0), 1.0), t.accent.with_alpha(150));
 }
+
+/// Restrained Skell signal trace for large panel dividers. It never owns a hit
+/// region and scales down without clipping or obscuring labels.
+pub fn signal_trace(ui: &mut Ui, rect: Rect, active: bool) {
+    if rect.w < 24.0 || rect.h < 6.0 { return; }
+    let t = ui.t;
+    let y = rect.bottom() - 1.5;
+    let length = (rect.w * 0.24).clamp(12.0, 92.0).min(rect.w - 6.0);
+    ui.c.fill_rect(Rect::new(rect.x + 3.0, y, rect.w - 6.0, 1.0),
+        t.window_border.with_alpha(110));
+    ui.c.fill_rect(Rect::new(rect.x + 3.0, y, length, 1.0),
+        t.accent.with_alpha(if active { 225 } else { 100 }));
+}
+
+/// A passive status stripe for browser rows and FX slots. Existing click,
+/// keyboard and accessibility behavior stays with the caller.
+pub fn status_stripe(ui: &mut Ui, rect: Rect, active: bool) {
+    if rect.w < 18.0 || rect.h < 10.0 { return; }
+    let t = ui.t;
+    let color = if active { t.accent } else { t.window_border };
+    ui.c.fill_rrect(Rect::new(rect.x + 1.0, rect.y + 3.0, 2.0,
+        (rect.h - 6.0).max(1.0)), 1.0, color.with_alpha(if active { 220 } else { 85 }));
+}

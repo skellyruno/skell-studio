@@ -13,13 +13,11 @@
 
 use crate::app::App;
 
-/// Lemon Studio's own file type for `.lmn` files (spec).
-pub const PROG_ID: &str = "LemonStudio.LmnProject";
+/// Unique Skell Studio registry class: never overwrite the original Lemon Studio association.
+pub const PROG_ID: &str = "SkellStudio.LmnProject";
 /// The extension it registers.
 pub const EXT: &str = ".lmn";
-/// Lemon Studio's own project files (spec: flp/lemon-format.md): no other program has them, so they are simply ours
-/// while the box is ticked.
-pub const LEMON_EXT: &str = ".lemon";
+/// Existing `.lemon` project associations belong to the originating DAW; never claim them.
 /// The type's description and the open verb's name (spec).
 const DESCRIPTION: &str = "Skell Studio project";
 const FRIENDLY_NAME: &str = "Skell Studio";
@@ -59,7 +57,7 @@ pub struct Seen {
     pub ext_type: Option<String>,
     /// That type's per-user open command.
     pub open_command: Option<String>,
-    /// `LemonStudio.LmnProject`'s `Previous`: the `.lmn` default the tick replaced.
+    /// `SkellStudio.LmnProject`'s `Previous`: the `.lmn` default the tick replaced.
     pub previous: Option<String>,
     /// The "Open with ▸ Always" choice: its ProgId and that type's open command.
     pub user_choice: Option<(String, Option<String>)>,
@@ -137,8 +135,6 @@ pub fn tick(program: &str, seen: &Seen) -> Vec<Op> {
         set(format!(r"{PROG_ID}\shell\open\command"), "", format!("\"{exe}\" \"%1\"")),
         set(EXT.into(), "", PROG_ID.into()),
         Op::Set { key: format!(r"{EXT}\OpenWithProgids"), name: PROG_ID, data: String::new() },
-        set(LEMON_EXT.into(), "", PROG_ID.into()),
-        Op::Set { key: format!(r"{LEMON_EXT}\OpenWithProgids"), name: PROG_ID, data: String::new() },
     ]);
     ops
 }
@@ -155,8 +151,6 @@ pub fn untick(seen: &Seen) -> Vec<Op> {
         });
     }
     ops.push(Op::DeleteValue { key: format!(r"{EXT}\OpenWithProgids"), name: PROG_ID });
-    ops.push(Op::DeleteValue { key: LEMON_EXT.into(), name: "" });
-    ops.push(Op::DeleteValue { key: format!(r"{LEMON_EXT}\OpenWithProgids"), name: PROG_ID });
     ops.push(Op::DeleteTree { key: PROG_ID.into() });
     ops
 }
@@ -353,7 +347,7 @@ mod tests {
     use os_ui::{Canvas, Rect};
 
     /// The made-up program path `program` gives in tests.
-    pub const PROGRAM: &str = r"C:\Programs\Lemon Studio\lemonstudio.exe";
+    pub const PROGRAM: &str = r"C:\Programs\Skell Studio\skell-studio.exe";
     const OTHER: &str = r"C:\Program Files\Other DAW\other.exe";
     const FL_TYPE: &str = "Other.lmn.1";
 
@@ -394,13 +388,11 @@ mod tests {
             [
                 Op::DeleteValue { key: PROG_ID.into(), name: "Previous" },
                 set(PROG_ID, "", DESCRIPTION),
-                set(r"LemonStudio.LmnProject\DefaultIcon", "", &format!("\"{PROGRAM}\",0")),
-                set(r"LemonStudio.LmnProject\shell\open", "FriendlyAppName", FRIENDLY_NAME),
-                set(r"LemonStudio.LmnProject\shell\open\command", "", &format!("\"{PROGRAM}\" \"%1\"")),
+                set(r"SkellStudio.LmnProject\DefaultIcon", "", &format!("\"{PROGRAM}\",0")),
+                set(r"SkellStudio.LmnProject\shell\open", "FriendlyAppName", FRIENDLY_NAME),
+                set(r"SkellStudio.LmnProject\shell\open\command", "", &format!("\"{PROGRAM}\" \"%1\"")),
                 set(".lmn", "", PROG_ID),
                 set(r".lmn\OpenWithProgids", PROG_ID, ""),
-                set(".lemon", "", PROG_ID),
-                set(r".lemon\OpenWithProgids", PROG_ID, ""),
             ]
         );
         assert!(reg::apply(&ops));
@@ -412,8 +404,6 @@ mod tests {
             [
                 Op::DeleteValue { key: ".lmn".into(), name: "" },
                 Op::DeleteValue { key: r".lmn\OpenWithProgids".into(), name: PROG_ID },
-                Op::DeleteValue { key: ".lemon".into(), name: "" },
-                Op::DeleteValue { key: r".lemon\OpenWithProgids".into(), name: PROG_ID },
                 Op::DeleteTree { key: PROG_ID.into() },
             ]
         );
@@ -426,6 +416,28 @@ mod tests {
     /// Over another program's registration: the tick keeps its type name in `Previous`, the untick puts it back, and the
     /// other program's own keys are never touched.
     #[test]
+    fn skell_never_steals_or_removes_lemon_project_associations() {
+        // The legacy Lemon Studio registry class and .lemon extension belong to
+        // the old app even if both DAWs can read the underlying file format.
+        let legacy = "LemonStudio.LmnProject";
+        reg::put("HKCU", r"Software\Classes\.lemon", "", legacy);
+        reg::put("HKCU", &format!(r"Software\Classes\{legacy}\shell\open\command"), "",
+                 r#""C:\Programs\Lemon Studio\lemonstudio.exe" "%1""#);
+        let before = reg::dump().0;
+        let mut expected = before.clone();
+        reg::apply(&tick(PROGRAM, &seen()));
+        let added = reg::dump().0;
+        for (key, name, value) in &before {
+            assert!(added.contains(&(key.clone(), name.clone(), value.clone())),
+                "Skell changed someone else's association: {key} {name}");
+        }
+        assert!(!added.iter().any(|(k,_,_)| k.contains("skellstudio") && k.contains(".lemon")));
+        reg::apply(&untick(&seen()));
+        expected.sort();
+        assert_eq!(reg::dump().0, expected, "untick must leave Lemon registrations untouched");
+    }
+
+    #[test]
     fn another_programs_registration_comes_back() {
         other_registration();
         let before = reg::dump().0;
@@ -435,7 +447,7 @@ mod tests {
         reg::apply(&ops);
         assert!(ticked(PROGRAM, &seen()) && !ticked(OTHER, &seen()));
         // A second tick (say from another copy of Lemon Studio) keeps `Previous`.
-        let again = tick(r"D:\Lemon\lemonstudio.exe", &seen());
+        let again = tick(r"D:\Skell\skell-studio.exe", &seen());
         assert!(!again.iter().any(|op| matches!(op, Op::Set { name: "Previous", .. } | Op::DeleteValue { name: "Previous", .. })));
         reg::apply(&again);
         assert!(!ticked(PROGRAM, &seen()), "now the other copy's");
@@ -462,7 +474,7 @@ mod tests {
         reg::put("HKLM", &format!(r"Software\Classes\{FL_TYPE}\shell\open\command"), "", &format!("\"{OTHER}\" \"%1\""));
         assert_eq!(seen().user_choice, Some((FL_TYPE.into(), Some(format!("\"{OTHER}\" \"%1\"")))));
         assert!(blocked(PROGRAM, &seen()) && !ticked(PROGRAM, &seen()));
-        reg::put("HKCU", choice, "ProgId", "lemonstudio.lmnproject");
+        reg::put("HKCU", choice, "ProgId", "skellstudio.lmnproject");
         assert!(ticked(PROGRAM, &seen()), "AQUILA's own type, any case");
         reg::put("HKCU", choice, "ProgId", r"Applications\skell-studio.exe");
         reg::put("HKCU", r"Software\Classes\Applications\skell-studio.exe\shell\open\command", "", &format!("\"{PROGRAM}\" \"%1\""));

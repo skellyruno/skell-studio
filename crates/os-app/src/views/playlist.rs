@@ -1465,6 +1465,7 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     // All hit regions, drag handles and group geometry remain unchanged.
     if super::lemon(ui) && !s.vintage_2005 {
         super::skell_chrome::panel(ui, hr, s.playlist.header_selection.contains(&row), colored);
+        super::skell_chrome::track_rail(ui, hr, colored, on);
     } else {
         ui.c.fill_rect_gradient(hr, top, bottom, k);
     }

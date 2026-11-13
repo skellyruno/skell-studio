@@ -912,6 +912,8 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         if super::lemon(ui) && !s.vintage_2005 {
             super::skell_chrome::status_stripe(ui, rect,
                 sel == Some(row.key.as_str()) || s.browser_samples.contains(&row.key));
+            super::skell_chrome::browser_row(ui, rect,
+                sel == Some(row.key.as_str()) || s.browser_samples.contains(&row.key), hov);
         }
         let base = match row.cat {
             FOLDER => t.browser_folder,

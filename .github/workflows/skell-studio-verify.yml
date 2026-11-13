@@ -9,6 +9,8 @@ on:
       - "crates/os-paths/**"
       - "plugins/smith/**"
       - "plugins/lemon-chop/**"
+      - "plugins/lemon-slicer/**"
+      - "plugins/lemon-drop/**"
       - "crates/os-hostlink/**"
       - "Cargo.toml"
       - "Cargo.lock"

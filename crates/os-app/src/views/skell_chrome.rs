@@ -123,3 +123,53 @@ pub fn status_stripe(ui: &mut Ui, rect: Rect, active: bool) {
     ui.c.fill_rrect(Rect::new(rect.x + 1.0, rect.y + 3.0, 2.0,
         (rect.h - 6.0).max(1.0)), 1.0, color.with_alpha(if active { 220 } else { 85 }));
 }
+
+
+/// Arrangement track identity: a short, dimmed color rail that does not
+/// compete with the selection marker or the track's mute/solo controls.
+pub fn track_rail(ui: &mut Ui, rect: Rect, tint: Option<Color>, enabled: bool) {
+    if rect.w < 28.0 || rect.h < 15.0 { return; }
+    let t = ui.t;
+    let color = tint.unwrap_or(t.accent);
+    let rail = Rect::new(rect.x + 8.0, rect.bottom() - 3.0,
+        (rect.w * 0.31).clamp(14.0, 50.0).min(rect.w - 16.0), 1.0);
+    ui.c.fill_rect(rail, color.with_alpha(if enabled { 175 } else { 58 }));
+}
+
+/// A passive two-stroke note edge. The actual note body, selection and resize
+/// handles are still painted by the piano roll; this is only a legibility cue.
+pub fn note_edge(ui: &mut Ui, rect: Rect, selected: bool) {
+    if rect.w < 14.0 || rect.h < 9.0 { return; }
+    let t = ui.t;
+    ui.c.fill_rect(Rect::new(rect.x + 3.0, rect.y + 1.0,
+        (rect.w - 6.0).min(28.0), 1.0),
+        t.text.with_alpha(if selected { 110 } else { 53 }));
+    ui.c.fill_rect(Rect::new(rect.x + 2.0, rect.bottom() - 2.0,
+        (rect.w - 4.0).min(18.0), 1.0),
+        t.accent.with_alpha(if selected { 200 } else { 85 }));
+}
+
+/// Fixed-height calibration marks around the existing mixer meter. It does not
+/// sample audio or replace any VU/peak rendering, avoiding DSP/latency changes.
+pub fn meter_scale(ui: &mut Ui, rect: Rect, selected: bool) {
+    if rect.w < 22.0 || rect.h < 48.0 { return; }
+    let t = ui.t;
+    for index in 1..6 {
+        let y = rect.y + rect.h * index as f32 / 6.0;
+        let width = if index % 2 == 0 { 5.0 } else { 3.0 };
+        ui.c.fill_rect(Rect::new(rect.right() - width - 2.0, y, width, 1.0),
+            if selected { t.accent.with_alpha(120) } else { t.text_dim.with_alpha(90) });
+    }
+}
+
+/// Browser category rows share the same subdued chrome as the arrangement and
+/// mixer. All folder and plugin activation targets remain in their callers.
+pub fn browser_row(ui: &mut Ui, rect: Rect, active: bool, hovered: bool) {
+    if rect.w < 35.0 || rect.h < 13.0 { return; }
+    let t = ui.t;
+    if active || hovered {
+        ui.c.fill_rect(Rect::new(rect.x + 5.0, rect.bottom() - 1.0,
+            (rect.w - 10.0).max(0.0), 1.0),
+            t.accent.with_alpha(if active { 145 } else { 55 }));
+    }
+}

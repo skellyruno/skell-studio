@@ -847,6 +847,10 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     }
     ui.c.text_clip(os_ui::Font::new(14), 52.0, 85.0 + dy, (bw - 56.0).max(0.0),
         t.text_dim, crate::prefs::language::Language::current().text("Browser"));
+    if super::lemon(ui) && !s.vintage_2005 {
+        super::skell_chrome::signal_trace(ui,
+            Rect::new(1.0, 83.0 + dy, (bw - 2.0).max(0.0), 23.0), s.browser_tab == PLUGIN_TAB);
+    }
     // Tabs (spec ui/browser.md §1): FL's five without Online content, sharing the strip.
     ui.c.fill_rect(Rect::span(0.0, bw - 1.0, 106.0 + dy, (if s.vintage_2005 {127.0}else{141.0}) + dy), t.browser_tabs);
     let tabs=tabs(s);
@@ -904,6 +908,12 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         let hov = ui.hit(rect, Action::BrowserRow(i), hint);
         if sel == Some(row.key.as_str()) || s.browser_samples.contains(&row.key) || hov {
             ui.c.fill_rect(rect, t.browser_row_hi);
+        }
+        if super::lemon(ui) && !s.vintage_2005 {
+            super::skell_chrome::status_stripe(ui, rect,
+                sel == Some(row.key.as_str()) || s.browser_samples.contains(&row.key));
+            super::skell_chrome::browser_row(ui, rect,
+                sel == Some(row.key.as_str()) || s.browser_samples.contains(&row.key), hov);
         }
         let base = match row.cat {
             FOLDER => t.browser_folder,

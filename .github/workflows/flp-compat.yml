@@ -1,7 +1,7 @@
 name: Skell Studio FLP compatibility regression
 on:
   push:
-    branches: [main]
+    branches: [main, dev/skell-verified-upgrade]
     paths:
       - ".github/workflows/flp-compat.yml"
       - "crates/os-flp/**"

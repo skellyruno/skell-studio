@@ -121,6 +121,12 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let (r, _) = super::framed(ui, s, Win::PianoRoll, r, "", 408.0, true);
     let shift = if floating { -4.0 } else { 0.0 };
     toolbar(ui, s, r, shift);
+    // Skell's piano workbench keeps a fine signal trace beneath its controls;
+    // notes, ruler, keyboard and velocity lane retain their original geometry.
+    if super::lemon(ui) && !s.vintage_2005 {
+        super::skell_chrome::signal_trace(ui,
+            Rect::new(r.x + 74.0, r.y + 1.0, (r.w - 76.0).max(0.0), 21.0), true);
+    }
     if r.h < 2.0 * crate::app::TITLE_H {
         return; // collapsed to the title bar
     }
@@ -248,6 +254,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         } else {
             ui.c.fill_rrect(nr, 2.0, rim);
             ui.c.fill_rect_gradient(body, top, bottom, 1.0);
+        }
+        if lemon && !s.vintage_2005 {
+            super::skell_chrome::note_edge(ui, nr, selected);
         }
         if nr.w > 6.0 && !lemon {
             let hi = top.mix(bottom, 0.45);

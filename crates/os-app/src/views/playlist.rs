@@ -274,6 +274,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         ui.c.fill_rect_gradient(strip, t.track_header.shade(0.05), t.track_header.shade(-0.03), 0.0);
     }
     clip_controls(ui, s, strip);
+    if super::lemon(ui) && !s.vintage_2005 {
+        super::skell_chrome::signal_trace(ui, strip, s.playlist.controls.shown.is_some());
+    }
 
     // Arrangement geometry.
     let head_x = r.x + pick_w + 2.0;
@@ -1462,6 +1465,7 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     // All hit regions, drag handles and group geometry remain unchanged.
     if super::lemon(ui) && !s.vintage_2005 {
         super::skell_chrome::panel(ui, hr, s.playlist.header_selection.contains(&row), colored);
+        super::skell_chrome::track_rail(ui, hr, colored, on);
     } else {
         ui.c.fill_rect_gradient(hr, top, bottom, k);
     }

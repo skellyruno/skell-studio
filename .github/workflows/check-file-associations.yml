@@ -1,0 +1,39 @@
+name: Validate Skell Windows file associations
+on:
+  push:
+    branches: [dev/skell-verified-upgrade]
+    paths:
+      - ".github/workflows/check-file-associations.yml"
+      - "crates/os-app/src/file_assoc.rs"
+      - "crates/os-app/src/recent.rs"
+      - "crates/os-app/src/splash.rs"
+      - "plugins/lemon-chop/src/editor.rs"
+      - "plugins/lemon-slicer/src/editor.rs"
+      - "plugins/lemon-drop/src/editor.rs"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  file-association-tests:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+      LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skell-windows-test
+          cache-on-failure: true
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: Run Windows file association tests with isolated registry fixtures
+        shell: pwsh
+        run: cargo test --locked -p os-app --bin skell-studio file_assoc::tests -- --test-threads=1
+      - name: Report Windows test cache efficiency
+        if: always()
+        shell: pwsh
+        run: sccache --show-stats

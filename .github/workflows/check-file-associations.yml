@@ -5,6 +5,8 @@ on:
     paths:
       - ".github/workflows/check-file-associations.yml"
       - "crates/os-app/src/file_assoc.rs"
+      - "crates/os-app/src/recent.rs"
+      - "crates/os-app/src/splash.rs"
       - "plugins/lemon-chop/src/editor.rs"
       - "plugins/lemon-slicer/src/editor.rs"
       - "plugins/lemon-drop/src/editor.rs"

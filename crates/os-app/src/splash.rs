@@ -279,7 +279,8 @@ impl Painter {
         cv.text(f, start + a + gap, 324.0, green, suffix);
         let caption = "CREATE WITHOUT LIMITS";
         let small = Font::new(13);
-        cv.text(small, (SIZE.0 - cv.text_width(small, caption)) / 2.0, 357.0, Color::rgb(0xb1c4ac), caption);
+        let caption_width = cv.text_width(small, caption);
+        cv.text(small, (SIZE.0 - caption_width) / 2.0, 357.0, Color::rgb(0xb1c4ac), caption);
 
         let span = 248.0;
         let x = (SIZE.0 - span) / 2.0;

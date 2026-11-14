@@ -2,6 +2,12 @@
 
 QuickView runs **Skell Studio's existing built-in renderer**, `skell-studio.exe --screenshot <file>.png`. The pixels come directly from the DAW's production `App::paint`/Canvas path, not a generated mockup or a browser approximation. A built executable is required, but **repeated screenshots do not require a rebuild**.
 
+## One-click Windows launcher
+
+In the source checkout, **double-click `Skell-QuickView.cmd`**. It uses an already-built executable if present, or starts the fast local build once if needed. If you have downloaded and extracted an engineering `skell-studio.exe` elsewhere, **drag the EXE onto `Skell-QuickView.cmd`**: the script will capture the actual interface directly from that executable without compiling anything.
+
+The gallery opens from `.skell-quickview/latest/index.html`. This only displays frames rendered by the app itself.
+
 ## Fastest route when you already have an EXE
 
 From a PowerShell terminal in the repository:

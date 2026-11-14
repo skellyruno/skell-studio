@@ -31,3 +31,6 @@ publish.local.json
 # Skell Studio baseline artifacts
 *.zip
 *.log
+
+# Local QuickView captures and isolated settings; never commit generated images or profiles
+.skell-quickview/

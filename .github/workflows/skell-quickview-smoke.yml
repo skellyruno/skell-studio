@@ -1,0 +1,41 @@
+name: Skell QuickView local script lint and plan
+on:
+  push:
+    branches: [dev/skell-local-fast-loop]
+    paths:
+      - ".github/workflows/skell-quickview-smoke.yml"
+      - "scripts/skell-quickview.ps1"
+      - "Cargo.toml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  powershell-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse local QuickView PowerShell and verify no syntax errors
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/skell-quickview.ps1).Path,
+            [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            throw "QuickView script has $($errors.Count) parser errors."
+          }
+      - name: Validate capture plans without building or changing settings
+        shell: pwsh
+        run: |
+          ./scripts/skell-quickview.ps1 -Mode Render -View all -Size 1440x900 -Plan
+          ./scripts/skell-quickview.ps1 -Mode BuildRender -View mixer -Size 1280x720 -Jobs 2 -Plan
+          if (Test-Path .skell-quickview) { throw "Dry-run must not touch local settings or captures" }
+      - name: Ensure fast Rust profile exists
+        shell: pwsh
+        run: |
+          $cargo = Get-Content Cargo.toml -Raw
+          if ($cargo -notmatch '\[profile\.skell-preview\]') { throw "skell-preview build profile missing" }

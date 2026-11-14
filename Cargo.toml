@@ -29,3 +29,15 @@ opt-level = 3
 
 [patch.crates-io]
 mp3lame-sys = { path = "vendor/mp3lame-sys" }
+
+# Fast engineering/UI previews. Do not use for sound-quality or release benchmarks.
+# The inherited dev profile and its dependencies are optimized at level 3.
+# This explicit opt=0 profile keeps first-time Windows screenshot builds shorter.
+[profile.skell-preview]
+inherits = "dev"
+opt-level = 0
+debug = 0
+incremental = true
+
+[profile.skell-preview.package."*"]
+opt-level = 0

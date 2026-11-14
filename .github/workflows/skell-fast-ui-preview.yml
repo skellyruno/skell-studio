@@ -1,0 +1,63 @@
+name: Skell Studio fast Windows preview + real UI captures
+on:
+  push:
+    branches: [dev/skell-fast-ui-preview]
+    paths:
+      - ".github/workflows/skell-fast-ui-preview.yml"
+      - "Cargo.toml"
+      - "scripts/ci_capture_skell_ui.ps1"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: skell-fast-preview-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows-preview:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+      LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skell-ui-preview-windows
+          cache-on-failure: true
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: Compile fast UI preview executable (not release)
+        shell: pwsh
+        run: cargo build --locked --profile skell-preview -p os-app --bin skell-studio
+      - name: Check Windows executable header
+        shell: pwsh
+        run: |
+          $exe = "target/skell-preview/skell-studio.exe"
+          if (-not (Test-Path $exe)) { throw "Skell Studio executable not found" }
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path $exe))
+          if ($bytes.Length -lt 1048576 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+            throw "Skell Studio Windows executable header/size invalid"
+          }
+          (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() | Set-Content "target/skell-preview/skell-studio.exe.sha256"
+      - name: Capture real Skell renderer screenshots at 3 window sizes
+        shell: pwsh
+        run: ./scripts/ci_capture_skell_ui.ps1
+      - name: Upload executable and native UI screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkellStudio-Windows-Fast-Preview-With-UI
+          path: |
+            target/skell-preview/skell-studio.exe
+            target/skell-preview/skell-studio.exe.sha256
+            captures/*.png
+            captures/CAPTURE_MANIFEST.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Report compiler cache efficiency
+        if: always()
+        shell: pwsh
+        run: sccache --show-stats

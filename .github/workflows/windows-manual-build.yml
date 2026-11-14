@@ -1,5 +1,9 @@
-name: Windows DAW - manual test build
+name: Windows DAW - engineering executable
 on:
+  push:
+    branches: [dev/skell-windows-exe-build]
+    paths:
+      - ".github/workflows/windows-manual-build.yml"
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,15 +15,34 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build standalone DAW
+        with:
+          shared-key: skell-windows-exe
+          cache-on-failure: true
+      - name: Build standalone Skell Studio (Windows x64)
         shell: pwsh
         env:
           OPENSTUDIO_NO_PLUGIN_BUILD: "1"
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
         run: cargo build --locked --release -p os-app --bin skell-studio
-      - uses: actions/upload-artifact@v4
+      - name: Verify executable exists and write SHA256 digest
+        shell: pwsh
+        run: |
+          $exe = "target/release/skell-studio.exe"
+          if (!(Test-Path $exe)) { throw "Build did not produce $exe" }
+          $size = (Get-Item $exe).Length
+          if ($size -lt 1048576) { throw "Unexpectedly small executable: $size bytes" }
+          $head = [System.IO.File]::ReadAllBytes((Resolve-Path $exe))
+          if ($head[0] -ne 0x4d -or $head[1] -ne 0x5a) { throw "Not a Windows PE executable" }
+          (Get-FileHash -Path $exe -Algorithm SHA256).Hash.ToLower() |
+            Set-Content -Path "target/release/skell-studio.exe.sha256"
+          Write-Output "Skell Studio x64 EXE present: $size bytes"
+          Get-Content "target/release/skell-studio.exe.sha256"
+      - name: Upload engineering executable and checksum
+        uses: actions/upload-artifact@v4
         with:
-          name: SkellStudio-Windows-DAW-Engineering-Baseline
-          path: target/release/skell-studio.exe
+          name: SkellStudio-Windows-x64-Engineering-EXE
+          path: |
+            target/release/skell-studio.exe
+            target/release/skell-studio.exe.sha256
           if-no-files-found: error
           retention-days: 14

@@ -308,7 +308,7 @@ pub fn save_body(path: &Path, h: &Header, body: &Body) -> std::io::Result<()> {
 /// or made for another plugin (`id` given and different from the file's).
 pub fn load(path: &Path, id: &str) -> Result<(Header, Body), String> {
     let bytes = read(path)?;
-    let (h, rest) = decode(&bytes).ok_or_else(|| format!("{} is not a AQUILA preset", shown_name(path)))?;
+    let (h, rest) = decode(&bytes).ok_or_else(|| format!("{} is not a Skell Studio preset", shown_name(path)))?;
     if !id.is_empty() && !h.id.is_empty() && !h.id.eq_ignore_ascii_case(id) {
         return Err(format!("{} belongs to {}", shown_name(path), if h.plugin.is_empty() { &h.id } else { &h.plugin }));
     }
@@ -590,7 +590,7 @@ pub fn run(app: &mut App, c: PCmd) -> Option<String> {
         PCmd::Rename(key) => {
             let cur = own_current(app, key)?;
             let dlg = crate::filedlg::FileDlg::new(crate::filedlg::Mode::Save, "Rename preset", "preset", crate::dialog::Then::RenamePreset(key, cur.clone()))
-                .filter("AQUILA preset", &[EXT])
+                .filter("Skell Studio preset", &[EXT])
                 .start(cur.parent())
                 .name(&format!("{}.{EXT}", shown_name(&cur)));
             app.file_dialog(dlg);
@@ -750,7 +750,7 @@ fn save_as(app: &mut App, key: usize) -> Option<String> {
     let _ = std::fs::create_dir_all(&dir);
     let start = app.plugins.presets.get(&key).map(|p| shown_name(p)).unwrap_or_else(|| "New preset".into());
     let dlg = crate::filedlg::FileDlg::new(crate::filedlg::Mode::Save, "Save preset as", "preset", crate::dialog::Then::SavePreset(key))
-        .filter("AQUILA preset", &[EXT])
+        .filter("Skell Studio preset", &[EXT])
         .start(Some(&dir))
         .name(&format!("{start}.{EXT}"));
     app.file_dialog(dlg);

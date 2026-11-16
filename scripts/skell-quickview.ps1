@@ -125,8 +125,19 @@ try {
         $png = Join-Path $outDir $name
         $renderArgs = @("--screenshot", $png, "--design", "Skell", "--size", $Size) + $scene.Args
         Write-Host "Native renderer: $($scene.Label) -> $name"
-        & $chosenExe @renderArgs
-        if ($LASTEXITCODE -ne 0) { throw "Skell native renderer failed for $name (exit $LASTEXITCODE)." }
+        # Skell Studio is a Windows GUI-subsystem executable; & may not wait or
+        # update LASTEXITCODE in Windows PowerShell. Wait for the real process.
+        $quotedArgs = ($renderArgs | ForEach-Object { '"' + ($_ -replace '"', '\\"') + '"' }) -join ' '
+        $proc = Start-Process -FilePath $chosenExe -ArgumentList $quotedArgs -PassThru -NoNewWindow
+        try {
+            if (-not $proc.WaitForExit(60000)) {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                throw "Native renderer timed out after 60 seconds for $name"
+            }
+            if ($proc.ExitCode -ne 0) { throw "Native renderer failed for $name (exit $($proc.ExitCode))." }
+        } finally {
+            $proc.Dispose()
+        }
         if (-not (Test-Path $png)) { throw "Native renderer produced no $name" }
         $bytes = [IO.File]::ReadAllBytes($png)
         $sig = @(137, 80, 78, 71, 13, 10, 26, 10)

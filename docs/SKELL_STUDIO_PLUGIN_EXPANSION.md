@@ -13,7 +13,7 @@ The parity figures below are reported by the supplied LYNX SHARE 0.1.30 source d
 | Role | Selected implementation | Source-reported evidence | Decision |
 |---|---|---|---|
 | Limiter | LYNX Fruity Limiter engine | 101/272 installation states bit-identical; all tested states within -129.5 dB | Upgrade the existing ML Limiter in place; retain compressor and gate sections, sidechain, state and automation mapping |
-| Dedicated compressor | LYNX Fruity Compressor engine | 70/70 tested installation states bit-identical; sidechain supported | Add as a distinct compressor plug-in; do not create a duplicate copy of ML Limiter |
+| Dedicated compressor | LYNX Fruity Compressor engine | 70/70 tested installation states bit-identical; sidechain supported | **Skell Compressor** is now a separate plug-in; do not create a duplicate copy of ML Limiter |
 | Delay | LYNX Fruity Delay 3 engine | 85 installation states plus 110 randomized states; one reported case at -151 dB | Upgrade the existing ML Delay in place |
 | Reverb | LYNX Fruity Reeverb 2 engine | 293 tested installation states bit-identical | Upgrade the existing ML Reverb in place; keep ML Hall as a separate additional hall/space algorithm |
 | EQ | LYNX Parametric EQ 2 + linear-phase implementation | 912/1,139 tested states bit-identical; all IIR results within -166 dB; linear-phase path within -127 dB | Upgrade ML EQ in place, preserving all existing automation and stored state |
@@ -58,9 +58,22 @@ Known first-pass gaps:
 - Factory envelopes are the LYNX clean-room factory bank based on documented behaviour; no proprietary FL factory assets were copied.
 - Full binary slot state is retained through the plug-in state field, but round-tripping through a real VST3 host and FL project remains to be verified.
 
+### Skell Compressor — first integration pass
+
+Implemented on this branch:
+- Separate AGPL-3.0-only **Skell Compressor** VST3/CLAP crate at `plugins/fruity-compressor`.
+- The isolated LYNX Fruity Compressor engine (not the Fruity Limiter compressor subsection).
+- The six original raw controls: threshold, ratio, makeup gain, attack, release and knee/release type.
+- Original look-ahead/PDC state bit; the engine always has a 64-frame output delay and reports 64 samples to the host only when the original look-ahead option is enabled.
+- Optional stereo sidechain aux input through the shared native wrapper.
+- FL binary state layout v1–v3, including preservation of flags/sidechain bytes not directly exposed as automation.
+- Shared Skell native editor and Windows VST3/CLAP bundle gate.
+
+Local C++ verification against the uploaded LYNX SHARE 0.1.30 source: zero allocations during 100 processing blocks, bit-identical output across the tested 1/17/64/127/512/2048/4096/8192 block sizes, finite output, and a measured difference when an external sidechain is used. Exact Windows Rust/plugin build and real-host state/sidechain tests are still pending.
+
 ### AutoTune-style pitch correction
 
-LYNX Tune is the selected target. It offers a broader vocal-correction control set than the SnapTune wrapper I initially prototyped. That duplicate SnapTune wrapper has been removed from this branch; the pre-existing SnapTune DSP source remains part of the repository baseline, but is not being added as a second tuner.
+LYNX Tune is the selected target. It offers a broader vocal-correction control set than the small SnapTune wrapper I initially prototyped. That duplicate SnapTune wrapper has been removed from this branch; the pre-existing SnapTune DSP source remains part of the repository baseline, but is not being added as a second tuner.
 
 The selected LYNX Tune engine still needs its own Skell VST3/CLAP wrapper, native editor and tests before it can be called implemented. Required controls include retune/speed, key, scale/note mask, voice range, humanize, formant, transpose, mix and learn/MIDI-target behavior. Preserve its audio-thread allocation guarantees and latency behavior.
 

@@ -65,7 +65,7 @@ Implemented on this branch:
 - The isolated LYNX Fruity Compressor engine (not the Fruity Limiter compressor subsection).
 - The six original raw controls: threshold, ratio, makeup gain, attack, release and knee/release type.
 - Original look-ahead/PDC state bit; the engine always has a 64-frame output delay and reports 64 samples to the host only when the original look-ahead option is enabled.
-- Optional stereo sidechain aux input through the shared native wrapper.
+- Optional stereo sidechain aux input through the shared native wrapper. Its Auto/On mode is saved in a Skell extension byte at offset 36; Auto follows the original FL sidechain assignment at offset 32, and On forces the connected VST3/CLAP aux input. The original 36-byte FL state, including all flag/sidechain bytes, is retained.
 - FL binary state layout v1–v3, including preservation of flags/sidechain bytes not directly exposed as automation.
 - Shared Skell native editor and Windows VST3/CLAP bundle gate.
 

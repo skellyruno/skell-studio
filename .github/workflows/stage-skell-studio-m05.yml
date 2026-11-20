@@ -1,0 +1,64 @@
+name: Stage Skell Studio milestone 05
+
+on:
+  push:
+    branches:
+      - feature/skell-studio-milestone-05-20261120
+
+permissions:
+  contents: write
+
+concurrency:
+  group: skell-studio-m05-stage
+  cancel-in-progress: false
+
+jobs:
+  apply-milestone-05:
+    if: github.ref == 'refs/heads/feature/skell-studio-milestone-05-20261120'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Decode and verify source patch
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check brotli
+          python - "$RUNNER_TEMP/skell-studio-m05.patch" <<'PY'
+          import base64
+          import brotli
+          import hashlib
+          import pathlib
+          import sys
+
+          root = pathlib.Path("staging/m05-brotli")
+          encoded = b"".join((root / f"part-{i:02d}.txt").read_bytes().split() for i in range(1, 5))
+          if len(encoded) != 17384:
+              raise SystemExit(f"Unexpected encoded patch length: {len(encoded)}")
+          compressed = base64.b64decode(encoded, validate=True)
+          patch = brotli.decompress(compressed)
+          expected = "a3c49f927c882ab721f8e5aaa5400bce766faa2c119c10dd502de8463a12bd4f"
+          actual = hashlib.sha256(patch).hexdigest()
+          if actual != expected:
+              raise SystemExit(f"Patch SHA-256 mismatch: {actual}")
+          pathlib.Path(sys.argv[1]).write_bytes(patch)
+          print(f"Verified patch: {len(patch)} bytes, SHA-256 {actual}")
+          PY
+
+      - name: Check and apply patch
+        shell: bash
+        run: |
+          git apply --check --verbose "$RUNNER_TEMP/skell-studio-m05.patch"
+          git apply --index "$RUNNER_TEMP/skell-studio-m05.patch"
+
+      - name: Remove staging payload and commit integrated source
+        shell: bash
+        run: |
+          git rm -rf staging/skell-studio-m05.patch.gz.b64 staging/m05-brotli
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat: integrate Skell Studio milestone 05"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

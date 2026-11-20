@@ -33,12 +33,14 @@ class FFT {
   for(int i=0;i<n/2;++i)roots[i]=std::polar(1.0,-MathConstants<double>::twoPi*i/n);
  }
  void performRealOnlyForwardTransform(float* p,bool){
-  for(int i=0;i<n;++i)data[i]={p[i],0};transform(false);
+  for(int i=0;i<n;++i){data[i]={p[i],0};}
+  transform(false);
   for(int i=0;i<=n/2;++i){p[2*i]=float(data[i].real());p[2*i+1]=float(data[i].imag());}
  }
  void performRealOnlyInverseTransform(float* p){
   for(int i=0;i<=n/2;++i)data[i]={p[2*i],p[2*i+1]};
-  for(int i=n/2+1;i<n;++i)data[i]=std::conj(data[n-i]);transform(true);
+  for(int i=n/2+1;i<n;++i){data[i]=std::conj(data[n-i]);}
+  transform(true);
   for(int i=0;i<n;++i)p[i]=float(data[i].real());
  }
 };

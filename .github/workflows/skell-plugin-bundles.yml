@@ -47,7 +47,7 @@ jobs:
 
       - name: Run core dynamics, delay, reverb and EQ plugin tests
         shell: pwsh
-        run: cargo test --locked -p lemon-limiter -p lemon-delay -p lemon-reverb -p lemon-hall -p lemon-parametric-eq-2 -p press -p gross-beat
+        run: cargo test --locked -p lemon-limiter -p lemon-delay -p lemon-reverb -p lemon-hall -p lemon-parametric-eq-2 -p press -p gross-beat -p fruity-compressor
 
       - name: Build the complete Windows VST3 and CLAP plugin suite
         shell: pwsh
@@ -56,7 +56,7 @@ jobs:
       - name: Validate requested core plugin bundles and AMD64 modules
         shell: pwsh
         run: |
-          $names = @("ML Limiter", "ML Delay", "ML Reverb", "ML Hall", "ML EQ", "ML Press", "Skell Beat")
+          $names = @("ML Limiter", "ML Delay", "ML Reverb", "ML Hall", "ML EQ", "ML Press", "Skell Beat", "Skell Compressor")
           foreach ($name in $names) {
             $vst3 = Join-Path "target/bundled" "$name.vst3/Contents/x86_64-win/$name.vst3"
             $clap = Join-Path "target/bundled" "$name.clap"

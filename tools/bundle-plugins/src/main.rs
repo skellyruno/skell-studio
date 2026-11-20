@@ -45,7 +45,7 @@ fn main() {
     let build = target.join("plugins");
     for (pkg, stem, name) in PLUGINS {
         let ok = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-            .args(["build", "--release", "--lib", "-p", pkg])
+            .args(["build", "--locked", "--release", "--lib", "-p", pkg])
             .current_dir(&root)
             .env("CARGO_TARGET_DIR", &build)
             .status()

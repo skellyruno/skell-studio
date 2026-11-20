@@ -1,79 +1,98 @@
-# Skell Studio plugin coverage and expansion plan
+# Skell Studio plugin selection and expansion plan
 
 Audit date: 2026-11-20
 
-This inventory separates plugins already linked into Skell Studio from the missing engine work. The goal is to make the existing FL-compatible effects reliably available in Studio and as Windows VST3/CLAP bundles, then add genuinely missing processors without duplicating what is already there.
+## Selection rule
 
-## Already implemented in the current Skell Studio source
+Keep one best implementation per job. Do not install two plugins that implement the same FL effect merely because both are present in the source archive. Distinct Pro-style processors can be considered as an optional second tier later, but the core target is the most accurate compatible FL behaviour.
 
-| Requested role | Current Skell plugin | Existing FL relationship | Status |
+The parity figures below are reported by the supplied LYNX SHARE 0.1.30 source documentation and its test reports. They are source-reported comparisons, not independent parity reruns performed by Skell in this session. "Bit-identical" means exact output for the tested reference case; near-exact results remain near-exact and are not described as perfect.
+
+## Chosen engines
+
+| Role | Selected implementation | Source-reported evidence | Decision |
 |---|---|---|---|
-| Limiter | **ML Limiter** | Fruity Limiter | Linked into Studio; separate VST3/CLAP package |
-| Compressor | **ML Limiter — Comp section** | Fruity Limiter compressor section | Existing dynamics engine supports compressor threshold, ratio, knee, attack, release and RMS controls; not a separate single-purpose compressor plugin |
-| Noise gate | **ML Limiter — Gate section** | Fruity Limiter gate section | Linked into Studio |
-| Delay | **ML Delay** | Fruity Delay 3 | Linked into Studio; tempo-sync and stereo delay modes |
-| Reverb | **ML Reverb** | Fruity Reeverb 2 | Linked into Studio |
-| Additional reverb | **ML Hall** | Skell native reverb/space effect | Separate linked plugin |
-| Equalizer | **ML EQ** | Fruity Parametric EQ 2 | Linked into Studio; seven-band parametric EQ |
-| Multiband dynamics | **ML Press** | Maximus | Linked into Studio; multiband maximizer/compressor-style processor |
-| Filter / modulation | **Lemon Filter, Chorus, Flanger, Phaser** | FL-style filter/modulation counterparts | Linked into Studio |
+| Limiter | LYNX Fruity Limiter engine | 101/272 installation states bit-identical; all tested states within -129.5 dB | Upgrade the existing ML Limiter in place; retain compressor and gate sections, sidechain, state and automation mapping |
+| Dedicated compressor | LYNX Fruity Compressor engine | 70/70 tested installation states bit-identical; sidechain supported | Add as a distinct compressor plug-in; do not create a duplicate copy of ML Limiter |
+| Delay | LYNX Fruity Delay 3 engine | 85 installation states plus 110 randomized states; one reported case at -151 dB | Upgrade the existing ML Delay in place |
+| Reverb | LYNX Fruity Reeverb 2 engine | 293 tested installation states bit-identical | Upgrade the existing ML Reverb in place; keep ML Hall as a separate additional hall/space algorithm |
+| EQ | LYNX Parametric EQ 2 + linear-phase implementation | 912/1,139 tested states bit-identical; all IIR results within -166 dB; linear-phase path within -127 dB | Upgrade ML EQ in place, preserving all existing automation and stored state |
+| Gross Beat / time FX | LYNX Gross Beat time/volume engine | 41 installation states bit-identical at the two primary reported test tempos; at 120 BPM 34/41 bit-identical and the rest -141 to -153 dB | New Skell Beat plug-in; this effect is genuinely missing from Skell |
+| AutoTune-style pitch correction | LYNX Tune | Its documented parity assessment rates it strongly on configuration/design and includes real-time, allocation and stability tests; see source `docs/PARITY.md` | Select this engine over the small SnapTune wrapper; implement one Skell tuner, not two |
 
-The application links the core effects from `crates/os-app/src/plugins.rs`; the FL project-state adapters live in `crates/os-engine/src/effects`; and the standalone VST3/CLAP packaging manifest is `tools/bundle-plugins/src/main.rs`.
+### Important accuracy caveats
 
-The Limiter already contains a compressor section. A dedicated compressor could still improve the workflow, but it must add a distinct control model/sound rather than duplicate the same Fruity Limiter algorithm under another name. LYNX's Crest Compressor would be a candidate to evaluate once its source archive is available again.
+- LYNX Gross Beat documents an unresolved spline curve type 10 difference. Its primary parity tests are excellent but that remaining difference is real.
+- The Fruity Limiter's residual differences are documented as very small, not zero.
+- The EQ's 1,139-state corpus is not 1,139 bit-identical states; 912 are exact and the remainder are within the reported error bound.
+- LYNX Tune's comparison scores are the source's assessment against its available reference versions. The Auto-Tune Pro baseline is noted as expired in that report, so the score is not a fresh independent measurement by Skell.
+- None of these figures substitutes for a new Skell audio A/B or real DAW validation pass.
 
-## Real gaps
+## What Skell already has
 
-### 1. Gross Beat-style time and volume effects
+The main branch already contains:
+- **ML Limiter** — Fruity Limiter-style limiter, compressor and gate sections.
+- **ML Delay** — Fruity Delay 3-style delay.
+- **ML Reverb** — Fruity Reeverb 2-style reverb.
+- **ML Hall** — additional hall/space reverb.
+- **ML EQ** — seven-band Parametric EQ 2-style EQ.
+- **ML Press** — Maximus-style multiband dynamics.
 
-There is no dedicated Gross Beat-style mixer plugin in the current linked plugin list or bundle manifest. Skell has offline sample time-stretch/warp utilities, but those are not a real-time, tempo-synced insert effect. The missing processor needs an allocation-free audio-thread design with:
+These existing plug-ins are real and registered in the Studio. The LYNX engines are selected as upgrades to the matching processors, not as duplicate plug-in entries. Existing parameter IDs, host automation, FL state, presets and session compatibility must be preserved during replacement.
 
-- Beat/bar-synced pattern playback and host transport following.
-- Volume gates, retriggers, stutters, repeats, tape-stop/slowdown and reverse/retrigger patterns.
-- Per-pattern mix/bypass and smooth transitions at grid boundaries.
-- Deterministic reset/seek behavior, bounded delay/latency, and no audio-thread allocation or locks.
-- Preset banks that save in Skell's format while leaving imported FL assets untouched.
+## Implementation status on this branch
 
-### 2. Pitch correction / autotune plugin
+### Skell Beat — first integration pass
 
-The DSP crate already contains **SnapTune** in `crates/os-dsp/src/snaptune.rs`, backed by the isolated C ABI implementation in `crates/os-dsp/vendor/snaptune`. Its existing DSP tests cover 44.1/48/96 kHz, latency reporting, correction behavior, block-size invariance, disabled/dry behavior, voice mode and key-learning behavior.
+Implemented on this branch:
+- Separate AGPL-3.0-only plug-in crate at `plugins/gross-beat`, kept separate from the GPL Studio executable.
+- Isolated LYNX Gross Beat engine, state parser and curve implementation. The LYNX-specific DAW Effect wrapper has been removed from the vendored code.
+- C ABI bridge for factory state, loading the 72-slot state, eight parameters, tempo/position/start/stop/jump transport, audio processing and 15-sample latency reporting.
+- Skell's shared native plug-in editor framework with eight controls: time slot, volume slot, time mix, volume mix, attack, release, tension and hold.
+- VST3/CLAP bundle manifest and Windows AMD64 artifact-validation workflow.
+- Full AGPL license text copied beside the plug-in source and source attribution added to `THIRD-PARTY-NOTICES.txt`.
 
-The first user-facing wrapper is now implemented in `plugins/snap-tune` on this branch as **Skell Tune**, a separate VST3/CLAP plug-in using Skell's shared native editor:
-- Correction amount, key, scale, Low Male/Soprano voice range, and Learn controls.
-- Stable parameter IDs and native host automation through the existing shared plug-in parameter framework.
-- Learn results remain available when the Learn switch is turned off; starting a new Learn pass clears the prior profile.
-- The shared effect wrapper now supports dynamic latency reporting, and Skell Tune reports SnapTune's live-mode latency to the host for delay compensation.
-- Audio staging memory is preallocated per instance; the processing callback does not allocate its stereo scratch buffer.
-- The package is marked AGPL-3.0-only and remains a separate plug-in, not statically linked into the GPL Studio executable.
+Known first-pass gaps:
+- The current editor exposes the eight host parameters, not Gross Beat's full curve/point editor for all 72 slots.
+- MIDI note-to-slot triggering is not yet wired to the plug-in.
+- Factory envelopes are the LYNX clean-room factory bank based on documented behaviour; no proprietary FL factory assets were copied.
+- Full binary slot state is retained through the plug-in state field, but round-tripping through a real VST3 host and FL project remains to be verified.
 
-Still needed before release:
-- Exact-head Windows VST3/CLAP build and module validation.
-- Plugin-state save/restore and DAW automation verification in a real host.
-- Real vocal A/B tests on breathy, low-register, sibilant and layered vocals; no sound-quality sign-off is claimed yet.
-- An Apply Suggestion workflow for the learned key profile is not part of this first editor pass.
+### AutoTune-style pitch correction
 
-The SnapTune source is marked AGPL-3.0. Its existing license and notices must be reviewed and preserved when exposing it as a distributable plugin.
+LYNX Tune is the selected target. It offers a broader vocal-correction control set than the SnapTune wrapper I initially prototyped. That duplicate SnapTune wrapper has been removed from this branch; the pre-existing SnapTune DSP source remains part of the repository baseline, but is not being added as a second tuner.
 
-### 3. Dedicated compressor and expanded EQ family
+The selected LYNX Tune engine still needs its own Skell VST3/CLAP wrapper, native editor and tests before it can be called implemented. Required controls include retune/speed, key, scale/note mask, voice range, humanize, formant, transpose, mix and learn/MIDI-target behavior. Preserve its audio-thread allocation guarantees and latency behavior.
 
-The current Limiter's Comp section and ML Press cover much of the requested dynamics work. A separate compressor or an additional EQ should be added only when it provides a distinct workflow/sound (for example: a clean channel compressor with sidechain/auto-release, or a second EQ with a different filter topology), not just a renamed duplicate.
+### Existing processor upgrades
 
-## Build and regression plan
+Limiter, dedicated compressor, Delay, Reverb and EQ have been selected from the source comparison but have not yet been ported into their Skell plug-ins. The next port must retain:
+- Existing Skell parameter/automation identifiers wherever the control meaning is unchanged.
+- Existing FL state import/export and unknown stored bytes.
+- Preset and session backward compatibility.
+- Sidechain behavior and plug-in delay compensation.
+- Existing UI identity/layout unless an intentional Skell UI improvement is tested.
 
-This branch adds a Windows VST3/CLAP bundle gate for the existing plugin suite. It will build the bundles from the repository's own plugin sources, validate the AMD64 module headers for the requested core effects, and upload a short-lived CI artifact for inspection.
+A separate Pro-style limiter/compressor/EQ (LYNX Apex, Crest, Facet) is not part of this core migration. They are distinct optional products, not replacements for the selected FL processors.
 
-Next implementation order:
+## Build and test gates
 
-1. Finish and verify the FST preset interoperability changes already in this PR.
-2. Build and inspect Windows bundles for ML Limiter, ML Delay, ML Reverb, ML Hall, ML EQ and ML Press.
-3. Verify the new standalone Skell Tune VST3/CLAP wrapper with Windows builds, state restore, automation and real vocal A/B tests.
-4. Implement the Gross Beat-style real-time effect as a separate processor with tempo/pattern tests and measured CPU/latency.
-5. Port/evaluate any additional LYNX plugins only after their source archive is available and their licensing, DSP behavior and parameter/preset mappings are reviewed.
+The branch adds a Windows VST3/CLAP build-and-bundle gate for the plugin suite. It tests ML Limiter, ML Delay, ML Reverb, ML Hall, ML EQ, ML Press and Skell Beat, packages VST3 and CLAP modules, validates AMD64 PE headers and uploads the artifact for inspection.
+
+Required before any release:
+1. Exact-head Windows Rust tests, plug-in compilation and VST3/CLAP bundle validation.
+2. Gross Beat transport, block-size, state restore, reset/seek and parameter automation tests; add audio-thread allocation audit and measured CPU.
+3. Real Windows VST3 host scan, editor open/close/resize and host state save/restore.
+4. FL Studio tests with real project/preset state round-trips.
+5. Audio A/B against reference captures and regression tests at 44.1/48/96 kHz, odd block sizes and tempo/transport jumps.
+6. LYNX Tune port and the same Windows/host/DSP checks.
+7. Port the selected Limiter, Compressor, Delay, Reverb and EQ engines one at a time, with their state mappings and regressions.
 
 ## Verification boundary
 
-- Existing plugin source and in-app registration: confirmed by source inspection.
-- Windows plugin bundle build: newly added to CI in this branch; not yet verified until the exact-head workflow completes.
-- SnapTune DSP tests are present in the codebase; the new standalone Skell Tune wrapper/editor and VST3/CLAP packaging are implemented on this branch but not yet CI-verified.
-- Gross Beat-style plugin: not implemented yet.
-- Real FL Studio install/preset round-trip and vocal/audio A/B tests: not yet run in this environment.
+- Existing Skell plugin inventory: confirmed by source inspection.
+- LYNX selection and parity figures: transcribed from the supplied LYNX SHARE source documentation; not independently rerun during this integration.
+- Gross Beat engine C++ bridge: compiled and smoke-tested locally against the supplied LYNX source; factory state was 27,046 bytes, reported latency 15 samples, and a selected-slot render produced finite output. This is not a Windows plug-in or in-host test.
+- Skell Beat Rust wrapper and Windows VST3/CLAP artifact: pending exact-head CI.
+- LYNX Tune wrapper: selected, not implemented.
+- FL Studio project round-trip, DAW automation, full Gross Beat curve editor, MIDI slot triggering and vocal A/B: not yet verified.

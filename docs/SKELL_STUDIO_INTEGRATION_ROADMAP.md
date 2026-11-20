@@ -23,7 +23,9 @@ Preserve original imported source for rollback; do not auto-update from another 
 - Import preset and the Browser now expose local FL `.fst` presets for the existing Citrus/Sytrus, Smith/Ogun and ML Trio/3x Osc state adapters; unsupported plugin/state combinations are rejected rather than passed to unrelated plugins.
 - Next gates: synthetic parser tests in CI, real Windows FL installation discovery, preset load/save/reopen, then additional native preset formats only with tested codecs.
 
-## Core plugin suite and new-effect gaps (2026-11-20)
-- See [Skell Studio plugin coverage and expansion plan](SKELL_STUDIO_PLUGIN_EXPANSION.md) for the current Limiter/Compressor, Delay, Reverb, EQ and Press inventory, plus the Gross Beat-style and autotune gaps.
-- The Windows VST3/CLAP bundler now gets its nested Cargo builds with `--locked`.
-- A dedicated Windows workflow tests and packages the current plugin suite, validates AMD64 modules for ML Limiter, ML Delay, ML Reverb, ML Hall, ML EQ and ML Press, and uploads the suite as a CI artifact.
+## Core plugin suite and LYNX engine selection (2026-11-20)
+- See [Skell Studio plugin selection and expansion plan](SKELL_STUDIO_PLUGIN_EXPANSION.md) for source-reported parity evidence, chosen winners, known caveats and implementation status.
+- Selected engines: LYNX Fruity Limiter, Fruity Compressor, Fruity Delay 3, Fruity Reeverb 2, Parametric EQ 2, Gross Beat and LYNX Tune. Existing Skell FL-style effects are upgraded in place; no duplicate copies are planned.
+- The first Gross Beat engine integration is **Skell Beat**, a separate AGPL-3.0-only VST3/CLAP crate with a native Skell editor, 72-slot binary state, tempo/position transport and 15-sample latency reporting.
+- The Windows VST3/CLAP bundle workflow tests and packages ML Limiter, ML Delay, ML Reverb, ML Hall, ML EQ, ML Press and Skell Beat, validates AMD64 modules and uploads a short-retention artifact.
+- Skell Beat's C++ engine bridge has a local smoke test. Exact-head Windows plugin tests/build and real VST3/FL host round-trips are still pending; LYNX Tune and the Limiter/Compressor/Delay/Reverb/EQ engine ports remain follow-on work.

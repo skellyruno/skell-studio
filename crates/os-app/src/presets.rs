@@ -1279,6 +1279,18 @@ mod tests {
             )]
         );
 
+        let smith_fl_state = smith::state::State::default().to_bytes();
+        let smith_path = dir.join("Ogun Patch.fst");
+        std::fs::write(&smith_path, citrus::preset::test_fst(&smith_fl_state)).unwrap();
+        let smith_desc = descriptor(crate::smith::SMITH);
+        assert_eq!(
+            read_any(&smith_path, &smith_desc).unwrap(),
+            [(
+                "Ogun Patch".to_string(),
+                Body::State(smith::plugin_state_from_fl(&smith_fl_state))
+            )]
+        );
+
         let unrelated = descriptor("ML Sampler");
         assert!(
             read_any(&path, &unrelated).unwrap_err().contains("no compatible .fst importer"),

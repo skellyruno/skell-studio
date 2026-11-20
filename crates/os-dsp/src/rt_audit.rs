@@ -149,6 +149,8 @@ mod enabled {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::alloc::{GlobalAlloc, Layout};
+
         #[test]
         fn role_scopes_restore_thread_local_roles() {
             ROLE.with(|role| role.set(None));
@@ -162,6 +164,28 @@ mod enabled {
                 ROLE.with(|role| assert_eq!(role.get(), Some(Role::Feeder as usize)));
             }
             ROLE.with(|role| assert_eq!(role.get(), None));
+        }
+
+        #[test]
+        fn allocator_counts_allocations_and_frees_inside_a_scope() {
+            // Callback is isolated from the role used by the nesting test, so parallel test
+            // execution cannot make this snapshot include unrelated scope calls.
+            let _ = take(Role::Callback);
+            let layout = Layout::from_size_align(8, 8).expect("valid test allocation layout");
+            let mut allocated = false;
+            {
+                let _scope = Scope::enter(Role::Callback);
+                let ptr = unsafe { Allocator.alloc(layout) };
+                if !ptr.is_null() {
+                    unsafe { Allocator.dealloc(ptr, layout) };
+                    allocated = true;
+                }
+            }
+            assert!(allocated, "system allocator should satisfy a small test allocation");
+            let snapshot = take(Role::Callback);
+            assert_eq!(snapshot.calls, 1);
+            assert!(snapshot.allocations >= 1, "allocation was not counted: {snapshot:?}");
+            assert!(snapshot.frees >= 1, "free was not counted: {snapshot:?}");
         }
     }
 }

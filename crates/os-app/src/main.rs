@@ -1819,6 +1819,7 @@ fn screenshot(args: &[String]) {
     if let Some(i) = lane {
         app.state.piano.lane = piano::Lane::ALL[i.min(piano::Lane::ALL.len() - 1)];
     }
+    let settle_plugin_palette = plugin_menu.is_some();
     if let Some(target) = plugin_menu {
         let (w, h) = app.state.screen;
         app.open_plugin_palette(target, ((w / 2.0 - crate::plugin_palette::W / 2.0).round(), (h / 4.0).round()), None);
@@ -1890,6 +1891,11 @@ fn screenshot(args: &[String]) {
     let (w, h) = size.unwrap_or(((1920.0 * scale).round() as u32, (1080.0 * scale).round() as u32));
     let mut canvas = Canvas::new(w, h, scale).expect("canvas");
     app.paint(&mut canvas, None);
+    if settle_plugin_palette {
+        // The first paint starts the 180 ms opening animation. Wait after that frame, then capture the settled palette.
+        std::thread::sleep(Duration::from_millis(300));
+        app.paint(&mut canvas, None);
+    }
     for (x, y, dy) in wheels {
         app.mouse_move(x, y);
         app.wheel(0.0, dy, false, false);

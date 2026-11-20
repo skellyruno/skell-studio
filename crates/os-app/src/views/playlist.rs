@@ -1431,6 +1431,16 @@ pub(crate) fn draw_padlock(c: &mut os_ui::Canvas, x: f32, y: f32, scale: f32, in
     }
 }
 
+/// Choose the largest compact Skell track-label face that fits before the automation control.
+fn track_label_font_size(mut measure: impl FnMut(u16) -> f32, max_width: f32) -> u16 {
+    for size in [13u16, 12, 11] {
+        if measure(size) <= max_width {
+            return size;
+        }
+    }
+    11
+}
+
 /// A track header (§6, §6a): a box in the track's colour with the name, "…" and the mute LED. A group is one block
 /// in its group track's colour: the group track spans the width with a collapse arrow, its members are indented;
 /// a collapsed group's members are bare strips.
@@ -1549,9 +1559,13 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
                     Rect::new(hr.x + 31.0, hr.y + 5.0, 12.0, 12.0), text);
             }
             let label_x = hr.x + if lead { 46.0 } else { 33.0 };
-            ui.c.text_clip(Font::new(13), label_x, hr.y + 5.0,
-                (hr.right() - label_x - 24.0).max(0.0),
-                text, &pl::track_name(s, row));
+            let label_w = (hr.right() - label_x - 24.0).max(0.0);
+            let label = pl::track_name(s, row);
+            let label_font = Font::new(track_label_font_size(
+                |size| ui.c.text_width(Font::new(size), &label),
+                label_w,
+            ));
+            ui.c.text_clip(label_font, label_x, hr.y + 5.0, label_w, text, &label);
         } else {
             if lead {icons::draw(ui.c,Icon::Folder,Rect::new(hr.x+2.+if short{15.}else{0.},hr.y+3.,13.,13.),text);}
             ui.c.text_clip(Font::new(16), hr.x + 2.0+indent, hr.y + 1.0, name_w-indent, text, &pl::track_name(s, row));
@@ -1834,4 +1848,34 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
         super::scrollbar(ui, track, false, first as f32, shown as f32, cols as f32, target);
     }
     (r, rows)
+}
+
+
+#[cfg(test)]
+mod track_label_font_tests {
+    use super::track_label_font_size;
+
+    #[test]
+    fn keeps_default_face_when_track_name_fits() {
+        assert_eq!(track_label_font_size(|size| if size == 13 { 39.0 } else { 35.0 }, 41.0), 13);
+    }
+
+    #[test]
+    fn shrinks_track_name_before_it_collides_with_automation_control() {
+        let mut measured = Vec::new();
+        let size = track_label_font_size(
+            |size| {
+                measured.push(size);
+                if size == 13 { 44.0 } else { 40.0 }
+            },
+            41.0,
+        );
+        assert_eq!(size, 12);
+        assert_eq!(measured, vec![13, 12], "stop measuring once a face fits");
+    }
+
+    #[test]
+    fn uses_smallest_readable_face_for_long_track_names() {
+        assert_eq!(track_label_font_size(|_| 52.0, 41.0), 11);
+    }
 }

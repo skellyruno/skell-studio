@@ -92,7 +92,7 @@ Required before any release:
 
 - Existing Skell plugin inventory: confirmed by source inspection.
 - LYNX selection and parity figures: transcribed from the supplied LYNX SHARE source documentation; not independently rerun during this integration.
-- Gross Beat engine C++ bridge: compiled and smoke-tested locally against the supplied LYNX source; factory state was 27,046 bytes, reported latency 15 samples, and a selected-slot render produced finite output. This is not a Windows plug-in or in-host test.
+- Gross Beat engine C++ bridge: compiled and smoke-tested locally against the supplied LYNX 0.1.30 archive; factory state was 27,046 bytes with 72 slots, the 15-frame dry delay is confirmed in engine source, a selected-slot render produced finite output, and 100 × 4,096-frame processing blocks performed zero measured heap allocations. Variable host blocks (1, 17, 64, 127, 512, 2,048 and 8,192 frames) differed by less than 6×10⁻⁸ in the local render comparison. This is not a Windows plug-in or in-host test.
 - Skell Beat Rust wrapper and Windows VST3/CLAP artifact: pending exact-head CI.
 - LYNX Tune wrapper: selected, not implemented.
 - FL Studio project round-trip, DAW automation, full Gross Beat curve editor, MIDI slot triggering and vocal A/B: not yet verified.

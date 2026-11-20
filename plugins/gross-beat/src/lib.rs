@@ -3,8 +3,8 @@
 //! Standalone Skell Beat VST3/CLAP effect. The processing core is the clean-room
 //! LYNX Gross Beat engine, isolated from LYNX's DAW-specific Effect wrapper.
 
-use lemon_small_fx::{Card, ClapFeature, Control, Kind, Mark, Setting, SmallFx, Sound, Spec, Vst3SubCategory};
-use nih_plug::prelude::{nih_export_clap, nih_export_vst3};
+use lemon_small_fx::{Card, Control, Kind, Mark, Setting, SmallFx, Sound, Spec};
+use nih_plug::prelude::{nih_export_clap, nih_export_vst3, ClapFeature, Vst3SubCategory};
 use std::{ffi::c_void, ptr};
 
 unsafe extern "C" {

@@ -2,12 +2,12 @@
 
 **Skell Studio** is Skelly's work-in-progress native digital audio workstation, based on two user-supplied open-source DAW source snapshots and undergoing a ground-up product/visual transformation.
 
-## Project status — November 12, 2026
+## Project status — November 15, 2026
 
 - Unified DAW source imported and verified from pinned ADE Studio + ML Studio snapshots.
 - ADE already integrated ML and Lemon Studio components; no duplicate audio engine was added. Nine ML-only files are in `reference/ml-only/`.
-- First Skell visual pass committed: matte black with neon green accent across the playlist/piano roll/mixer/browser; code-drawn skull; fully redrawn startup splash; compact toolbar; new app identity and independent preferences.
-- Windows target is **`skell-studio.exe`** (not yet built/verified).
+- Skell visual pass committed: matte black with neon green accent across the playlist/piano roll/mixer/browser; code-drawn skull; redrawn startup splash; compact toolbar; labeled workspace navigation; new app identity and independent preferences. Built-in themes include **Ember** (black chrome, FL-style orange), **Skell Green**, **Steel** and **Bone** (light); the **Console** skin keeps the measured FL-style look.
+- Windows target is **`skell-studio.exe`**. Per the [verified checkpoint](docs/SKELL_VERIFIED_UPGRADE_CHECKPOINT.md), the Windows compile gate passed in CI on an earlier commit; **no installer or runnable executable has been tested**, and nothing here has been checked on real audio/MIDI hardware.
 - Inherited updater startup and old release workflows disabled.
 - GPL license, credits and large third-party notice list retained; see [credits](CREDITS_AND_LICENSES.md).
 
@@ -34,6 +34,8 @@ Or use the manual [Windows GitHub Action](https://github.com/skellyruno/skell-st
 - [Skellification milestone 01](docs/SKELLIFICATION_MILESTONE_01.md)
 - [Source merge baseline](docs/MERGE_BASELINE.md)
 - [Integration roadmap](docs/SKELL_STUDIO_INTEGRATION_ROADMAP.md)
+- [Verified upgrade checkpoint](docs/SKELL_VERIFIED_UPGRADE_CHECKPOINT.md)
+- [Milestone 05: audit, rebrand cleanup and Ember theme](docs/SKELL_STUDIO_MILESTONE_05.md)
 - [Credits and licenses](CREDITS_AND_LICENSES.md)
 - [Original ADE handoff](HANDOFF.md)
 

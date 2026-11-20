@@ -80,7 +80,7 @@ pub fn toggle(app:&mut App,row:u16){
 }
 fn ask_download(app:&mut App,row:u16){
  use crate::dialog::{Msg,Kind,Answer,Then,spans};
- app.show_msg(Msg::new(Kind::Question,"Enable vocal tuning?",spans(&["Download the optional vocal-tuning engine?\n\nThis small, one-time download is under 8 MB and installs only for AQUILA. No large AI models are required.\n\nVocal analysis and rendering stay on your computer. The original recording is preserved."]),&[Answer::Yes,Answer::No],Then::VocalDownload(row)));
+ app.show_msg(Msg::new(Kind::Question,"Enable vocal tuning?",spans(&["Download the optional vocal-tuning engine?\n\nThis small, one-time download is under 8 MB and installs only for Skell Studio. No large AI models are required.\n\nVocal analysis and rendering stay on your computer. The original recording is preserved."]),&[Answer::Yes,Answer::No],Then::VocalDownload(row)));
  app.invalidate();
 }
 pub fn download(app:&mut App,row:u16){

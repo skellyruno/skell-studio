@@ -1244,7 +1244,7 @@ pub fn paint(ui: &mut Ui, r: Rect, f: &Form) {
         "New audio transfers securely in the background. Plugin licences stay local.",
         "Plugin presets synchronize when stopped; local audio keeps running during transfers.",
         "Internet hosts may need TCP port forwarding or a private VPN. No website server.",
-        "Keep invitations private. The host must keep AQUILA open.",
+        "Keep invitations private. The host must keep Skell Studio open.",
     ]
     .iter()
     .enumerate()

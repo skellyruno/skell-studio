@@ -5,8 +5,8 @@
 //! Skins: the shapes and base colours of a look over the same layout. A theme (`.flstheme`) colours whichever skin is
 //! in use.
 //!
-//! `Citrus` (formerly Classic) is the measured default look. `Lemon` is AQUILA's own look: neutral greys, one
-//! blue brand colour and rounded-square controls (knobs stay round). It re-colours every token and every
+//! `Citrus` (formerly Classic, shown as Console) is the measured default look. `Lemon` (shown as Skell) is Skell
+//! Studio's own look: matte black, one neon-green brand colour and rounded-square controls (knobs stay round). It re-colours every token and every
 //! role-mapped literal (`Palette::s/a/h/tx/led`) through a `DesignMap` (a neutral lightness ramp plus key colours), sets
 //! the tokens the map can't get right outright, and tells the widget kit which shape language to draw (`Style`). A
 //! theme other than the stock Dark one is laid over Lemon's colours by a `Retint`.
@@ -23,7 +23,7 @@ pub enum Design {
     /// The measured default look (named Classic before 2026-10-17).
     #[default]
     Citrus,
-    /// AQUILA's own look: blue on neutral greys, rounded squares.
+    /// Skell Studio's own look: neon green on matte black, rounded squares.
     Lemon,
 }
 
@@ -193,10 +193,11 @@ pub fn classic_keys() -> Keys {
     }
 }
 
-/// The Lemon brand palette (owner's base colours, 2026-10-12) and the in-between shades derived from it.
+/// The Skell brand palette (matte black with neon green; the module keeps its stable `lemon` name because saved
+/// profiles key on it) and the in-between shades derived from it.
 pub mod lemon {
     use crate::Color;
-    /// Main colour (blue): "on" controls, selection, the playhead, lit steps.
+    /// Main colour (neon green): "on" controls, selection, the playhead, lit steps.
     pub const MAIN: Color = Color::rgb(0xa3ff39);
     /// Highlight: the bright top of lit controls, hover on lit controls, selected notes.
     pub const HIGHLIGHT: Color = Color::rgb(0xd3ff83);
@@ -206,15 +207,15 @@ pub mod lemon {
     pub const DARK_HIGHLIGHT: Color = Color::rgb(0x343d34);
     /// Coloured dark: glyphs and text on lemon, unlit LEDs, hovered menu rows.
     pub const COLORED_DARK: Color = Color::rgb(0x091008);
-    /// In-between: a deeper blue for edges of lit controls and meter bodies.
+    /// In-between: a deeper green for edges of lit controls and meter bodies.
     pub const DEEP: Color = Color::rgb(0x357c21);
     /// Text on the greys.
     pub const TEXT: Color = Color::rgb(0xf1f5f0);
 }
 
-/// Lemon: Classic lightness -> Lemon lightness. Classic's toolbar (0.19) lands on DARK (#3b3b3b, 0.231) and the
-/// 0.33 raised greys on DARK_HIGHLIGHT (#666666, 0.40); the near-black lists and rulers lift to about #151515.
-// Skell Studio's low-glare OLED-like depth ramp. Keep it monotonic for readable controls.
+/// Skell: Classic lightness -> Skell lightness, a low-glare, OLED-like depth ramp (keep it monotonic for readable
+/// controls). Classic's toolbar (0.19) lands at 0.126, near DARK (#101410); the 0.33 raised greys at 0.218, near
+/// DARK_HIGHLIGHT (#343d34); the near-black lists and rulers stay close to black.
 const LEMON_RAMP: &[(f32, f32)] = &[
     (0.0, 0.025),
     (0.03, 0.033),
@@ -332,7 +333,7 @@ fn overrides(d: Design) -> Vec<(&'static str, Color)> {
             ("rack_inset_border", c(0x2a3b2c)),
             ("rack_control_border", c(0x2a3c2b)),
             ("step_a", c(0x253126)),
-            ("step_b", c(0x30452f)),
+            ("step_b", c(0x3a4e3a)),
             ("step_dim_a", c(0x172119)),
             ("step_dim_b", c(0x1d2b1e)),
             ("step_dim_border", c(0x263a29)),
@@ -341,15 +342,15 @@ fn overrides(d: Design) -> Vec<(&'static str, Color)> {
             ("menu_drop", c(0x19241b)),
             ("menu_drop_hi", c(0x304d34)),
             ("menu_drop_text", TEXT),
-            ("menu_drop_disabled", c(0x7f7f7f)),
+            ("menu_drop_disabled", c(0x798978)),
             ("menu_pop", c(0x111b13)),
             ("menu_pop_border", c(0x344b35)),
             ("menu_pop_hi", c(0x26562c)),
             ("menu_pop_text", TEXT),
-            ("menu_pop_shortcut", c(0xb7c0c9)),
-            ("menu_pop_dim", c(0x7f7f7f)),
+            ("menu_pop_shortcut", c(0xb5c8b1)),
+            ("menu_pop_dim", c(0x798978)),
             ("menu_pop_head", c(0x101712)),
-            ("menu_pop_head_text", c(0x8c8c8c)),
+            ("menu_pop_head_text", c(0x869685)),
             ("clip", c(0x3b6942)),
             ("pr_row", c(0x141c15)),
             ("pr_row_black", c(0x0b120c)),
@@ -368,7 +369,7 @@ fn overrides(d: Design) -> Vec<(&'static str, Color)> {
             ("key_white_left", c(0xa5b4a3)),
             ("key_black", c(0x152017)),
             ("key_black_left", c(0x0b120d)),
-            ("key_c", c(0xdddddd)),
+            ("key_c", c(0xdde8da)),
             ("key_label", c(0x1b4020)),
             ("key_lit", HIGHLIGHT),
             ("key_lit_left", MAIN),

@@ -9,7 +9,7 @@
 //!
 // spec: plugins/lemon-3x-osc.md §6 (app integration), plugins/3x-osc.md §1 (saved state, custom shape)
 
-use std::time::{Duration, Instant};
+use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
 
 use os_model::{Channel, ChannelKind, Project};
 
@@ -19,6 +19,41 @@ use crate::plugins::{Plugins, FX_KEY};
 pub const LEMON_TRIO: &str = "ML Trio";
 /// The plugin id project files store for it (event 201).
 pub const FILE_NAME: &str = "3x Osc";
+
+/// FL's factory 3x Osc channel presets, read from the user's FL Studio installation.
+fn factory_dir() -> PathBuf {
+    let fl = crate::factory_folder::dir().unwrap_or_else(os_native::default_fl_dir);
+    fl.join("Data").join("Patches").join("Channel presets").join("3x Osc")
+}
+
+/// The installed FL factory FST presets shown alongside ML Trio's own presets.
+pub fn more_presets(plugin: &str) -> Vec<crate::presets::Preset> {
+    if plugin == LEMON_TRIO {
+        crate::citrus::fst_presets_in(&factory_dir())
+    } else {
+        Vec::new()
+    }
+}
+
+/// The FL 3x Osc state from a factory/user FST file; None for another plugin or extension.
+pub fn fst_state(path: &Path, plugin: &str) -> Option<Result<Vec<u8>, String>> {
+    if plugin != LEMON_TRIO || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("fst")) {
+        return None;
+    }
+    Some(
+        std::fs::read(path)
+            .map_err(|e| format!("{}: {e}", path.display()))
+            .and_then(|bytes| {
+                let fl = citrus::preset::state_from_fst(&bytes)
+                    .ok_or_else(|| format!("{} holds no FL preset state", path.display()))?;
+                let expected = lemon_3x_osc::params::default_state().len();
+                if fl.len() != expected {
+                    return Err(format!("{} does not hold a 3x Osc state", path.display()));
+                }
+                Ok(lemon_3x_osc::params::plugin_state_from_fl(&fl))
+            }),
+    )
+}
 
 /// Whether a channel holds the file's 3x Osc.
 pub fn is_osc3(ch: &Channel) -> bool {
@@ -283,6 +318,31 @@ mod tests {
     /// A channel with an older version's 3x Osc state (no records or filter of its own) is hosted with the channel's
     /// envelope records and filter, as FL plays it; a new channel's volume record keeps the plugin's default (spec:
     /// plugins/lemon-3x-osc.md §6.1).
+    /// FL 3x Osc factory presets are discovered read-only and translated into ML Trio state.
+    #[test]
+    fn fl_fst_presets_are_listed_and_read() {
+        let dir = std::env::temp_dir().join(format!("openstudio-osc3-fst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Bass").join("Deep")).unwrap();
+        let fl = lemon_3x_osc::params::default_state();
+        let fst = citrus::preset::test_fst(&fl);
+        std::fs::write(dir.join("Default.fst"), &fst).unwrap();
+        std::fs::write(dir.join("Bass").join("Deep").join("Sub.fst"), &fst).unwrap();
+
+        let listed = crate::citrus::fst_presets_in(&dir);
+        assert_eq!(
+            listed.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["Bass - Deep/Sub", "Default"]
+        );
+        let state = fst_state(&listed[0].path, LEMON_TRIO).unwrap().unwrap();
+        assert_eq!(
+            lemon_3x_osc::params::fl_from_plugin_state(&state),
+            Some(fl)
+        );
+        assert!(fst_state(&listed[0].path, crate::citrus::CITRUS).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn an_older_osc3_state_takes_the_channels_voicing() {
         let mut a = App::new(None);

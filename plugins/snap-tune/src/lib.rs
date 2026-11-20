@@ -1,5 +1,5 @@
 // Copyright (C) 2026 ItsAlphaNeon
-// SPDX-License-Identifier: AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only
 //! SnapTune pitch correction as a standalone VST3 / CLAP effect.
 //!
 //! The pitch engine is kept in os-dsp's isolated SnapTune C ABI. This crate is

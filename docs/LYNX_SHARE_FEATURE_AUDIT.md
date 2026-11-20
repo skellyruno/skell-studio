@@ -38,16 +38,16 @@ The current Rust codebase already provides several foundations:
 - A plugin preset store in `crates/os-app/src/presets.rs` that saves Skell presets and imports VST3 `.vstpreset` plus VST2 `.fxp`/`.fxb`.
 - Existing FL factory preset discovery and state adapters for Sytrus through **Citrus** and Ogun through **Smith**. Those engines already list the user's local `.fst` presets in the preset browser.
 
-The gap addressed in this branch was narrower: the generic Import preset dialog/drop extension filter did not include `.fst`, and the generic import dispatcher did not turn those two already-supported FL states into normal Skell presets. This branch adds `.fst` import only for the known Citrus/Sytrus and Smith/Ogun adapters. It refuses to pass an FL preset to an unrelated plug-in. Imported presets are saved in Skell's own `.ospreset` format; the source `.fst` is read only.
+The gap addressed in this branch was narrower: the generic Import preset dialog/drop extension filter did not include `.fst`, and the generic import dispatcher did not turn supported FL states into normal Skell presets. This branch adds `.fst` import for the existing Citrus/Sytrus, Smith/Ogun and ML Trio/3x Osc adapters. It also lists the user's local 3x Osc channel presets from `Data/Patches/Channel presets/3x Osc` in the plugin preset menus and Browser. It refuses to pass an FL preset to an unrelated plug-in or accept a state with the wrong 3x Osc payload size. Imported presets are saved in Skell's own `.ospreset` format; the source `.fst` is read only.
 
 ## Adoption roadmap
 
 ### Stage 1 — safe FL preset interoperability
 
-- Complete and verify the new `.fst` import path for Sytrus/Ogun.
+- Complete and verify the new `.fst` import path for Sytrus/Ogun/3x Osc.
 - Test user/factory discovery on a real FL installation without copying any FL files.
 - Add format-specific readers only when there is a reproducible fixture, explicit plug-in identity, state round-trip test and a matching Skell engine.
-- Candidates to investigate separately include FL's GMS, Morphine, Toxic Biohazard, 3x Osc and other native preset types. LYNX documents `.gmsynth`, `.mrp` and `.tbio` in addition to `.fst`; this branch does not claim to support those formats.
+- Candidates to investigate separately include FL's GMS, Morphine, Toxic Biohazard and other native preset types. LYNX documents `.gmsynth`, `.mrp` and `.tbio` in addition to `.fst`; this branch does not claim to support those formats.
 
 ### Stage 2 — FL plug-in identity and project recovery
 
@@ -79,6 +79,6 @@ FL Studio plug-ins, DLLs, factory presets, samples, FLEX content and other licen
 
 - Archive inventory and source/document review: completed.
 - LYNX Windows build, tests, audio A/B, latency/CPU and plugin exports: not run.
-- Skell `.fst` implementation: committed to this feature branch; CI and test results are still required.
+- Skell `.fst` implementation: committed to this feature branch for Sytrus/Ogun/3x Osc; CI and test results are still required.
 - Real FL installation and preset round-trip: not verified in this environment.
 - No change has been made to `main`; this work is isolated on a feature branch and must not be merged until its tests and compatibility checks pass.

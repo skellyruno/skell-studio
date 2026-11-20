@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 
 /// File extension of a preset.
 pub const EXT: &str = "ospreset";
-/// The preset files Import preset... and drops take: Lemon Studio's own, VST 3's and VST 2's (program and bank).
-pub const IMPORT_EXTS: &[&str] = &[EXT, "vstpreset", "fxp", "fxb"];
+/// Preset files Import preset... and drops take: Skell, VST 3, VST 2, and FL `.fst` for Citrus/Sytrus and Smith/Ogun.
+pub const IMPORT_EXTS: &[&str] = &[EXT, "vstpreset", "fxp", "fxb", "fst"];
 /// First line of every preset file.
 const MAGIC: &[u8] = b"OSPRESET 1\n";
 /// The `body` header value of a preset that lists parameter values instead of holding the plugin's state.
@@ -329,6 +329,18 @@ pub fn read_any(path: &Path, d: &os_host::Descriptor) -> Result<Vec<(String, Bod
     let stem = shown_name(path);
     let other = || format!("{stem} belongs to another plugin");
     match ext.as_str() {
+        "fst" => {
+            // FL `.fst` is not a generic plug-in state format. Only the built-in engines whose
+            // FL state adapters are implemented may consume it; do not pass arbitrary FL data
+            // to an unrelated hosted plug-in.
+            let state = match d.name.as_str() {
+                crate::citrus::CITRUS => crate::citrus::fst_state(path),
+                crate::smith::SMITH => crate::smith::fst_state(path, &d.name),
+                _ => None,
+            }
+            .ok_or_else(|| format!("{stem} is an FL Studio preset, but {} has no compatible .fst importer", d.name))??;
+            Ok(vec![(stem, Body::State(state))])
+        }
         "vstpreset" => {
             if d.format != os_host::Format::Vst3 {
                 return Err(format!("{stem} is a VST 3 preset; {} is not a VST 3 plugin", d.name));
@@ -1235,6 +1247,43 @@ mod tests {
         assert_eq!(got[0].1, Body::State(os_vst2::state::Saved::Params { program: None, values: vec![0.25] }.to_bytes()));
         assert_eq!(uid_of(&f).as_deref(), Some("vst2:41424344"));
         assert!(read_any(&f, &vst3).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FL `.fst` import is deliberately limited to Skell's Sytrus/Ogun state adapters.
+    #[test]
+    fn fl_fst_presets_import_for_supported_builtin_engines_only() {
+        let dir = tmp("fl-fst");
+        let path = dir.join("Saw Lead.fst");
+        let fl_state = [4, 5, 6];
+        std::fs::write(&path, citrus::preset::test_fst(&fl_state)).unwrap();
+
+        let descriptor = |name: &str| os_host::Descriptor {
+            format: os_host::Format::Clap,
+            id: "test-id".into(),
+            name: name.into(),
+            vendor: String::new(),
+            version: String::new(),
+            features: Vec::new(),
+            kind: os_host::Kind::Instrument,
+            path: PathBuf::new(),
+        };
+
+        let citrus = descriptor(crate::citrus::CITRUS);
+        assert!(is_preset_file(&path), "FL presets must be accepted by the import picker and drop handling");
+        assert_eq!(
+            read_any(&path, &citrus).unwrap(),
+            [(
+                "Saw Lead".to_string(),
+                Body::State(citrus::plugin_state_from_fl(&fl_state))
+            )]
+        );
+
+        let unrelated = descriptor("ML Sampler");
+        assert!(
+            read_any(&path, &unrelated).unwrap_err().contains("no compatible .fst importer"),
+            "an FL preset must never be loaded into an unrelated plug-in"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1,0 +1,22 @@
+[package]
+name = "gross-beat"
+description = "Skell Beat time and volume effect using the clean-room LYNX Gross Beat engine"
+version.workspace = true
+edition.workspace = true
+license = "AGPL-3.0-only"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+doctest = false
+
+[features]
+linked = []
+
+[dependencies]
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", default-features = false, features = ["vst3"] }
+lemon-small-fx = { path = "../lemon-small-fx" }
+os-ui = { path = "../../crates/os-ui" }
+os-plugkit = { path = "../../crates/os-plugkit" }
+
+[build-dependencies]
+cc = "1"

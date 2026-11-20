@@ -7,7 +7,6 @@ use lemon_small_fx::{Card, Control, Kind, Mark, Setting, SmallFx, Sound, Spec};
 use lemon_small_fx::params;
 use nih_plug::prelude::{nih_export_clap, nih_export_vst3, AudioIOLayout, ClapFeature, PortNames, Vst3SubCategory, new_nonzero_u32};
 use std::{ffi::c_void, num::NonZeroU32, ptr};
-use std::sync::Arc;
 
 unsafe extern "C" {
     fn lynx_fc_new(rate: i32) -> *mut c_void;

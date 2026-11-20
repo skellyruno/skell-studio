@@ -9853,7 +9853,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-SnapTune integration: AGPL-3.0-only. Corresponding integrated source: crates/os-dsp/vendor/snaptune. Standalone host plug-in wrapper: plugins/snap-tune; it is packaged as a separate VST3/CLAP plug-in and is not linked into the Skell Studio application.
+SnapTune integration: AGPL-3.0. Corresponding integrated source: crates/os-dsp/vendor/snaptune.
                     GNU AFFERO GENERAL PUBLIC LICENSE
                        Version 3, 19 November 2007
 

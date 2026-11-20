@@ -174,12 +174,22 @@ pub fn factory(plugin: &str) -> Vec<Preset> {
     let mut v = factory_in(FACTORY, plugin);
     v.extend(crate::citrus::more_presets(plugin));
     v.extend(crate::smith::more_presets(plugin));
+    v.extend(crate::osc3::more_presets(plugin));
     v
 }
 
-/// The plugin folders that have factory presets.
+/// The plugin folders that have compiled or installed factory presets.
 pub fn factory_plugins() -> Vec<&'static str> {
     let mut v: Vec<&str> = FACTORY.iter().filter_map(|(rel, _)| rel.split('/').next().map(crate::plugins::canonical_name)).collect();
+    for plugin in [crate::citrus::CITRUS, crate::smith::SMITH, crate::osc3::LEMON_TRIO] {
+        if !crate::citrus::more_presets(plugin).is_empty()
+            || !crate::smith::more_presets(plugin).is_empty()
+            || !crate::osc3::more_presets(plugin).is_empty()
+        {
+            v.push(plugin);
+        }
+    }
+    v.sort_unstable();
     v.dedup();
     v
 }
@@ -336,6 +346,7 @@ pub fn read_any(path: &Path, d: &os_host::Descriptor) -> Result<Vec<(String, Bod
             let state = match d.name.as_str() {
                 crate::citrus::CITRUS => crate::citrus::fst_state(path),
                 crate::smith::SMITH => crate::smith::fst_state(path, &d.name),
+                crate::osc3::LEMON_TRIO => crate::osc3::fst_state(path, &d.name),
                 _ => None,
             }
             .ok_or_else(|| format!("{stem} is an FL Studio preset, but {} has no compatible .fst importer", d.name))??;
@@ -678,7 +689,10 @@ fn side(app: &App, key: usize) -> Option<crate::control::command::PluginSide> {
 /// the step that made it).
 fn load_with(app: &mut App, key: usize, path: &Path, step: bool) -> Option<String> {
     let d = app.plugins.descriptor(key)?;
-    let first = match crate::smith::fst_state(path, &d.name).or_else(|| crate::citrus::fst_state(path)) {
+    let first = match crate::smith::fst_state(path, &d.name)
+        .or_else(|| crate::citrus::fst_state(path))
+        .or_else(|| crate::osc3::fst_state(path, &d.name))
+    {
         // An FL preset file (Citrus's and Smith's lists of an FL install's presets) holds the original's state.
         Some(state) => state.map(|s| (shown_name(path), Body::State(s))),
         None => read_any(path, &d).and_then(|v| v.into_iter().next().ok_or_else(|| format!("{} holds no preset", shown_name(path)))),
@@ -1288,6 +1302,18 @@ mod tests {
             [(
                 "Ogun Patch".to_string(),
                 Body::State(smith::plugin_state_from_fl(&smith_fl_state))
+            )]
+        );
+
+        let trio_fl_state = lemon_3x_osc::params::default_state();
+        let trio_path = dir.join("3x Osc Lead.fst");
+        std::fs::write(&trio_path, citrus::preset::test_fst(&trio_fl_state)).unwrap();
+        let trio_desc = descriptor(crate::osc3::LEMON_TRIO);
+        assert_eq!(
+            read_any(&trio_path, &trio_desc).unwrap(),
+            [(
+                "3x Osc Lead".to_string(),
+                Body::State(lemon_3x_osc::params::plugin_state_from_fl(&trio_fl_state))
             )]
         );
 

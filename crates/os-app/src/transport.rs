@@ -1160,6 +1160,7 @@ impl Feeder {
     /// the margin beyond it, or the engine has played out. It stops at the first tick that gets there, so the device
     /// finds the block, the margin and less than a tick more queued.
     fn fill(&mut self, block: usize) {
+        let _rt_audit = os_dsp::rt_audit::Scope::enter(os_dsp::rt_audit::Role::Feeder);
         let block = block.max(self.queue.block.load(Ordering::Relaxed)) as u64;
         let want = 2 * (block + margin(block, self.rate));
         let Ok(mut e) = self.engine.lock() else { return };
@@ -1626,6 +1627,9 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
         let command = rx.recv_timeout(Duration::from_millis(10));
         // Do not drain queued playback/export work while the application is closing.
         if shared.shutdown.load(Ordering::Acquire) { return; }
+        // Measure command handling only: exclude device pumping and the blocking receive wait.
+        #[cfg(feature = "rt-audit")]
+        let _rt_worker = os_dsp::rt_audit::Scope::enter(os_dsp::rt_audit::Role::Worker);
         // Pattern audition owns the existing instruments until another stream needs them.
         if matches!(&command, Ok(Cmd::Play(..) | Cmd::Resume | Cmd::NoteOn(..) | Cmd::Midi(..) |
             Cmd::TapClick(..) | Cmd::Audition(..) | Cmd::Preview(..) | Cmd::VocalStart(..) |
@@ -2445,6 +2449,7 @@ impl Renderer {
     /// Plays `stereo.len() / 2` frames (interleaved L/R) from the queue. A paused stream, once faded out, reads
     /// nothing, so its position and the queued ticks stay exactly where they were.
     fn render_block(&mut self, stereo: &mut [f32], playback_at: Option<Instant>) {
+        let _rt_audit = os_dsp::rt_audit::Scope::enter(os_dsp::rt_audit::Role::Callback);
         let target = if self.ctl.paused.load(Ordering::Relaxed) { 0.0 } else { 1.0 };
         if self.gain == 0.0 && target == 0.0 {
             stereo.fill(0.0);

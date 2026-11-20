@@ -12,5 +12,9 @@ doctest = false
 # Time stretching and pitch shifting (MIT).
 signalsmith-stretch = "0.1.3"
 
+[features]
+# Diagnostic-only; normal builds keep the system allocator and zero scope overhead.
+rt-audit = []
+
 [build-dependencies]
 cc = "1"

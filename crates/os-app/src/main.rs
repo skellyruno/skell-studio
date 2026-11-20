@@ -12,6 +12,10 @@
 // own. Started from a terminal it still writes there (`attach_console`).
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
+#[cfg(feature = "rt-audit")]
+#[global_allocator]
+static AUDIO_AUDIT_ALLOCATOR: os_dsp::rt_audit::Allocator = os_dsp::rt_audit::Allocator;
+
 mod anim;
 mod app;
 mod collaboration;

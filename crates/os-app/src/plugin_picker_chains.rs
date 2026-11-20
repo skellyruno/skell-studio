@@ -458,7 +458,7 @@ pub fn act(app: &mut App, hit: Hit) {
                 FileDlg::new(Mode::Save, "Export effect chain", "effect chain export", Then::ExportEffectChain(i))
                     .name("Effect Chain.lemonchain")
             };
-            app.file_dialog(dlg.filter("AQUILA effect chain", &["lemonchain"]));
+            app.file_dialog(dlg.filter("Skell Studio effect chain", &["lemonchain"]));
         }
         Hit::ChainCancel => { c.draft = None; }
         Hit::ChainSave => {

@@ -348,7 +348,7 @@ pub fn export(app: &mut App) {
 }
 pub fn save_report(app: &mut App, path: &Path) {
     let text = format!(
-        "AQUILA project import report\nOriginal: {}\n\n{}\n",
+        "Skell Studio project import report\nOriginal: {}\n\n{}\n",
         app.import_report
             .source
             .as_deref()

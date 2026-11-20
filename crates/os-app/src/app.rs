@@ -2127,10 +2127,10 @@ impl App {
             let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
             let saved = if v.trim().is_empty() { "an older version".to_string() } else { format!("version {}", v.trim()) };
             let rest = format!(
-                ".\n\nIt was saved by {saved}, in an older file layout that Lemon Studio could not convert.\n\nOpen the project in \
+                ".\n\nIt was saved by {saved}, in an older file layout that Skell Studio could not convert.\n\nOpen the project in \
                  version 24.2 or later, save it again, then open the new copy here."
             );
-            self.tell(crate::dialog::Kind::Info, "Project not supported", crate::dialog::spans(&["AQUILA cannot open ", &name, &rest]));
+            self.tell(crate::dialog::Kind::Info, "Project not supported", crate::dialog::spans(&["Skell Studio cannot open ", &name, &rest]));
         }
         match result {
             Ok((file, project)) => {
@@ -2239,7 +2239,7 @@ impl App {
         let path = self.state.path.clone();
         let name = path.as_deref().map(as_lemon).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| format!("Untitled.{EXT}"));
         let dlg = FileDlg::new(Mode::Save, "Save project as", "project", crate::dialog::Then::SaveProject(next))
-            .filter("AQUILA project", &[EXT])
+            .filter("Skell Studio project", &[EXT])
             .start(path.as_deref().and_then(|p| p.parent()))
             .name(&name);
         self.file_dialog(dlg);
@@ -2893,7 +2893,7 @@ impl App {
     fn open_dialog(&mut self) {
         let start = self.state.path.as_ref().and_then(|p| p.parent().map(std::path::Path::to_path_buf));
         let dlg = crate::filedlg::FileDlg::new(crate::filedlg::Mode::Open, "Open project", "project", crate::dialog::Then::OpenProject)
-            .filter("AQUILA / legacy projects", &["lmn", "flp", "zip"])
+            .filter("Skell Studio / legacy projects", &["lmn", "flp", "zip"])
             .start(start.as_deref());
         self.file_dialog(dlg);
     }
@@ -11806,7 +11806,7 @@ impl App {
         let _ = std::fs::create_dir_all(&dir);
         let start = self.state.bar.user_current().map_or_else(|| "My toolbar".to_string(), |p| p.name.clone());
         let dlg = FileDlg::new(Mode::Save, "Save toolbar preset as", "toolbar preset", crate::dialog::Then::SaveToolbarPreset)
-            .filter("AQUILA toolbar preset", &[EXT])
+            .filter("Skell Studio toolbar preset", &[EXT])
             .start(Some(&dir))
             .name(&format!("{start}.{EXT}"));
         self.file_dialog(dlg);
@@ -12129,7 +12129,7 @@ fn save_monitor_cfg(cfg: &crate::monitor::Settings) -> Result<PathBuf, String> {
     Ok(p)
 }
 
-/// Read a `.flstheme` (spec ui/flstheme.md) or a AQUILA theme text file.
+/// Read a `.flstheme` (spec ui/flstheme.md) or a Skell Studio theme text file.
 pub fn theme_from_file(path: &std::path::Path) -> Result<Theme, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&bytes);
@@ -21117,7 +21117,7 @@ mod tests {
         assert_eq!(std::fs::read(&flp).unwrap(), before, "the FLP is still not written");
         let file = os_flp::FlpFile::parse(&std::fs::read(&lemon).unwrap()).unwrap();
         assert_eq!(os_flp::lemon::version(&file), Some(os_flp::lemon::VERSION));
-        assert_eq!(os_flp::lemon::saved_by_text(&file), Some(format!("AQUILA {}", crate::version::VERSION)));
+        assert_eq!(os_flp::lemon::saved_by_text(&file), Some(format!("{} {}", crate::version::NAME, crate::version::VERSION)));
         // Save again: in place, no dialog.
         app.state.tempo = 125.0;
         app.act(Action::MenuItem(0, views::menus::FILE_SAVE));

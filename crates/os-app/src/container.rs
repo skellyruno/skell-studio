@@ -897,7 +897,7 @@ pub fn open_patchers(s: &mut State, effects: &[crate::plugins::Available]) -> Op
         let place = format!("{}, slot {}", crate::mixer::name(s, t), k + 1);
         let Some(slot) = crate::mixer::track_mut(s, t).and_then(|m| m.slots[usize::from(k)].as_mut()) else { continue };
         let Some(patch) = patcher::parse(&slot.state) else {
-            left.push(format!("{place} (a state AQUILA does not read)"));
+            left.push(format!("{place} (a state Skell Studio does not read)"));
             continue;
         };
         let order = match patch.serial_chain() {

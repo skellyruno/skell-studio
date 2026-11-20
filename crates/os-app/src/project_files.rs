@@ -192,7 +192,7 @@ impl App {
         let start = root.join(USER_CATEGORY);
         let _ = std::fs::create_dir_all(&start);
         let name = format!("{}.{EXT}", crate::backup::project_name(self.state.path.as_deref()));
-        let dlg = FileDlg::new(Mode::Save, "Save as template", "template", Then::SaveTemplate).filter("AQUILA project", &[EXT]).start(Some(&start)).name(&name);
+        let dlg = FileDlg::new(Mode::Save, "Save as template", "template", Then::SaveTemplate).filter("Skell Studio project", &[EXT]).start(Some(&start)).name(&name);
         self.file_dialog(dlg);
     }
 

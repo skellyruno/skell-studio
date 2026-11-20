@@ -1,6 +1,10 @@
 # Releasing Lemon Studio
 
-Lemon Studio is released by [.github/workflows/release.yml](../.github/workflows/release.yml) on two channels. Each
+> **Skell Studio note:** the inherited release workflow is disabled and kept for reference only, in
+> [docs/upstream-workflows-disabled/release.yml](upstream-workflows-disabled/release.yml). Skell Studio has no
+> official release channel yet; this page describes how the upstream project released.
+
+Lemon Studio is released by [release.yml](upstream-workflows-disabled/release.yml) on two channels. Each
 build updates itself on its own channel. A build from source has no channel and never updates itself.
 
 | Channel | Made by | Version | GitHub release |

@@ -236,8 +236,13 @@ mod tests {
         let mut left = tone(48000, 2.0);
         let mut right = left.clone();
         let dry = left.clone();
-        sound.set_transport(120.0, Some(0.0), true);
-        sound.process(&mut left, &mut right);
+        let block = 4096;
+        for offset in (0..left.len()).step_by(block) {
+            let end = (offset + block).min(left.len());
+            let beats = offset as f64 / 48000.0 * 120.0 / 60.0;
+            sound.set_transport(120.0, Some(beats), true);
+            sound.process(&mut left[offset..end], &mut right[offset..end]);
+        }
         assert!(left.iter().chain(&right).all(|sample| sample.is_finite()));
         assert!(left.iter().zip(&dry).any(|(a, b)| (a - b).abs() > 1.0e-5));
         assert_eq!(sound.latency(), 15);

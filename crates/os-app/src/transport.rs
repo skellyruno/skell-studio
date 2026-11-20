@@ -1627,6 +1627,9 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
         let command = rx.recv_timeout(Duration::from_millis(10));
         // Do not drain queued playback/export work while the application is closing.
         if shared.shutdown.load(Ordering::Acquire) { return; }
+        // Measure command handling only: exclude device pumping and the blocking receive wait.
+        #[cfg(feature = "rt-audit")]
+        let _rt_worker = os_dsp::rt_audit::Scope::enter(os_dsp::rt_audit::Role::Worker);
         // Pattern audition owns the existing instruments until another stream needs them.
         if matches!(&command, Ok(Cmd::Play(..) | Cmd::Resume | Cmd::NoteOn(..) | Cmd::Midi(..) |
             Cmd::TapClick(..) | Cmd::Audition(..) | Cmd::Preview(..) | Cmd::VocalStart(..) |

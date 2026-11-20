@@ -14,7 +14,7 @@ Save and extract the delivered ZIP, or pass its path to the staged loader:
 .\scripts\stage_ml_first_source.ps1 -SourceZip "C:\Users\you\Downloads\SkellStudio_ML_First_Full_Source_2026-11-15.zip"
 ```
 
-The script checks a clean Git checkout and source markers, fetches `main`, creates `feature/skell-ml-first` from `origin/main`, copies the complete new ML-first code tree into that branch (preserving separate existing repository-only files), and commits the result **without touching main**. Only add `-Push` when ready to publish the source branch. Do not delete or rewrite the old Skell baseline in its existing branch.
+The script checks a clean Git checkout and source markers, fetches `main`, creates `feature/skell-ml-first` from `origin/main`, copies the ML-first code tree into that branch (preserving separate repository-only files and every existing `AGENTS.md`; it also skips `.git` metadata), and commits the result **without touching main**. Only add `-Push` when ready to publish the source branch. Do not delete or rewrite the old Skell baseline in its existing branch.
 
 ## Verification gates before any merge
 

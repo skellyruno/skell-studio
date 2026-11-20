@@ -33,3 +33,4 @@ jobs:
           if (-not $src.Contains('origin/main')) { throw "Must branch from main" }
           if (-not $src.Contains('Refusing to stage into a protected branch')) { throw "Protected branch guard missing" }
           if (-not $src.Contains('THIRD-PARTY-NOTICES.txt')) { throw "License manifest check missing" }
+          if (-not $src.Contains('AGENTS.md')) { throw "Repository instructions must be preserved" }

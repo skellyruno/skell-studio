@@ -51,9 +51,22 @@ try {
     # Overlay ML-first files but preserve repository-specific instructions,
     # original references, and any plugin files not in ML's workspace. Cargo's
     # workspace manifest owns the actual build graph.
-    foreach ($item in Get-ChildItem -LiteralPath $source -Force) {
-        if ($item.Name -eq ".git") { continue }
-        Copy-Item -LiteralPath $item.FullName -Destination $root -Force -Recurse
+    # Copy files individually so repository-local instructions and Git metadata can never be overwritten.
+    $sourcePrefix = $source.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    foreach ($file in Get-ChildItem -LiteralPath $source -Force -Recurse -File) {
+        $relative = $file.FullName.Substring($sourcePrefix.Length)
+        $segments = $relative -split '[\\/]'
+        if ($segments -contains ".git") { continue }
+        if ($file.Name -ieq "AGENTS.md") {
+            Write-Host "Preserving existing instructions (skipped source file): $relative"
+            continue
+        }
+        $destination = Join-Path $root $relative
+        $destinationDir = Split-Path -Parent $destination
+        if (-not (Test-Path $destinationDir)) {
+            New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
     }
     & git add -A
     if ($LASTEXITCODE -ne 0) { throw "Could not stage ML-first source." }

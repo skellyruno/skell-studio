@@ -20,5 +20,5 @@ Preserve original imported source for rollback; do not auto-update from another 
 
 ## FL presets and native plug-in expansion (2026-11-20)
 - See [LYNX SHARE feature audit and adoption plan](LYNX_SHARE_FEATURE_AUDIT.md) for the user-supplied source review, licensing boundary, FL discovery ideas, plugin fallback design and staged engine roadmap.
-- Import preset now accepts FL `.fst` files for the existing Citrus/Sytrus and Smith/Ogun state adapters; unsupported plugin/state combinations are rejected rather than passed to unrelated plugins.
+- Import preset and the Browser now expose local FL `.fst` presets for the existing Citrus/Sytrus, Smith/Ogun and ML Trio/3x Osc state adapters; unsupported plugin/state combinations are rejected rather than passed to unrelated plugins.
 - Next gates: synthetic parser tests in CI, real Windows FL installation discovery, preset load/save/reopen, then additional native preset formats only with tested codecs.

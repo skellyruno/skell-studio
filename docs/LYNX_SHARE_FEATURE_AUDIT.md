@@ -14,6 +14,8 @@ LYNX SHARE is a C++20/JUCE DAW with an FL-style workflow (Channel Rack, Piano Ro
 
 Those are the archive's own claims, not independent verification of the counts, quality, latency, or compatibility. The repository contains extensive source, documentation and tests, but this supplied archive does not provide a verified Windows plugin package.
 
+The source's `src/plugin/plugins.def` manifest has 33 entries: 28 marked as built (21 CLAP-only and 7 CLAP+VST3), and 5 synth entries marked not yet built. The seven VST3 targets are Facet EQ, FM10, Apex Limiter, Crest Compressor, Atrium, Echoform and LYNX Tune. The built catalogue spans EQ, limiting/compression, multiband/gating/leveling, de-essing, channel strips, saturation, reverb/plate/shimmer, delay/modulation, pitch shifting, doubling and denoising. These are the manifest's build flags, not proof that we have run or approved the plug-ins.
+
 ## The FL integration worth adopting
 
 The strongest reusable product ideas are the compatibility layers, not the JUCE application shell:

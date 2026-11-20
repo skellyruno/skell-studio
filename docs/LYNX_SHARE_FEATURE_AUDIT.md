@@ -72,14 +72,20 @@ The gap addressed in this branch was narrower: the generic Import preset dialog/
 
 ## Licensing and asset boundary
 
-The supplied LYNX source identifies itself as **GNU AGPL version 3**. Skell Studio's current workspace identifies itself as **GPL-3.0-or-later**. Do not copy or vendor LYNX implementation files, generated mapping tables, plugin binaries, JUCE build products or any third-party/FL content into this repository as part of this pass. Any future use of LYNX code or linked components needs an explicit license review and a deliberate distribution/source-offer plan; this audit does not make that decision.
+The supplied archive is LYNX SHARE **0.1.30 alpha**. Its root `LICENSE` declares **GNU AGPL version 3**. This branch now contains isolated adaptations of the LYNX Gross Beat and Fruity Compressor engine components in `plugins/gross-beat` and `plugins/fruity-compressor`. Those plug-in crates declare `AGPL-3.0-only`, carry the full AGPL text and are listed in `THIRD-PARTY-NOTICES.txt`. Do not describe these files as independent clean-room Skell implementations or omit the LYNX source attribution.
 
-FL Studio plug-ins, DLLs, factory presets, samples, FLEX content and other licensed assets remain the user's own installation/content. Skell should discover/read supported files locally and keep test fixtures synthetic or user-authorized. Do not check proprietary FL presets or samples into Git.
+The two plug-ins are emitted as separate VST3/CLAP modules, not statically linked into the `skell-studio.exe` application. That packaging boundary is intentional, but it is not by itself a legal opinion that every linked dependency or distribution arrangement is compliant. The plug-ins use Skell's shared `lemon-small-fx` framework; review the exact combined dependency/licence obligations and provide the corresponding source and notices required by AGPLv3 before conveying binaries. Do not fold these AGPL-derived engines into the GPL Studio executable without a deliberate licence review.
+
+LYNX Tune is also source code in the AGPLv3 archive and has not yet been ported into a Skell plug-in crate on this branch. Its documented algorithm is LYNX's own YIN + TD-PSOLA pitch-correction design; it is not a third-party Auto-Tune implementation. Any future Skell Tune port must preserve its LYNX attribution/licence and be built/tested as a distinct module.
+
+The archive describes its FL native effect engines as clean-room re-implementations of FL behaviour; that does not change the AGPL licence on the LYNX implementation source. Do not copy FL Studio DLLs, factory presets, graphics, samples, FLEX content or other licensed assets. Use synthetic fixtures or user-authorized reference material, and keep FL installation discovery read-only.
 
 ## Verification boundary
 
-- Archive inventory and source/document review: completed.
-- LYNX Windows build, tests, audio A/B, latency/CPU and plugin exports: not run.
-- Skell `.fst` implementation: committed to this feature branch for Sytrus/Ogun/3x Osc; CI and test results are still required.
-- Real FL installation and preset round-trip: not verified in this environment.
-- No change has been made to `main`; this work is isolated on a feature branch and must not be merged until its tests and compatibility checks pass.
+- User-supplied LYNX 0.1.30 ZIP inventory and source/document inspection: completed; the archive itself was not built.
+- Source-reported parity figures in `docs/STATUS.md` and `docs/PARITY.md`: recorded as upstream claims, not independent Skell measurements.
+- LYNX's Tune test source contains a zero-allocation assertion around audio processing; the LYNX test suite was not run here.
+- Skell Beat and Skell Compressor are implemented as separate crates on this feature branch; exact-head Windows plugin tests and bundle validation remain required.
+- LYNX Tune wrapper and in-place Limiter/Delay/Reverb/EQ upgrades are not implemented yet. Existing ML effects must remain registered until their state, automation, preset and audio regressions pass.
+- Skell `.fst` import for Sytrus/Ogun/3x Osc is included in the same draft branch; its current Windows regression is still running.
+- Real Windows VST3-host routing, state restore and FL project round-trips remain unverified. Do not merge until the failed plugin-suite test is fixed and the resulting exact-head Windows artifacts are validated.

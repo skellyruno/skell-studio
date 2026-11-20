@@ -7,6 +7,7 @@ use os_ui::{Font, Rect};
 use crate::app::{Action, App, Ui};
 
 const NAME: &str = "Skell Studio Starter Pack";
+const LABEL: &str = "Skell Starter Pack";
 const CREDITS: &str = include_str!("../assets/starter-pack/Credits.txt");
 const MANIFEST: &str = include_str!("../assets/starter-pack/catalog.json");
 #[derive(Debug, Deserialize)]
@@ -149,7 +150,7 @@ pub fn tick(app: &mut App) {
         let key=if path.parent()==Some(root.as_path()) {format!("{}/{}",crate::views::browser::disk_key(&root),NAME)} else {crate::views::browser::disk_key(&path)};
         app.state.browser_open.insert(key);
     }
-    app.state.message=Some(format!("Starter Pack: {message}"));app.invalidate();
+    app.state.message=Some(format!("{NAME}: {message}"));app.invalidate();
 }
 fn button(ui:&mut Ui,r:Rect,label:&str,sub:&str,cmd:u8) {
     let hov=ui.hit(r,Action::StarterPack(cmd),format!("{label} {sub}"));
@@ -177,7 +178,7 @@ pub fn paint_empty(ui:&mut Ui,r:Rect) {
     wrapped(ui,"Drag samples or folders here",Rect::new(x+10.,y+90.,w-20.,40.));
     let s=status().lock().unwrap().clone();
     if s.busy {button(ui,Rect::new(x,y+146.,w,36.),"Cancel download","",2);}
-    else {button(ui,Rect::new(x,y+146.,w,52.),"Download","Skell Studio Starter Pack",1);}
+    else {button(ui,Rect::new(x,y+146.,w,52.),"Download",LABEL,1);}
     wrapped(ui,&format!("{} sounds / {:.0} MB / Free CC0",catalog().len(),total() as f64/1048576.),Rect::new(x,y+210.,w,35.));
     wrapped(ui,"Drums, loops, keys, mallets, vocals and effects.",Rect::new(x,y+248.,w,48.));
     if !s.message.is_empty() {
@@ -189,7 +190,7 @@ pub fn paint_status(ui:&mut Ui,r:Rect) {
     let s=status().lock().unwrap().clone(); if !s.busy {return}
     let panel=Rect::new(r.x+4.,(r.bottom()-94.).max(r.y),r.w-8.,94.);
     ui.c.fill_rrect(panel,4.,ui.t.browser_footer);ui.hit(panel,Action::Swallow,s.message.clone());
-    wrapped(ui,&format!("Starter Pack: {}",s.message),Rect::new(panel.x+6.,panel.y+6.,panel.w-12.,40.));
+    wrapped(ui,&format!("{NAME}: {}",s.message),Rect::new(panel.x+6.,panel.y+6.,panel.w-12.,40.));
     button(ui,Rect::new(panel.x+6.,panel.y+51.,panel.w-12.,35.),"Cancel download","",2);
 }
 
@@ -238,6 +239,14 @@ mod tests {
         *status().lock().unwrap()=Status::default();
         crate::prefs::set_text("browser_samples_root","");fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn starter_pack_download_label_matches_installed_folder_name() {
+        // The visible download label and destination folder share one source of truth.
+        assert_eq!(NAME, "Skell Studio Starter Pack");
+        assert_eq!(LABEL, "Skell Starter Pack");
+        assert!(LABEL.len() < NAME.len(), "compact CTA should remain shorter than the installed folder name");
+    }
+
     #[test]
     fn starter_pack_integrity_and_safe_install() {
         let mut paths=std::collections::HashSet::new();

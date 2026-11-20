@@ -12,6 +12,8 @@ path = "src/main.rs"
 [features]
 default = ["master-assistant"]
 master-assistant = []
+# Opt-in allocation/timing probe from ML Studio; never enabled for shipping builds.
+rt-audit = ["os-dsp/rt-audit"]
 # Compatibility alias for existing personal build commands.
 private-master-assistant = ["master-assistant"]
 

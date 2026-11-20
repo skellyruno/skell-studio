@@ -23,6 +23,7 @@
 
 pub mod articulator;
 pub mod audio_float;
+pub mod rt_audit;
 pub mod channel_filter;
 pub mod debess;
 pub mod curve;

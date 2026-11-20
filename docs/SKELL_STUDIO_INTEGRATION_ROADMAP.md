@@ -17,3 +17,8 @@
 
 ## Reliability contract
 Preserve original imported source for rollback; do not auto-update from another product; keep original author licenses and third-party notices. Do not say Windows build or audio is verified until CI and hands-on tests prove it.
+
+## FL presets and native plug-in expansion (2026-11-20)
+- See [LYNX SHARE feature audit and adoption plan](LYNX_SHARE_FEATURE_AUDIT.md) for the user-supplied source review, licensing boundary, FL discovery ideas, plugin fallback design and staged engine roadmap.
+- Import preset now accepts FL `.fst` files for the existing Citrus/Sytrus and Smith/Ogun state adapters; unsupported plugin/state combinations are rejected rather than passed to unrelated plugins.
+- Next gates: synthetic parser tests in CI, real Windows FL installation discovery, preset load/save/reopen, then additional native preset formats only with tested codecs.

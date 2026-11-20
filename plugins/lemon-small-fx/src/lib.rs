@@ -133,6 +133,8 @@ pub trait Sound: Send {
     /// Forgets what the sound holds (a delay line), as at the start of a song.
     fn reset(&mut self);
     fn process(&mut self, left: &mut [f32], right: &mut [f32]);
+    /// Processing latency in samples for the current settings (e.g. a look-ahead or pitch corrector).
+    fn latency(&self) -> u32 { 0 }
 }
 
 /// Everything that makes one of the effects.
@@ -225,6 +227,8 @@ pub struct SmallFx<K: Kind> {
     shared: Arc<Shared>,
     /// Made in `initialize` (for the sample rate).
     dsp: Option<Box<dyn Sound>>,
+    /// Last latency reported to the host; refreshed when settings change.
+    latency: u32,
     raw: Vec<u8>,
     raw_seen: u64,
     kind: PhantomData<K>,
@@ -236,6 +240,7 @@ impl<K: Kind> Default for SmallFx<K> {
             params: Arc::new(FxParams::new(K::SPEC)),
             shared: Arc::new(Shared::default()),
             dsp: None,
+            latency: 0,
             raw: params::default_state(K::SPEC),
             raw_seen: u64::MAX,
             kind: PhantomData,
@@ -285,7 +290,7 @@ impl<K: Kind> Plugin for SmallFx<K> {
         Some(Box::new(editor::FxEditor::new(K::SPEC, self.params.clone(), self.shared.clone())))
     }
 
-    fn initialize(&mut self, _layout: &AudioIOLayout, config: &BufferConfig, _ctx: &mut impl InitContext<Self>) -> bool {
+    fn initialize(&mut self, _layout: &AudioIOLayout, config: &BufferConfig, ctx: &mut impl InitContext<Self>) -> bool {
         let rate = config.sample_rate.round() as u32;
         self.shared.rate.store(rate, Ordering::Relaxed);
         self.raw_seen = u64::MAX;
@@ -298,6 +303,8 @@ impl<K: Kind> Plugin for SmallFx<K> {
             }
             None => self.dsp = Some((K::SPEC.sound)(rate, v)),
         }
+        self.latency = self.dsp.as_ref().map_or(0, |d| d.latency());
+        ctx.set_latency_samples(self.latency);
         true
     }
 
@@ -307,10 +314,15 @@ impl<K: Kind> Plugin for SmallFx<K> {
         }
     }
 
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &mut impl ProcessContext<Self>) -> ProcessStatus {
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, ctx: &mut impl ProcessContext<Self>) -> ProcessStatus {
         let s = self.settings();
         let Some(dsp) = &mut self.dsp else { return ProcessStatus::Normal };
         dsp.set(&s[..K::SPEC.settings.len()]);
+        let latency = dsp.latency();
+        if latency != self.latency {
+            self.latency = latency;
+            ctx.set_latency_samples(latency);
+        }
         let out = buffer.as_slice();
         if out.len() < 2 {
             return ProcessStatus::Normal;

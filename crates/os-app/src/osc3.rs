@@ -47,8 +47,9 @@ pub fn fst_state(path: &Path, plugin: &str) -> Option<Result<Vec<u8>, String>> {
                 let fl = citrus::preset::state_from_fst(&bytes)
                     .ok_or_else(|| format!("{} holds no FL preset state", path.display()))?;
                 let expected = lemon_3x_osc::params::default_state().len();
-                if fl.len() != expected {
-                    return Err(format!("{} does not hold a 3x Osc state", path.display()));
+                // Legacy FL 3x Osc states can be shorter (the converter fills their newer fields from defaults).
+                if fl.is_empty() || fl.len() > expected {
+                    return Err(format!("{} does not hold a supported 3x Osc state", path.display()));
                 }
                 Ok(lemon_3x_osc::params::plugin_state_from_fl(&fl))
             }),
@@ -337,6 +338,16 @@ mod tests {
             Some(fl)
         );
         assert!(fst_state(&listed[0].path, crate::citrus::CITRUS).is_none());
+
+        let legacy_state = dir.join("Legacy 3x Osc.fst");
+        let old_fl = fl[..92].to_vec();
+        std::fs::write(&legacy_state, citrus::preset::test_fst(&old_fl)).unwrap();
+        let normalized = fst_state(&legacy_state, LEMON_TRIO).unwrap().unwrap();
+        assert_eq!(
+            lemon_3x_osc::params::fl_from_plugin_state(&normalized).map(|s| s.len()),
+            Some(fl.len()),
+            "legacy 92-byte FL 3x Osc states must be completed by the engine converter"
+        );
 
         let wrong_state = dir.join("Not 3x Osc.fst");
         std::fs::write(&wrong_state, citrus::preset::test_fst(&[1, 2, 3])).unwrap();

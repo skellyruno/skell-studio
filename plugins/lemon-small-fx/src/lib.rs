@@ -198,6 +198,8 @@ impl Spec {
 
 /// What makes a plugin type of one of the effects: its description and its ids.
 pub trait Kind: 'static + Send + Sync {
+    /// Host-visible vendor; existing effects keep their current AQUILA identity unless overridden.
+    const VENDOR: &'static str = K::VENDOR;
     const SPEC: &'static Spec;
     const CLAP_ID: &'static str;
     const CLAP_DESCRIPTION: &'static str;

@@ -249,6 +249,52 @@ mod tests {
     }
 
     #[test]
+    fn variable_host_blocks_keep_gross_beat_transport_aligned() {
+        fn render(block: usize) -> Vec<f32> {
+            let state = factory_state();
+            let mut sound = BeatSound::new(48000, &[0, 0, 256, 256, 1765, 5000, 0, 0]);
+            sound.set_saved_state(&state);
+            sound.set(&[1, 0, 256, 256, 1765, 5000, 0, 0]);
+            let input = tone(48000, 1.0);
+            let mut left = input;
+            let mut right = left.clone();
+            let mut offset = 0;
+            while offset < left.len() {
+                let end = (offset + block).min(left.len());
+                let beats = offset as f64 / 48000.0 * 120.0 / 60.0;
+                sound.set_transport(120.0, Some(beats), true);
+                sound.process(&mut left[offset..end], &mut right[offset..end]);
+                offset = end;
+            }
+            left
+        }
+
+        let reference = render(4096);
+        for block in [1, 17, 64, 127, 512, 2048, 8192] {
+            let candidate = render(block);
+            assert!(
+                reference.iter().zip(candidate).all(|(a, b)| (a - b).abs() < 2.0e-6),
+                "output changed with host block size {block}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_72_slot_maps_survive_plugin_state_save_and_restore() {
+        use nih_plug::prelude::Params;
+
+        let state = factory_state();
+        assert!(state.len() > 512);
+        let original = lemon_small_fx::params::FxParams::new(SPEC);
+        original.set_raw(state.clone());
+        let host_fields = original.serialize_fields();
+
+        let restored = lemon_small_fx::params::FxParams::new(SPEC);
+        restored.deserialize_fields(&host_fields);
+        assert_eq!(restored.raw_copy(), state, "the host state field must preserve every slot map and option byte");
+    }
+
+    #[test]
     fn editor_exposes_all_eight_controls_and_can_capture() {
         let params = Arc::new(lemon_small_fx::params::FxParams::new(SPEC));
         let mut logic = editor::Logic::new(

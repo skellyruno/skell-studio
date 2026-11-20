@@ -53,7 +53,7 @@ fn text(k: usize, raw: i32) -> String {
         4 => format!("{raw} ms"),
         5 => TYPES[raw.clamp(0, 7) as usize].to_string(),
         6 => if raw == 0 { "Off".into() } else { "On".into() },
-        7 => SIDECHAIN[raw.clamp(0, 2) as usize].to_string(),
+        7 => SIDECHAIN[raw.clamp(0, 1) as usize].to_string(),
         _ => String::new(),
     }
 }
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn sidechain_changes_compression_and_output_stays_finite() {
         let mut own = CompressorSound::new(48000, &[-300, 40, 0, 150, 200, 0, 1, 0]);
-        let mut keyed = CompressorSound::new(48000, &[-300, 40, 0, 150, 200, 0, 1, 2]);
+        let mut keyed = CompressorSound::new(48000, &[-300, 40, 0, 150, 200, 0, 1, 1]);
         let dry = tone(48000, 1.0, 0.2);
         let side = tone(48000, 1.0, 0.9);
         let mut own_l = dry.clone();
@@ -344,6 +344,35 @@ mod tests {
         keyed.process_with_sidechain(&mut key_l, &mut key_r, Some((&side, &side)));
         assert!(own_l.iter().chain(&own_r).chain(&key_l).chain(&key_r).all(|v| v.is_finite()));
         assert!(own_l.iter().zip(&key_l).any(|(a,b)| (a-b).abs() > 1.0e-3));
+    }
+
+    #[test]
+    fn auto_sidechain_follows_imported_fruity_compressor_state() {
+        let mut auto = CompressorSound::new(48000, &[-300, 40, 0, 150, 200, 0, 1, 0]);
+        let mut dry = CompressorSound::new(48000, &[-300, 40, 0, 150, 200, 0, 1, 0]);
+
+        let mut state = lemon_small_fx::params::default_state(SPEC);
+        // Fruity Compressor v3's sidechain assignment is the int at byte 32.
+        state[32..36].copy_from_slice(&1i32.to_le_bytes());
+        auto.set_saved_state(&state);
+
+        let input = tone(48000, 0.25, 0.2);
+        let side = tone(48000, 0.25, 0.9);
+        let mut auto_l = input.clone();
+        let mut auto_r = input.clone();
+        let mut dry_l = input.clone();
+        let mut dry_r = input;
+        auto.process_with_sidechain(&mut auto_l, &mut auto_r, Some((&side, &side)));
+        dry.process_with_sidechain(&mut dry_l, &mut dry_r, Some((&side, &side)));
+        assert!(auto_l.iter().chain(&auto_r).all(|v| v.is_finite()));
+        assert!(auto_l.iter().zip(&dry_l).any(|(a, b)| (a - b).abs() > 1.0e-3));
+
+        // Explicit On also enables an external host sidechain for a new non-FL project.
+        let mut manual = CompressorSound::new(48000, &[-300, 40, 0, 150, 200, 0, 1, 1]);
+        let mut manual_l = tone(48000, 0.25, 0.2);
+        let mut manual_r = manual_l.clone();
+        manual.process_with_sidechain(&mut manual_l, &mut manual_r, Some((&side, &side)));
+        assert!(manual_l.iter().zip(&dry_l).any(|(a, b)| (a - b).abs() > 1.0e-3));
     }
 
     #[test]

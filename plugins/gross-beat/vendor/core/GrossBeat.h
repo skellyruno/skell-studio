@@ -244,4 +244,47 @@ void setPpq (std::vector<std::uint8_t>& container, int ppq);
 float paramFromRaw (int index, int raw) noexcept;
 int rawFromParam (int index, float value) noexcept;
 
+// The engine, also usable without the Effect wrapper (tools and tests). Host model: FL's mixer — the plugin is "playing"
+// between start() and stop(), the song position is given in FL ticks (PPQ of the state) at every block start.
+class Engine
+{
+public:
+    Engine();
+    ~Engine();
+    Engine (const Engine&) = delete;
+    Engine& operator= (const Engine&) = delete;
+
+    bool load (const State& state, int ppq);
+    // an edited state (same PPQ) taken while running: slots, options and per-slot settings change in place, the
+    // buffer and the playing slots' positions are kept. Audio thread, no allocation: false when a slot has more points
+    // than maxEditPoints (rebuild the engine instead).
+    bool update (const State& state) noexcept;
+    void prepare (int sampleRate, int maxBlock);
+    void setTempo (float bpm);
+    void setParam (int index, int raw); // FL's ProcessParam
+    void start (double ticks);          // FL's "playing" dispatcher (enable + re-sync at the position)
+    void stop();
+    void jump (double ticks);           // song position changed while playing (re-sync)
+    bool playing() const noexcept;
+    // in place on the two channels; `ticks` = song position at the block start
+    void process (float* left, float* right, int n, double ticks) noexcept;
+
+    // Round 190ih (FL manual, Gross Beat › Envelope Mapping Panel: "the Playback locator ... visible only when the host
+    // is playing"; Time Slots and Volume Slots: "Green rectangle = Queued for playback. Green filled = Playing"): where
+    // each kind's envelope is now, 0 … 1 of its 4 beats, the slot it plays and the slot queued (-1 = none). Read on the
+    // thread that calls process(), after it; no allocation.
+    struct Live
+    {
+        bool playing = false;
+        std::array<double, 2> position { 0.0, 0.0 }; // [0] time, [1] volume
+        std::array<int, 2> slot { -1, -1 }, queued { -1, -1 };
+    };
+    Live live() const noexcept;
+
+    struct Impl;
+
+private:
+    std::unique_ptr<Impl> impl;
+};
+
 } // namespace lynx::grossbeat

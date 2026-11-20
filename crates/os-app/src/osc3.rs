@@ -47,8 +47,8 @@ pub fn fst_state(path: &Path, plugin: &str) -> Option<Result<Vec<u8>, String>> {
                 let fl = citrus::preset::state_from_fst(&bytes)
                     .ok_or_else(|| format!("{} holds no FL preset state", path.display()))?;
                 let expected = lemon_3x_osc::params::default_state().len();
-                // Legacy FL 3x Osc states can be shorter (the converter fills their newer fields from defaults).
-                if fl.is_empty() || fl.len() > expected {
+                // The oldest supported FL 3x Osc state is 92 bytes; newer fields are filled from defaults.
+                if fl.len() < 92 || fl.len() > expected {
                     return Err(format!("{} does not hold a supported 3x Osc state", path.display()));
                 }
                 Ok(lemon_3x_osc::params::plugin_state_from_fl(&fl))

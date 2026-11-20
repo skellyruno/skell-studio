@@ -23,14 +23,7 @@ impl SnapTune {
  pub fn configure(&mut self,amount:f32,key:u8,scale:u8,voice:u8,learn:u32,enabled:bool){
   if self.enabled!=enabled {self.active=false;}self.enabled=enabled;
   self.amount=amount;self.key=key;self.scale=scale;self.voice=voice;
-  // A non-zero learn generation starts a fresh pass. Turning Learn off must preserve the
-  // profile so the user can inspect/apply it after the listening pass has ended.
-  if self.learn!=learn && learn!=0 {unsafe{lemon_tune_clear_learning(self.ptr.as_ptr())};}
-  self.learn=learn;
- }
- pub fn reset(&mut self) {
-  unsafe{lemon_tune_reset(self.ptr.as_ptr())};
-  self.active=false;
+  if self.learn!=learn {unsafe{lemon_tune_clear_learning(self.ptr.as_ptr())};self.learn=learn;}
  }
  pub fn suggestion(&self)->Option<(u8,u8)> {
   let mut stats=[0.;13];unsafe{lemon_tune_stats(self.ptr.as_ptr(),stats.as_mut_ptr())};
@@ -99,11 +92,7 @@ mod tests {
    let mut phrase=tone(48000,440.*2f32.powf((note as f32-69.)/12.),duration);let dry=phrase.clone();learner.process(&mut phrase);assert_eq!(phrase,dry);
   }
   assert_eq!(learner.suggestion(),Some((0,1)));
-  learner.configure(0.,0,0,0,0,true);
-  assert_eq!(learner.suggestion(),Some((0,1)),"stopping Learn preserves the result");
-  learner.configure(0.,0,0,0,2,true);assert_eq!(learner.suggestion(),None,"a new learning generation clears old notes");
-  learner.configure(0.,0,0,0,2,true);learner.reset();
-  assert_eq!(learner.suggestion(),None);
+  learner.configure(0.,0,0,0,2,true);assert_eq!(learner.suggestion(),None,"new learning clears old notes");
   assert_eq!(estimate_key([1.;12]),None);assert_eq!(estimate_key([0.;12]),None);
  }
 }

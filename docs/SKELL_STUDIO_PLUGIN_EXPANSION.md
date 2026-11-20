@@ -38,12 +38,19 @@ There is no dedicated Gross Beat-style mixer plugin in the current linked plugin
 
 The DSP crate already contains **SnapTune** in `crates/os-dsp/src/snaptune.rs`, backed by the isolated C ABI implementation in `crates/os-dsp/vendor/snaptune`. Its existing DSP tests cover 44.1/48/96 kHz, latency reporting, correction behavior, block-size invariance, disabled/dry behavior, voice mode and key-learning behavior.
 
-What is missing from the user-facing plugin layer is a dedicated VST3/CLAP plugin/editor and Studio registration with:
-- Amount/speed, key and scale, voice/formant mode, and learn controls.
-- Host automation and stable parameter IDs.
-- A scale/key suggestion that does not overwrite the user's selection.
-- Correct plugin latency reporting and PDC in the host.
-- Windows VST3 validation and real vocal A/B tests before calling it release-ready.
+The first user-facing wrapper is now implemented in `plugins/snap-tune` on this branch as **Skell Tune**, a separate VST3/CLAP plug-in using Skell's shared native editor:
+- Correction amount, key, scale, Low Male/Soprano voice range, and Learn controls.
+- Stable parameter IDs and native host automation through the existing shared plug-in parameter framework.
+- Learn results remain available when the Learn switch is turned off; starting a new Learn pass clears the prior profile.
+- The shared effect wrapper now supports dynamic latency reporting, and Skell Tune reports SnapTune's live-mode latency to the host for delay compensation.
+- Audio staging memory is preallocated per instance; the processing callback does not allocate its stereo scratch buffer.
+- The package is marked AGPL-3.0-only and remains a separate plug-in, not statically linked into the GPL Studio executable.
+
+Still needed before release:
+- Exact-head Windows VST3/CLAP build and module validation.
+- Plugin-state save/restore and DAW automation verification in a real host.
+- Real vocal A/B tests on breathy, low-register, sibilant and layered vocals; no sound-quality sign-off is claimed yet.
+- An Apply Suggestion workflow for the learned key profile is not part of this first editor pass.
 
 The SnapTune source is marked AGPL-3.0. Its existing license and notices must be reviewed and preserved when exposing it as a distributable plugin.
 
@@ -59,7 +66,7 @@ Next implementation order:
 
 1. Finish and verify the FST preset interoperability changes already in this PR.
 2. Build and inspect Windows bundles for ML Limiter, ML Delay, ML Reverb, ML Hall, ML EQ and ML Press.
-3. Wrap the existing SnapTune DSP in a proper VST3/CLAP plugin with a native editor and state/automation tests.
+3. Verify the new standalone Skell Tune VST3/CLAP wrapper with Windows builds, state restore, automation and real vocal A/B tests.
 4. Implement the Gross Beat-style real-time effect as a separate processor with tempo/pattern tests and measured CPU/latency.
 5. Port/evaluate any additional LYNX plugins only after their source archive is available and their licensing, DSP behavior and parameter/preset mappings are reviewed.
 
@@ -67,6 +74,6 @@ Next implementation order:
 
 - Existing plugin source and in-app registration: confirmed by source inspection.
 - Windows plugin bundle build: newly added to CI in this branch; not yet verified until the exact-head workflow completes.
-- SnapTune DSP tests are present in the codebase; a VST3/CLAP plugin wrapper/editor is not implemented by this inventory document.
+- SnapTune DSP tests are present in the codebase; the new standalone Skell Tune wrapper/editor and VST3/CLAP packaging are implemented on this branch but not yet CI-verified.
 - Gross Beat-style plugin: not implemented yet.
 - Real FL Studio install/preset round-trip and vocal/audio A/B tests: not yet run in this environment.

@@ -1,9 +1,18 @@
 name: Windows DAW - engineering executable
 on:
   push:
-    branches: [dev/skell-windows-exe-build]
+    branches: [main, feature/windows-release-exe-trigger-20261120]
     paths:
       - ".github/workflows/windows-manual-build.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "asiosdk/**"
+      - "crates/**"
+      - "plugins/**"
+      - "vendor/**"
+      - "packaging/**"
+      - "build.rs"
   workflow_dispatch:
 permissions:
   contents: read
@@ -18,13 +27,13 @@ jobs:
         with:
           shared-key: skell-windows-exe
           cache-on-failure: true
-      - name: Build standalone Skell Studio (Windows x64)
+      - name: Build Skell Studio Windows x64 engineering executable
         shell: pwsh
         env:
           OPENSTUDIO_NO_PLUGIN_BUILD: "1"
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
         run: cargo build --locked --release -p os-app --bin skell-studio
-      - name: Verify executable exists and write SHA256 digest
+      - name: Verify Windows PE x64 executable and write checksum
         shell: pwsh
         run: |
           $exe = "target/release/skell-studio.exe"
@@ -32,17 +41,33 @@ jobs:
           $size = (Get-Item $exe).Length
           if ($size -lt 1048576) { throw "Unexpectedly small executable: $size bytes" }
           $head = [System.IO.File]::ReadAllBytes((Resolve-Path $exe))
-          if ($head[0] -ne 0x4d -or $head[1] -ne 0x5a) { throw "Not a Windows PE executable" }
+          if ($head[0] -ne 0x4d -or $head[1] -ne 0x5a) { throw "Not a Windows PE executable (missing MZ header)" }
+          $pe = [BitConverter]::ToInt32($head, 0x3c)
+          if ($pe -lt 64 -or ($pe + 6) -gt $head.Length) { throw "Invalid PE header offset" }
+          if ($head[$pe] -ne 0x50 -or $head[$pe + 1] -ne 0x45 -or $head[$pe + 2] -ne 0 -or $head[$pe + 3] -ne 0) {
+            throw "Invalid PE signature"
+          }
+          $machine = [BitConverter]::ToUInt16($head, $pe + 4)
+          if ($machine -ne 0x8664) { throw ("Expected AMD64 PE (0x8664), got 0x{0:X4}" -f $machine) }
           (Get-FileHash -Path $exe -Algorithm SHA256).Hash.ToLower() |
             Set-Content -Path "target/release/skell-studio.exe.sha256"
-          Write-Output "Skell Studio x64 EXE present: $size bytes"
-          Get-Content "target/release/skell-studio.exe.sha256"
-      - name: Upload engineering executable and checksum
+          @(
+            "SKELL STUDIO | WINDOWS X64 ENGINEERING EXECUTABLE"
+            "Commit: $env:GITHUB_SHA"
+            "Configuration: Cargo release profile"
+            "Target: Windows x64 / AMD64 PE"
+            "Bundled plugin packaging: disabled (OPENSTUDIO_NO_PLUGIN_BUILD=1)"
+            "SHA-256: $((Get-Content target/release/skell-studio.exe.sha256 -Raw).Trim())"
+            "Executable bytes: $size"
+          ) | Set-Content -Path "target/release/BUILD_MANIFEST.txt" -Encoding utf8
+          Get-Content "target/release/BUILD_MANIFEST.txt"
+      - name: Upload Windows x64 EXE, checksum and manifest
         uses: actions/upload-artifact@v4
         with:
           name: SkellStudio-Windows-x64-Engineering-EXE
           path: |
             target/release/skell-studio.exe
             target/release/skell-studio.exe.sha256
+            target/release/BUILD_MANIFEST.txt
           if-no-files-found: error
           retention-days: 14

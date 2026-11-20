@@ -49,11 +49,9 @@ fn parse(k: usize, value: &str) -> Option<i32> {
             let n = s.trim_end_matches('%').trim().parse::<f64>().ok()?;
             (n.is_finite()).then(|| (n * 10.0).round().clamp(0.0, 1000.0) as i32)
         }
-        1 => KEYS.iter().position(|name| name.eq_ignore_ascii_case(s)).map(|v| v as i32)
-            .or_else(|| {
-                KEYS.iter().position(|name| name.split('/').next().is_some_and(|part| part.trim().eq_ignore_ascii_case(s)))
-                    .map(|v| v as i32)
-            }),
+        1 => KEYS.iter().position(|name| {
+            name.split('/').any(|part| part.trim().eq_ignore_ascii_case(s))
+        }).map(|v| v as i32),
         2 => SCALES.iter().position(|name| name.eq_ignore_ascii_case(s)).map(|v| v as i32),
         3 => VOICES.iter().position(|name| name.eq_ignore_ascii_case(s)).map(|v| v as i32),
         4 if s.eq_ignore_ascii_case("off") || s.eq_ignore_ascii_case("stop") => Some(0),
@@ -229,6 +227,8 @@ mod tests {
         for k in 0..12 {
             assert_eq!(parse(1, KEYS[k]), Some(k as i32));
         }
+        assert_eq!(parse(1, "Db"), Some(1));
+        assert_eq!(parse(1, "C#"), Some(1));
         for k in 0..13 {
             assert_eq!(parse(2, SCALES[k]), Some(k as i32));
         }
@@ -245,7 +245,7 @@ mod tests {
             let mut sound = TuneSound::new(rate, &[1000, 0, 0, 0, 0]);
             let input = tone(rate, 224.0, 1.5);
             let mut left = input.clone();
-            let mut right = input;
+            let mut right = input.clone();
             assert!(sound.latency() > 0);
             sound.process(&mut left, &mut right);
             assert!(left.iter().chain(&right).all(|v| v.is_finite()));

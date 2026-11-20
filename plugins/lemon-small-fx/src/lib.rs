@@ -133,6 +133,10 @@ pub trait Sound: Send {
     /// Forgets what the sound holds (a delay line), as at the start of a song.
     fn reset(&mut self);
     fn process(&mut self, left: &mut [f32], right: &mut [f32]);
+    /// Apply the saved binary plug-in state during initialization (not on the audio thread).
+    fn set_saved_state(&mut self, _state: &[u8]) {}
+    /// Host transport for tempo- and song-position-aware effects.
+    fn set_transport(&mut self, _tempo: f64, _position_beats: Option<f64>, _playing: bool) {}
     /// Processing latency in samples for the current settings (e.g. a look-ahead or pitch corrector).
     fn latency(&self) -> u32 { 0 }
 }
@@ -299,11 +303,12 @@ impl<K: Kind> Plugin for SmallFx<K> {
         let s = self.settings();
         let v = &s[..K::SPEC.settings.len()];
         match &mut self.dsp {
-            Some(d) => {
-                d.set_sample_rate(rate);
-                d.set(v);
-            }
+            Some(d) => d.set_sample_rate(rate),
             None => self.dsp = Some((K::SPEC.sound)(rate, v)),
+        }
+        if let Some(d) = &mut self.dsp {
+            d.set_saved_state(&self.raw);
+            d.set(v);
         }
         self.latency = self.dsp.as_ref().map_or(0, |d| d.latency());
         ctx.set_latency_samples(self.latency);
@@ -320,6 +325,8 @@ impl<K: Kind> Plugin for SmallFx<K> {
         let s = self.settings();
         let Some(dsp) = &mut self.dsp else { return ProcessStatus::Normal };
         dsp.set(&s[..K::SPEC.settings.len()]);
+        let transport = ctx.transport();
+        dsp.set_transport(transport.tempo.unwrap_or(120.0), transport.pos_beats(), transport.playing);
         let latency = dsp.latency();
         if latency != self.latency {
             self.latency = latency;

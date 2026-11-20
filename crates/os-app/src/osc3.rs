@@ -315,9 +315,6 @@ mod tests {
         assert_eq!(again.channels[row], saved.channels[row]);
     }
 
-    /// A channel with an older version's 3x Osc state (no records or filter of its own) is hosted with the channel's
-    /// envelope records and filter, as FL plays it; a new channel's volume record keeps the plugin's default (spec:
-    /// plugins/lemon-3x-osc.md §6.1).
     /// FL 3x Osc factory presets are discovered read-only and translated into ML Trio state.
     #[test]
     fn fl_fst_presets_are_listed_and_read() {
@@ -343,6 +340,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A channel with an older version's 3x Osc state (no records or filter of its own) is hosted with the channel's
+    /// envelope records and filter, as FL plays it; a new channel's volume record keeps the plugin's default (spec:
+    /// plugins/lemon-3x-osc.md §6.1).
     #[test]
     fn an_older_osc3_state_takes_the_channels_voicing() {
         let mut a = App::new(None);

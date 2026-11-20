@@ -1,0 +1,1 @@
+Temporary trigger for the corrected milestone 05 staging workflow. This file is removed by the workflow after the patch is verified and applied.

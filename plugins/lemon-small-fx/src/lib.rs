@@ -199,7 +199,7 @@ impl Spec {
 /// What makes a plugin type of one of the effects: its description and its ids.
 pub trait Kind: 'static + Send + Sync {
     /// Host-visible vendor; existing effects keep their current AQUILA identity unless overridden.
-    const VENDOR: &'static str = K::VENDOR;
+    const VENDOR: &'static str = "AQUILA";
     const SPEC: &'static Spec;
     const CLAP_ID: &'static str;
     const CLAP_DESCRIPTION: &'static str;
@@ -272,7 +272,7 @@ impl<K: Kind> SmallFx<K> {
 
 impl<K: Kind> Plugin for SmallFx<K> {
     const NAME: &'static str = K::SPEC.name;
-    const VENDOR: &'static str = "AQUILA";
+    const VENDOR: &'static str = K::VENDOR;
     const URL: &'static str = "";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");

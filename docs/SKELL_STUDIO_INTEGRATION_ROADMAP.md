@@ -22,3 +22,8 @@ Preserve original imported source for rollback; do not auto-update from another 
 - See [LYNX SHARE feature audit and adoption plan](LYNX_SHARE_FEATURE_AUDIT.md) for the user-supplied source review, licensing boundary, FL discovery ideas, plugin fallback design and staged engine roadmap.
 - Import preset and the Browser now expose local FL `.fst` presets for the existing Citrus/Sytrus, Smith/Ogun and ML Trio/3x Osc state adapters; unsupported plugin/state combinations are rejected rather than passed to unrelated plugins.
 - Next gates: synthetic parser tests in CI, real Windows FL installation discovery, preset load/save/reopen, then additional native preset formats only with tested codecs.
+
+## Core plugin suite and new-effect gaps (2026-11-20)
+- See [Skell Studio plugin coverage and expansion plan](SKELL_STUDIO_PLUGIN_EXPANSION.md) for the current Limiter/Compressor, Delay, Reverb, EQ and Press inventory, plus the Gross Beat-style and autotune gaps.
+- The Windows VST3/CLAP bundler now gets its nested Cargo builds with `--locked`.
+- A dedicated Windows workflow tests and packages the current plugin suite, validates AMD64 modules for ML Limiter, ML Delay, ML Reverb, ML Hall, ML EQ and ML Press, and uploads the suite as a CI artifact.

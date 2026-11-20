@@ -1377,9 +1377,9 @@ pub fn edit(app: &mut App, action: Edit) {
                 "input-bindings",
                 crate::dialog::Then::InputBindings(export),
             )
-            .filter("AQUILA controls", &["json"])
+            .filter("Skell Studio controls", &["json"])
             .name(if export {
-                "AQUILA Controls.json"
+                "Skell Studio Controls.json"
             } else {
                 ""
             });

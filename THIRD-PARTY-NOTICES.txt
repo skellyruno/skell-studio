@@ -16,10 +16,10 @@ LYNX SHARE — Gross Beat time/volume DSP
 ======================================
 Source: https://github.com/Ka1-S/LYNX-SHARE
 Source snapshot supplied for this integration: LYNX SHARE 0.1.30.
-Components adapted: src/core/GrossBeat.cpp/.h, FlCurve.cpp/.h, FlCurves.inc and Simd.h.
+Components adapted: src/core/GrossBeat.cpp/.h, FlCurve.cpp/.h, FlCurves.inc and Simd.h; src/core/FruityDynamics.cpp/.h (Fruity Compressor engine only).
 Licence: GNU Affero General Public License v3.0 (AGPL-3.0-only); full text: plugins/gross-beat/LICENSE-AGPL-3.0.txt.
 Skell adaptation: the Gross Beat engine/state reader is isolated from LYNX's DAW-specific Effect wrapper and exposed as the standalone Skell Beat VST3/CLAP plug-in. No Image-Line source code, factory presets, graphics or audio were copied. Engine and preset behaviour are reconstructed from published behaviour and test evidence in the supplied LYNX source.
-The plug-in is distributed separately from the Skell Studio application; its source and licence accompany the plug-in.
+The plug-ins are distributed separately from the Skell Studio application; their source and licence accompany each plug-in. The Gross Beat engine is packaged as Skell Beat and the isolated Fruity Compressor engine as Skell Compressor.
 
 Lemon Hall — Dragonfly / Freeverb3
 ==================================

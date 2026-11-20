@@ -90,9 +90,15 @@ mod enabled {
         }
 
         unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            // Count the allocation request, but only count the old block as freed when
+            // System actually returns a replacement pointer. On failure, the old block
+            // remains valid and must not be reported as freed.
+            let replacement = unsafe { System.realloc(ptr, layout, new_size) };
             count(false);
-            count(true);
-            unsafe { System.realloc(ptr, layout, new_size) }
+            if !replacement.is_null() {
+                count(true);
+            }
+            replacement
         }
     }
 
@@ -177,15 +183,19 @@ mod enabled {
                 let _scope = Scope::enter(Role::Callback);
                 let ptr = unsafe { Allocator.alloc(layout) };
                 if !ptr.is_null() {
-                    unsafe { Allocator.dealloc(ptr, layout) };
-                    allocated = true;
+                    let grown_layout = Layout::from_size_align(16, 8).expect("valid grown layout");
+                    let grown = unsafe { Allocator.realloc(ptr, layout, grown_layout.size()) };
+                    if !grown.is_null() {
+                        unsafe { Allocator.dealloc(grown, grown_layout) };
+                        allocated = true;
+                    }
                 }
             }
             assert!(allocated, "system allocator should satisfy a small test allocation");
             let snapshot = take(Role::Callback);
             assert_eq!(snapshot.calls, 1);
-            assert!(snapshot.allocations >= 1, "allocation was not counted: {snapshot:?}");
-            assert!(snapshot.frees >= 1, "free was not counted: {snapshot:?}");
+            assert!(snapshot.allocations >= 2, "allocation/reallocation requests were not counted: {snapshot:?}");
+            assert!(snapshot.frees >= 2, "reallocation and final deallocation were not counted: {snapshot:?}");
         }
     }
 }

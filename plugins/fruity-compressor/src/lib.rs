@@ -21,9 +21,9 @@ unsafe extern "C" {
 
 const TYPES: &[&str] = &["Hard", "Medium", "Vintage", "Soft", "Hard/R", "Medium/R", "Vintage/R", "Soft/R"];
 const LOOKAHEAD: &[&str] = &["PDC Off", "PDC On"];
-const SIDECHAIN: &[&str] = &["Auto", "Off", "On"];
+const SIDECHAIN: &[&str] = &["Auto", "On"];
 
-const SETTINGS: [Setting; 7] = [
+const SETTINGS: [Setting; 8] = [
     Setting { id: "threshold", name: "Threshold", range: (-600, 0), start: 0, magnet: None },
     Setting { id: "ratio", name: "Ratio", range: (4, 300), start: 10, magnet: None },
     Setting { id: "gain", name: "Gain", range: (-300, 300), start: 0, magnet: Some(0) },
@@ -31,10 +31,10 @@ const SETTINGS: [Setting; 7] = [
     Setting { id: "release", name: "Release", range: (1, 4000), start: 200, magnet: None },
     Setting { id: "type", name: "Knee / release type", range: (0, 7), start: 0, magnet: None },
     Setting { id: "lookahead", name: "Look-ahead PDC", range: (0, 1), start: 1, magnet: None },
-    Setting { id: "sidechain", name: "Sidechain Mode", range: (0, 2), start: 0, magnet: None },
+    Setting { id: "sidechain", name: "Sidechain Mode", range: (0, 1), start: 0, magnet: None },
 ];
 
-const CONTROLS: [Control; 7] = [
+const CONTROLS: [Control; 8] = [
     Control::Knob { id: "threshold", cx: 68.0, cy: 150.0, r: 23.0, caption: "THRESHOLD", bipolar: false },
     Control::Knob { id: "ratio", cx: 174.0, cy: 150.0, r: 23.0, caption: "RATIO", bipolar: false },
     Control::Knob { id: "gain", cx: 280.0, cy: 150.0, r: 23.0, caption: "GAIN", bipolar: true },
@@ -112,7 +112,7 @@ impl CompressorSound {
             rate,
             controls: raw[..6].try_into().expect("six compressor controls"),
             lookahead: raw[6] != 0,
-            sidechain_mode: raw[7].clamp(0, 2),
+            sidechain_mode: raw[7].clamp(0, 1),
             fl_sidechain_enabled: false,
             input: vec![0.0; 8192],
             output: vec![0.0; 8192],
@@ -131,7 +131,7 @@ impl Sound for CompressorSound {
     fn set(&mut self, values: &[i32]) {
         for (dst, src) in self.controls.iter_mut().zip(values.iter().copied()) { *dst = src; }
         self.lookahead = values.get(6).copied().unwrap_or(1) != 0;
-        self.sidechain_mode = values.get(7).copied().unwrap_or(0).clamp(0, 2);
+        self.sidechain_mode = values.get(7).copied().unwrap_or(0).clamp(0, 1);
         self.configure();
     }
 
@@ -167,11 +167,9 @@ impl Sound for CompressorSound {
                 input[i * 2] = left[offset + i];
                 input[i * 2 + 1] = right[offset + i];
             }
-            let use_sidechain = match self.sidechain_mode {
-                1 => false,
-                2 => true,
-                _ => self.fl_sidechain_enabled,
-            };
+            // Auto uses the original FL sidechain routing assignment; On forces a connected
+            // host sidechain for VST3/CLAP projects that do not have FL state.
+            let use_sidechain = self.sidechain_mode != 0 || self.fl_sidechain_enabled;
             let side_ptr = if use_sidechain {
                 if let Some((side_l, side_r)) = sidechain {
                 let side = &mut self.sidechain[..n];
@@ -294,8 +292,7 @@ mod tests {
         assert_eq!(parse(6, "PDC On"), Some(1));
         assert_eq!(parse(5, "Vintage/R"), Some(6));
         assert_eq!(parse(7, "Auto"), Some(0));
-        assert_eq!(parse(7, "Off"), Some(1));
-        assert_eq!(parse(7, "On"), Some(2));
+        assert_eq!(parse(7, "On"), Some(1));
 
         let state = lemon_small_fx::params::default_state(SPEC);
         assert_eq!(state.len(), 36, "version + six controls + flags + sidechain");
@@ -361,7 +358,7 @@ mod tests {
         let mut canvas = os_ui::Canvas::new(SPEC.size.0, SPEC.size.1, 1.0).unwrap();
         logic.paint(&mut canvas, &os_plugkit::palette());
         assert_eq!(logic.hits.iter().filter(|h| matches!(h.t, lemon_small_fx::view::Target::Knob(_))).count(), 5);
-        assert_eq!(logic.hits.iter().filter(|h| matches!(h.t, lemon_small_fx::view::Target::Choice(_, _))).count(), 13);
+        assert_eq!(logic.hits.iter().filter(|h| matches!(h.t, lemon_small_fx::view::Target::Choice(_, _))).count(), 12);
         if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
             canvas.pixmap.save_png(std::path::PathBuf::from(dir).join("skell-compressor.png")).unwrap();
         }

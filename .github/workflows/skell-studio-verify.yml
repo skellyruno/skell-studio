@@ -67,4 +67,4 @@ jobs:
         env:
           OPENSTUDIO_NO_PLUGIN_BUILD: "1"
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
-        run: cargo test --locked -p os-app --bin skell-studio presets::tests::fl_fst_presets_import_for_supported_builtin_engines_only
+        run: cargo test --locked -p os-app --bin skell-studio fl_fst_presets

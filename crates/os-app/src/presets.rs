@@ -1269,10 +1269,10 @@ mod tests {
             path: PathBuf::new(),
         };
 
-        let citrus = descriptor(crate::citrus::CITRUS);
+        let citrus_desc = descriptor(crate::citrus::CITRUS);
         assert!(is_preset_file(&path), "FL presets must be accepted by the import picker and drop handling");
         assert_eq!(
-            read_any(&path, &citrus).unwrap(),
+            read_any(&path, &citrus_desc).unwrap(),
             [(
                 "Saw Lead".to_string(),
                 Body::State(citrus::plugin_state_from_fl(&fl_state))

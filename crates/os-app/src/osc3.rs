@@ -337,6 +337,11 @@ mod tests {
             Some(fl)
         );
         assert!(fst_state(&listed[0].path, crate::citrus::CITRUS).is_none());
+
+        let wrong_state = dir.join("Not 3x Osc.fst");
+        std::fs::write(&wrong_state, citrus::preset::test_fst(&[1, 2, 3])).unwrap();
+        assert!(fst_state(&wrong_state, LEMON_TRIO).unwrap().is_err());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

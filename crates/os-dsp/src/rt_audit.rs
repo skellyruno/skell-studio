@@ -188,6 +188,9 @@ mod enabled {
                     if !grown.is_null() {
                         unsafe { Allocator.dealloc(grown, grown_layout) };
                         allocated = true;
+                    } else {
+                        // A failed realloc leaves the original block owned by the caller.
+                        unsafe { Allocator.dealloc(ptr, layout) };
                     }
                 }
             }

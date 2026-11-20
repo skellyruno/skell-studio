@@ -21,6 +21,7 @@ unsafe extern "C" {
 
 const TYPES: &[&str] = &["Hard", "Medium", "Vintage", "Soft", "Hard/R", "Medium/R", "Vintage/R", "Soft/R"];
 const LOOKAHEAD: &[&str] = &["PDC Off", "PDC On"];
+const SIDECHAIN: &[&str] = &["Auto", "Off", "On"];
 
 const SETTINGS: [Setting; 7] = [
     Setting { id: "threshold", name: "Threshold", range: (-600, 0), start: 0, magnet: None },
@@ -30,6 +31,7 @@ const SETTINGS: [Setting; 7] = [
     Setting { id: "release", name: "Release", range: (1, 4000), start: 200, magnet: None },
     Setting { id: "type", name: "Knee / release type", range: (0, 7), start: 0, magnet: None },
     Setting { id: "lookahead", name: "Look-ahead PDC", range: (0, 1), start: 1, magnet: None },
+    Setting { id: "sidechain", name: "Sidechain Mode", range: (0, 2), start: 0, magnet: None },
 ];
 
 const CONTROLS: [Control; 7] = [
@@ -40,6 +42,7 @@ const CONTROLS: [Control; 7] = [
     Control::Knob { id: "release", cx: 492.0, cy: 150.0, r: 23.0, caption: "RELEASE", bipolar: false },
     Control::Choice { id: "type", x: 570.0, top: 76.0, names: TYPES },
     Control::Choice { id: "lookahead", x: 684.0, top: 76.0, names: LOOKAHEAD },
+    Control::Choice { id: "sidechain", x: 684.0, top: 132.0, names: SIDECHAIN },
 ];
 
 fn text(k: usize, raw: i32) -> String {
@@ -50,6 +53,7 @@ fn text(k: usize, raw: i32) -> String {
         4 => format!("{raw} ms"),
         5 => TYPES[raw.clamp(0, 7) as usize].to_string(),
         6 => if raw == 0 { "Off".into() } else { "On".into() },
+        7 => SIDECHAIN[raw.clamp(0, 2) as usize].to_string(),
         _ => String::new(),
     }
 }
@@ -60,6 +64,7 @@ fn parse(k: usize, input: &str) -> Option<i32> {
         5 => TYPES.iter().position(|name| name.eq_ignore_ascii_case(s)).map(|i| i as i32),
         6 if s.eq_ignore_ascii_case("off") || s.eq_ignore_ascii_case("pdc off") => Some(0),
         6 if s.eq_ignore_ascii_case("on") || s.eq_ignore_ascii_case("pdc on") => Some(1),
+        7 => SIDECHAIN.iter().position(|name| name.eq_ignore_ascii_case(s)).map(|i| i as i32),
         0 | 2 => {
             let v = s.trim_end_matches("dB").trim().parse::<f64>().ok()?;
             let (lo, hi) = if k == 0 { (-600.0, 0.0) } else { (-300.0, 300.0) };
@@ -86,6 +91,8 @@ struct CompressorSound {
     rate: u32,
     controls: [i32; 6],
     lookahead: bool,
+    sidechain_mode: i32,
+    fl_sidechain_enabled: bool,
     input: Vec<f32>,
     output: Vec<f32>,
     sidechain: Vec<f32>,
@@ -96,7 +103,7 @@ unsafe impl Send for CompressorSound {}
 impl CompressorSound {
     fn new(rate: u32, values: &[i32]) -> Self {
         let rate = rate.clamp(8000, 384000);
-        let mut raw = [0, 10, 0, 150, 200, 0, 1];
+        let mut raw = [0, 10, 0, 150, 200, 0, 1, 0];
         for (dst, src) in raw.iter_mut().zip(values.iter().copied()) { *dst = src; }
         let instance = ptr::NonNull::new(unsafe { lynx_fc_new(rate as i32) })
             .expect("Fruity Compressor engine allocation");
@@ -105,6 +112,8 @@ impl CompressorSound {
             rate,
             controls: raw[..6].try_into().expect("six compressor controls"),
             lookahead: raw[6] != 0,
+            sidechain_mode: raw[7].clamp(0, 2),
+            fl_sidechain_enabled: false,
             input: vec![0.0; 8192],
             output: vec![0.0; 8192],
             sidechain: vec![0.0; 8192],
@@ -122,6 +131,7 @@ impl Sound for CompressorSound {
     fn set(&mut self, values: &[i32]) {
         for (dst, src) in self.controls.iter_mut().zip(values.iter().copied()) { *dst = src; }
         self.lookahead = values.get(6).copied().unwrap_or(1) != 0;
+        self.sidechain_mode = values.get(7).copied().unwrap_or(0).clamp(0, 2);
         self.configure();
     }
 
@@ -132,6 +142,12 @@ impl Sound for CompressorSound {
 
     fn reset(&mut self) {
         unsafe { lynx_fc_reset(self.instance.as_ptr()); }
+    }
+
+    fn set_saved_state(&mut self, state: &[u8]) {
+        self.fl_sidechain_enabled = state.get(32..36)
+            .map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap()) != 0)
+            .unwrap_or(false);
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
@@ -151,13 +167,22 @@ impl Sound for CompressorSound {
                 input[i * 2] = left[offset + i];
                 input[i * 2 + 1] = right[offset + i];
             }
-            let side_ptr = if let Some((side_l, side_r)) = sidechain {
+            let use_sidechain = match self.sidechain_mode {
+                1 => false,
+                2 => true,
+                _ => self.fl_sidechain_enabled,
+            };
+            let side_ptr = if use_sidechain {
+                if let Some((side_l, side_r)) = sidechain {
                 let side = &mut self.sidechain[..n];
                 for i in 0..count {
                     side[i * 2] = side_l.get(offset + i).copied().unwrap_or(0.0);
                     side[i * 2 + 1] = side_r.get(offset + i).copied().unwrap_or(0.0);
                 }
                 side.as_ptr()
+                } else {
+                    ptr::null()
+                }
             } else {
                 ptr::null()
             };
@@ -209,7 +234,7 @@ pub const SPEC: &Spec = &Spec {
     settings: &SETTINGS,
     version: Some(3),
     any_version: false,
-    fields: &[0, 1, 2, 3, 4, 5, params::BYTE],
+    fields: &[0, 1, 2, 3, 4, 5, params::BYTE, params::byte(8)],
     tail: &[1, 0, 0, 0, 0, 0, 0, 0],
     blank: None,
     locate: None,
@@ -268,6 +293,9 @@ mod tests {
         }
         assert_eq!(parse(6, "PDC On"), Some(1));
         assert_eq!(parse(5, "Vintage/R"), Some(6));
+        assert_eq!(parse(7, "Auto"), Some(0));
+        assert_eq!(parse(7, "Off"), Some(1));
+        assert_eq!(parse(7, "On"), Some(2));
 
         let state = lemon_small_fx::params::default_state(SPEC);
         assert_eq!(state.len(), 36, "version + six controls + flags + sidechain");
@@ -307,8 +335,8 @@ mod tests {
 
     #[test]
     fn sidechain_changes_compression_and_output_stays_finite() {
-        let mut own = CompressorSound::new(48000, &[-300, 40, 0, 150, 200, 0, 1]);
-        let mut keyed = CompressorSound::new(48000, &[-300, 40, 0, 150, 200, 0, 1]);
+        let mut own = CompressorSound::new(48000, &[-300, 40, 0, 150, 200, 0, 1, 0]);
+        let mut keyed = CompressorSound::new(48000, &[-300, 40, 0, 150, 200, 0, 1, 2]);
         let dry = tone(48000, 1.0, 0.2);
         let side = tone(48000, 1.0, 0.9);
         let mut own_l = dry.clone();
@@ -333,7 +361,7 @@ mod tests {
         let mut canvas = os_ui::Canvas::new(SPEC.size.0, SPEC.size.1, 1.0).unwrap();
         logic.paint(&mut canvas, &os_plugkit::palette());
         assert_eq!(logic.hits.iter().filter(|h| matches!(h.t, lemon_small_fx::view::Target::Knob(_))).count(), 5);
-        assert_eq!(logic.hits.iter().filter(|h| matches!(h.t, lemon_small_fx::view::Target::Choice(_, _))).count(), 10);
+        assert_eq!(logic.hits.iter().filter(|h| matches!(h.t, lemon_small_fx::view::Target::Choice(_, _))).count(), 13);
         if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
             canvas.pixmap.save_png(std::path::PathBuf::from(dir).join("skell-compressor.png")).unwrap();
         }

@@ -68,6 +68,8 @@ jobs:
 
       - name: Round-trip Skell VST3 state through the Studio host
         shell: pwsh
+        env:
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
         run: cargo test --locked -p os-vst3 hosts_skell_plugins_and_roundtrips_component_state_through_host_wrapper -- --nocapture
 
       - name: Validate requested core plugin bundles and AMD64 modules

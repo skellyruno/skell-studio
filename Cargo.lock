@@ -2131,6 +2131,7 @@ dependencies = [
 name = "lemon-delay"
 version = "0.0.1"
 dependencies = [
+ "cc",
  "nih_plug",
  "os-engine",
  "os-hostlink",
@@ -2231,6 +2232,7 @@ dependencies = [
 name = "lemon-limiter"
 version = "0.0.1"
 dependencies = [
+ "cc",
  "nih_plug",
  "os-engine",
  "os-hostlink",
@@ -2246,6 +2248,7 @@ dependencies = [
 name = "lemon-parametric-eq-2"
 version = "0.0.1"
 dependencies = [
+ "cc",
  "nih_plug",
  "os-engine",
  "os-hostlink",
@@ -2281,6 +2284,7 @@ dependencies = [
 name = "lemon-reverb"
 version = "0.0.1"
 dependencies = [
+ "cc",
  "nih_plug",
  "os-engine",
  "os-hostlink",
@@ -4374,6 +4378,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "gross-beat"
+version = "0.0.1"
+dependencies = [
+ "os-theme",
+ "cc",
+ "lemon-small-fx",
+ "nih_plug",
+ "os-plugkit",
+ "os-ui",
+]
+
+[[package]]
+name = "lynx-tune"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "lemon-small-fx",
+ "nih_plug",
+ "os-plugkit",
+ "os-ui",
+]
+
+[[package]]
+name = "fruity-compressor"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "lemon-small-fx",
+ "nih_plug",
+ "os-plugkit",
+ "os-ui",
 ]
 
 [[package]]

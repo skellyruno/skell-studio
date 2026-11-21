@@ -3,7 +3,7 @@ name = "lemon-reverb"
 description = "Lemon Reverb: Lemon Studio's plate reverb as a VST3 / CLAP plugin"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "AGPL-3.0-only"
 
 [lib]
 crate-type = ["cdylib", "lib"]
@@ -25,3 +25,6 @@ tiny-skia = "0.11"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Controls", "Win32_System_LibraryLoader"] }
+
+[build-dependencies]
+cc = "1"

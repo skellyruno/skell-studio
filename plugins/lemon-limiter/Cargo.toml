@@ -3,7 +3,7 @@ name = "lemon-limiter"
 description = "Lemon Limiter: Lemon Studio's limiter, compressor and noise gate as a VST3 / CLAP plugin"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "AGPL-3.0-only"
 
 [lib]
 crate-type = ["cdylib", "lib"]
@@ -27,3 +27,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphic
 
 [dev-dependencies]
 tiny-skia = "0.11"
+
+[build-dependencies]
+cc = "1"

@@ -3,21 +3,29 @@ on:
   push:
     branches: [main, dev/skell-verified-upgrade]
     paths:
+      - "plugins/**"
       - ".github/workflows/skell-studio-verify.yml"
       - "crates/os-app/**"
+      - "crates/os-flp/**"
       - "crates/os-dsp/**"
       - "crates/os-theme/**"
+      - "crates/os-ui/**"
       - "crates/os-paths/**"
       - "plugins/smith/**"
+      - "plugins/lemon-small-fx/**"
+      - "plugins/lemon-reverb/**"
       - "plugins/lemon-chop/**"
       - "crates/os-hostlink/**"
       - "Cargo.toml"
       - "Cargo.lock"
   pull_request:
-    branches: [main]
+    branches: [main, feature/skell-fl-fst-presets-lynx-audit-20261120, feature/skell-lynx-reeverb2-in-place-20261121]
     paths:
+      - "crates/os-ui/**"
+      - "plugins/**"
       - ".github/workflows/skell-studio-verify.yml"
       - "crates/os-app/**"
+      - "crates/os-flp/**"
       - "crates/os-theme/**"
       - "crates/os-paths/**"
       - "plugins/smith/**"
@@ -30,7 +38,7 @@ permissions:
   contents: read
 concurrency:
   group: skell-verify-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   core-tests:
     runs-on: ubuntu-latest
@@ -60,3 +68,9 @@ jobs:
         run: |
           cargo check --locked -p os-app --bin skell-studio
           cargo check --locked -p os-app --bin skell-studio --features rt-audit
+      - name: Run FL FST preset import regression
+        shell: pwsh
+        env:
+          OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        run: cargo test --locked -p os-app --bin skell-studio fl_fst_presets

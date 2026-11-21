@@ -1,0 +1,23 @@
+[package]
+name = "lynx-tune"
+description = "Skell Tune real-time vocal pitch correction using the pinned LYNX YIN / TD-PSOLA engine"
+version.workspace = true
+edition.workspace = true
+license = "AGPL-3.0-only"
+
+[features]
+default = []
+linked = []
+
+[lib]
+crate-type = ["cdylib", "lib"]
+doctest = false
+
+[dependencies]
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", default-features = false, features = ["vst3"] }
+lemon-small-fx = { path = "../lemon-small-fx" }
+os-plugkit = { path = "../../crates/os-plugkit" }
+os-ui = { path = "../../crates/os-ui" }
+
+[build-dependencies]
+cc = "1"

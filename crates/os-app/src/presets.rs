@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 
 /// File extension of a preset.
 pub const EXT: &str = "ospreset";
-/// The preset files Import preset... and drops take: Lemon Studio's own, VST 3's and VST 2's (program and bank).
-pub const IMPORT_EXTS: &[&str] = &[EXT, "vstpreset", "fxp", "fxb"];
+/// Preset files Import preset... and drops take: Skell, VST 3, VST 2, and FL `.fst` for Citrus/Sytrus and Smith/Ogun.
+pub const IMPORT_EXTS: &[&str] = &[EXT, "vstpreset", "fxp", "fxb", "fst"];
 /// First line of every preset file.
 const MAGIC: &[u8] = b"OSPRESET 1\n";
 /// The `body` header value of a preset that lists parameter values instead of holding the plugin's state.
@@ -174,12 +174,22 @@ pub fn factory(plugin: &str) -> Vec<Preset> {
     let mut v = factory_in(FACTORY, plugin);
     v.extend(crate::citrus::more_presets(plugin));
     v.extend(crate::smith::more_presets(plugin));
+    v.extend(crate::osc3::more_presets(plugin));
     v
 }
 
-/// The plugin folders that have factory presets.
+/// The plugin folders that have compiled or installed factory presets.
 pub fn factory_plugins() -> Vec<&'static str> {
     let mut v: Vec<&str> = FACTORY.iter().filter_map(|(rel, _)| rel.split('/').next().map(crate::plugins::canonical_name)).collect();
+    for plugin in [crate::citrus::CITRUS, crate::smith::SMITH, crate::osc3::LEMON_TRIO] {
+        if (!crate::citrus::more_presets(plugin).is_empty()
+            || !crate::smith::more_presets(plugin).is_empty()
+            || !crate::osc3::more_presets(plugin).is_empty())
+            && !v.contains(&plugin)
+        {
+            v.push(plugin);
+        }
+    }
     v.dedup();
     v
 }
@@ -329,6 +339,19 @@ pub fn read_any(path: &Path, d: &os_host::Descriptor) -> Result<Vec<(String, Bod
     let stem = shown_name(path);
     let other = || format!("{stem} belongs to another plugin");
     match ext.as_str() {
+        "fst" => {
+            // FL `.fst` is not a generic plug-in state format. Only the built-in engines whose
+            // FL state adapters are implemented may consume it; do not pass arbitrary FL data
+            // to an unrelated hosted plug-in.
+            let state = match d.name.as_str() {
+                crate::citrus::CITRUS => crate::citrus::fst_state(path),
+                crate::smith::SMITH => crate::smith::fst_state(path, &d.name),
+                crate::osc3::LEMON_TRIO => crate::osc3::fst_state(path, &d.name),
+                _ => None,
+            }
+            .ok_or_else(|| format!("{stem} is an FL Studio preset, but {} has no compatible .fst importer", d.name))??;
+            Ok(vec![(stem, Body::State(state))])
+        }
         "vstpreset" => {
             if d.format != os_host::Format::Vst3 {
                 return Err(format!("{stem} is a VST 3 preset; {} is not a VST 3 plugin", d.name));
@@ -666,11 +689,8 @@ fn side(app: &App, key: usize) -> Option<crate::control::command::PluginSide> {
 /// the step that made it).
 fn load_with(app: &mut App, key: usize, path: &Path, step: bool) -> Option<String> {
     let d = app.plugins.descriptor(key)?;
-    let first = match crate::smith::fst_state(path, &d.name).or_else(|| crate::citrus::fst_state(path)) {
-        // An FL preset file (Citrus's and Smith's lists of an FL install's presets) holds the original's state.
-        Some(state) => state.map(|s| (shown_name(path), Body::State(s))),
-        None => read_any(path, &d).and_then(|v| v.into_iter().next().ok_or_else(|| format!("{} holds no preset", shown_name(path)))),
-    };
+    let first = read_any(path, &d)
+        .and_then(|v| v.into_iter().next().ok_or_else(|| format!("{} holds no preset", shown_name(path))));
     let before = if step { side(app, key) } else { None };
     Some(match first {
         Ok((_, body)) => match apply(app, key, &body) {
@@ -1235,6 +1255,67 @@ mod tests {
         assert_eq!(got[0].1, Body::State(os_vst2::state::Saved::Params { program: None, values: vec![0.25] }.to_bytes()));
         assert_eq!(uid_of(&f).as_deref(), Some("vst2:41424344"));
         assert!(read_any(&f, &vst3).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FL `.fst` import is deliberately limited to Skell's Sytrus/Ogun state adapters.
+    #[test]
+    fn fl_fst_presets_import_for_supported_builtin_engines_only() {
+        let dir = tmp("fl-fst");
+        let path = dir.join("Saw Lead.fst");
+        let fl_state = [4, 5, 6];
+        std::fs::write(&path, citrus::preset::test_fst(&fl_state)).unwrap();
+
+        let descriptor = |name: &str| os_host::Descriptor {
+            format: os_host::Format::Clap,
+            id: "test-id".into(),
+            name: name.into(),
+            vendor: String::new(),
+            version: String::new(),
+            features: Vec::new(),
+            kind: os_host::Kind::Instrument,
+            path: PathBuf::new(),
+        };
+
+        let citrus_desc = descriptor(crate::citrus::CITRUS);
+        assert!(is_preset_file(&path), "FL presets must be accepted by the import picker and drop handling");
+        assert_eq!(
+            read_any(&path, &citrus_desc).unwrap(),
+            [(
+                "Saw Lead".to_string(),
+                Body::State(citrus::plugin_state_from_fl(&fl_state))
+            )]
+        );
+
+        let smith_fl_state = smith::state::State::default().to_bytes();
+        let smith_path = dir.join("Ogun Patch.fst");
+        std::fs::write(&smith_path, citrus::preset::test_fst(&smith_fl_state)).unwrap();
+        let smith_desc = descriptor(crate::smith::SMITH);
+        assert_eq!(
+            read_any(&smith_path, &smith_desc).unwrap(),
+            [(
+                "Ogun Patch".to_string(),
+                Body::State(smith::plugin_state_from_fl(&smith_fl_state))
+            )]
+        );
+
+        let trio_fl_state = lemon_3x_osc::params::default_state();
+        let trio_path = dir.join("3x Osc Lead.fst");
+        std::fs::write(&trio_path, citrus::preset::test_fst(&trio_fl_state)).unwrap();
+        let trio_desc = descriptor(crate::osc3::LEMON_TRIO);
+        assert_eq!(
+            read_any(&trio_path, &trio_desc).unwrap(),
+            [(
+                "3x Osc Lead".to_string(),
+                Body::State(lemon_3x_osc::params::plugin_state_from_fl(&trio_fl_state))
+            )]
+        );
+
+        let unrelated = descriptor("ML Sampler");
+        assert!(
+            read_any(&path, &unrelated).unwrap_err().contains("no compatible .fst importer"),
+            "an FL preset must never be loaded into an unrelated plug-in"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

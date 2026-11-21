@@ -127,12 +127,29 @@ pub struct Display {
 
 /// The sound of an effect, made for a sample rate from the settings in the original's order.
 pub trait Sound: Send {
+    /// Incoming MIDI note hook for effects that opt into note input.
+    fn midi_note(&mut self, _on: bool, _channel: u8, _note: u8) {}
+    /// Attach an editor extension after initialization so UI-owned state can be queued safely.
+    fn bind_editor(&mut self, _extension: Arc<dyn editor::Extension>) {}
+    /// Maximum binary state size to reserve before the audio callback starts.
+    fn state_capacity_hint(&self) -> usize { 0 }
     /// New settings: they act from this block on (gains glide where the original's do).
     fn set(&mut self, v: &[i32]);
     fn set_sample_rate(&mut self, rate: u32);
     /// Forgets what the sound holds (a delay line), as at the start of a song.
     fn reset(&mut self);
     fn process(&mut self, left: &mut [f32], right: &mut [f32]);
+    /// Processing with an optional stereo auxiliary/sidechain input. Existing effects ignore it.
+    fn process_with_sidechain(&mut self, left: &mut [f32], right: &mut [f32], sidechain: Option<(&[f32], &[f32])>) {
+        let _ = sidechain;
+        self.process(left, right);
+    }
+    /// Apply the saved binary plug-in state during initialization (not on the audio thread).
+    fn set_saved_state(&mut self, _state: &[u8]) {}
+    /// Host transport for tempo- and song-position-aware effects.
+    fn set_transport(&mut self, _tempo: f64, _position_beats: Option<f64>, _playing: bool) {}
+    /// Processing latency in samples for the current settings (e.g. a look-ahead or pitch corrector).
+    fn latency(&self) -> u32 { 0 }
 }
 
 /// Everything that makes one of the effects.
@@ -196,6 +213,20 @@ impl Spec {
 
 /// What makes a plugin type of one of the effects: its description and its ids.
 pub trait Kind: 'static + Send + Sync {
+    /// Optional per-instance editor extension (used by plugins with non-parameter state editors).
+    fn editor_extension(_params: Arc<params::FxParams>) -> Option<Arc<dyn editor::Extension>> { None }
+    /// MIDI input is opt-in; normal effects keep their existing ports unchanged.
+    const MIDI_INPUT: MidiConfig = MidiConfig::None;
+    /// Host-visible vendor; existing effects keep their current AQUILA identity unless overridden.
+    const VENDOR: &'static str = "AQUILA";
+    /// Host audio layout. The default is the existing stereo in/out layout.
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
+        AudioIOLayout {
+            main_input_channels: NonZeroU32::new(2),
+            main_output_channels: NonZeroU32::new(2),
+            ..AudioIOLayout::const_default()
+        }
+    ];
     const SPEC: &'static Spec;
     const CLAP_ID: &'static str;
     const CLAP_DESCRIPTION: &'static str;
@@ -225,6 +256,8 @@ pub struct SmallFx<K: Kind> {
     shared: Arc<Shared>,
     /// Made in `initialize` (for the sample rate).
     dsp: Option<Box<dyn Sound>>,
+    /// Last latency reported to the host; refreshed when settings change.
+    latency: u32,
     raw: Vec<u8>,
     raw_seen: u64,
     kind: PhantomData<K>,
@@ -232,10 +265,14 @@ pub struct SmallFx<K: Kind> {
 
 impl<K: Kind> Default for SmallFx<K> {
     fn default() -> Self {
+        let params = Arc::new(FxParams::new(K::SPEC));
+        let mut shared = Shared::default();
+        shared.extension = K::editor_extension(params.clone());
         SmallFx {
-            params: Arc::new(FxParams::new(K::SPEC)),
-            shared: Arc::new(Shared::default()),
+            params,
+            shared: Arc::new(shared),
             dsp: None,
+            latency: 0,
             raw: params::default_state(K::SPEC),
             raw_seen: u64::MAX,
             kind: PhantomData,
@@ -265,13 +302,13 @@ impl<K: Kind> SmallFx<K> {
 
 impl<K: Kind> Plugin for SmallFx<K> {
     const NAME: &'static str = K::SPEC.name;
-    const VENDOR: &'static str = "AQUILA";
+    const MIDI_INPUT: MidiConfig = K::MIDI_INPUT;
+    const VENDOR: &'static str = K::VENDOR;
     const URL: &'static str = "";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] =
-        &[AudioIOLayout { main_input_channels: NonZeroU32::new(2), main_output_channels: NonZeroU32::new(2), ..AudioIOLayout::const_default() }];
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = K::AUDIO_IO_LAYOUTS;
     const SAMPLE_ACCURATE_AUTOMATION: bool = false;
 
     type SysExMessage = ();
@@ -285,19 +322,29 @@ impl<K: Kind> Plugin for SmallFx<K> {
         Some(Box::new(editor::FxEditor::new(K::SPEC, self.params.clone(), self.shared.clone())))
     }
 
-    fn initialize(&mut self, _layout: &AudioIOLayout, config: &BufferConfig, _ctx: &mut impl InitContext<Self>) -> bool {
+    fn initialize(&mut self, _layout: &AudioIOLayout, config: &BufferConfig, ctx: &mut impl InitContext<Self>) -> bool {
         let rate = config.sample_rate.round() as u32;
         self.shared.rate.store(rate, Ordering::Relaxed);
         self.raw_seen = u64::MAX;
         let s = self.settings();
         let v = &s[..K::SPEC.settings.len()];
         match &mut self.dsp {
-            Some(d) => {
-                d.set_sample_rate(rate);
-                d.set(v);
-            }
+            Some(d) => d.set_sample_rate(rate),
             None => self.dsp = Some((K::SPEC.sound)(rate, v)),
         }
+        if let Some(d) = &mut self.dsp {
+            let capacity = d.state_capacity_hint();
+            if self.raw.capacity() < capacity {
+                self.raw.reserve(capacity.saturating_sub(self.raw.len()));
+            }
+            d.set_saved_state(&self.raw);
+            if let Some(extension) = self.shared.extension.clone() {
+                d.bind_editor(extension);
+            }
+            d.set(v);
+        }
+        self.latency = self.dsp.as_ref().map_or(0, |d| d.latency());
+        ctx.set_latency_samples(self.latency);
         true
     }
 
@@ -307,16 +354,58 @@ impl<K: Kind> Plugin for SmallFx<K> {
         }
     }
 
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &mut impl ProcessContext<Self>) -> ProcessStatus {
+    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, ctx: &mut impl ProcessContext<Self>) -> ProcessStatus {
         let s = self.settings();
         let Some(dsp) = &mut self.dsp else { return ProcessStatus::Normal };
         dsp.set(&s[..K::SPEC.settings.len()]);
+        let transport_tempo = ctx.transport().tempo.unwrap_or(120.0);
+        let transport_position = ctx.transport().pos_beats();
+        let transport_playing = ctx.transport().playing;
+        let sidechain = aux.inputs.first()
+            .map(|b| b.as_slice_immutable())
+            .filter(|channels| channels.len() >= 2)
+            .map(|channels| (&*channels[0], &*channels[1]));
+        let latency = dsp.latency();
+        if latency != self.latency {
+            self.latency = latency;
+            ctx.set_latency_samples(latency);
+        }
         let out = buffer.as_slice();
         if out.len() < 2 {
             return ProcessStatus::Normal;
         }
         let (left, right) = out.split_at_mut(1);
-        dsp.process(left[0], right[0]);
+        if K::MIDI_INPUT == MidiConfig::None {
+            dsp.set_transport(transport_tempo, transport_position, transport_playing);
+            dsp.process_with_sidechain(left[0], right[0], sidechain);
+        } else {
+            let frames = left[0].len().min(right[0].len());
+            let rate = f64::from(self.shared.rate.load(Ordering::Relaxed).max(1));
+            let beats_at = |offset: usize| transport_position.map(|position|
+                position + offset as f64 * transport_tempo / (60.0 * rate));
+            let mut offset = 0usize;
+            let mut next_event = ctx.next_event();
+            while let Some(event) = next_event {
+                let timing = (event.timing() as usize).min(frames);
+                if timing > offset {
+                    dsp.set_transport(transport_tempo, beats_at(offset), transport_playing);
+                    dsp.process_with_sidechain(&mut left[0][offset..timing], &mut right[0][offset..timing], sidechain);
+                    offset = timing;
+                }
+                match event {
+                    NoteEvent::NoteOn { channel, note, velocity, .. } => dsp.midi_note(velocity > 0.0, channel, note),
+                    NoteEvent::NoteOff { channel, note, .. } | NoteEvent::Choke { channel, note, .. } => {
+                        dsp.midi_note(false, channel, note)
+                    }
+                    _ => {}
+                }
+                next_event = ctx.next_event();
+            }
+            if offset < frames {
+                dsp.set_transport(transport_tempo, beats_at(offset), transport_playing);
+                dsp.process_with_sidechain(&mut left[0][offset..frames], &mut right[0][offset..frames], sidechain);
+            }
+        }
         if K::SPEC.rings { ProcessStatus::KeepAlive } else { ProcessStatus::Normal }
     }
 }

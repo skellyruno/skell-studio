@@ -53,6 +53,12 @@ impl RoutedEq {
   self.process_static(l,r);
   self.dynamics.process(l,r,&super::Settings {bands:std::array::from_fn(|k| super::Band{db:f64::from(self.params[k])/100.,freq:f64::from(self.params[7+k])/65536.,width:f64::from(self.params[14+k])/65536.,kind:self.params[21+k],order:self.params[28+k]}),main_db:0.,mask:self.opts.mask},self.routes);
  }
+ /// Run only the dynamic/spectral stage after a separately rendered static EQ.
+ pub fn process_dynamic_only(&mut self,l:&mut[f32],r:&mut[f32]){
+  self.dynamics.process(l,r,&super::Settings {bands:std::array::from_fn(|k| super::Band{db:f64::from(self.params[k])/100.,freq:f64::from(self.params[7+k])/65536.,width:f64::from(self.params[14+k])/65536.,kind:self.params[21+k],order:self.params[28+k]}),main_db:0.,mask:self.opts.mask},self.routes);
+ }
+ pub fn dynamic_latency(&self)->usize{self.dynamics.latency()}
+
  fn process_static(&mut self,l:&mut[f32],r:&mut[f32]){
   let n=l.len().min(r.len());let(l,r)=(&mut l[..n],&mut r[..n]);
   if self.routes==[0;7]{self.eq[0].process(l,r);return;}

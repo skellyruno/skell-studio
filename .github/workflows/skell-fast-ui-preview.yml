@@ -5,6 +5,8 @@ on:
     paths:
       - ".github/workflows/skell-fast-ui-preview.yml"
       - "Cargo.toml"
+      - "Cargo.lock"
+      - "plugins/lemon-reverb/**"
       - "scripts/ci_capture_skell_ui.ps1"
       - "crates/os-app/src/starter_pack.rs"
       - "crates/os-app/src/main.rs"
@@ -13,7 +15,7 @@ on:
       - "crates/os-app/src/motion.rs"
       - "crates/os-app/src/anim.rs"
   pull_request:
-    branches: [main]
+    branches: [main, feature/skell-fl-fst-presets-lynx-audit-20261120]
     paths:
       - ".github/workflows/skell-fast-ui-preview.yml"
       - "Cargo.toml"

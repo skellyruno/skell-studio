@@ -11,12 +11,13 @@ on:
       - "crates/os-paths/**"
       - "plugins/smith/**"
       - "plugins/lemon-reverb/**"
+      - "plugins/lemon-limiter/**"
       - "plugins/lemon-chop/**"
       - "crates/os-hostlink/**"
       - "Cargo.toml"
       - "Cargo.lock"
   pull_request:
-    branches: [main, feature/skell-fl-fst-presets-lynx-audit-20261120]
+    branches: [main, feature/skell-fl-fst-presets-lynx-audit-20261120, feature/skell-lynx-reeverb2-in-place-20261121]
     paths:
       - ".github/workflows/skell-studio-verify.yml"
       - "crates/os-app/**"

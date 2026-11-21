@@ -21,6 +21,16 @@ Licence: GNU Affero General Public License v3.0 (AGPL-3.0-only); full text: plug
 Skell adaptation: the Gross Beat engine/state reader is isolated from LYNX's DAW-specific Effect wrapper and exposed as the standalone Skell Beat VST3/CLAP plug-in. No Image-Line source code, factory presets, graphics or audio were copied. Engine and preset behaviour are reconstructed from published behaviour and test evidence in the supplied LYNX source.
 The plug-ins are distributed separately from the Skell Studio application; their source and licence accompany each plug-in. The Gross Beat engine is packaged as Skell Beat and the isolated Fruity Compressor engine as Skell Compressor.
 
+LYNX SHARE — Fruity Limiter DSP
+===============================
+Source: https://github.com/Ka1-S/LYNX-SHARE
+Pinned source snapshot: LYNX SHARE 0.1.30, commit 88ec555ea2bce9714c92707cc06a5abfd317c900.
+Adapted component: src/core/FruityDynamics.cpp (Fruity Limiter engine and helper routines only).
+The DAW-specific Effect wrapper and Fruity Compressor engine are excluded from this translation unit. The C ABI bridge and Rust adapter are Skell modifications.
+Licence: GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+Full licence text: plugins/lemon-limiter/LICENSE-AGPL-3.0.txt.
+No Image-Line binaries, factory presets, samples, artwork or proprietary FL assets are included.
+
 LYNX SHARE — Fruity Reeverb 2 DSP
 ==================================
 Source: https://github.com/Ka1-S/LYNX-SHARE

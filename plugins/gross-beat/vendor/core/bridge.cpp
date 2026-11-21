@@ -22,6 +22,8 @@ struct Bridge
     double expectedTicks = 0.0;
     bool loaded = false;
     bool started = false;
+    lynx::grossbeat::State state;
+    lynx::grossbeat::MidiSlots midi;
 };
 
 constexpr int kLatencySamples = 15;
@@ -79,7 +81,9 @@ bool lynx_gb_load(void* instance, const std::uint8_t* data, std::size_t size) no
         if (!state)
             return false;
         b.ppq = 96;
-        if (!b.engine.load(*state, b.ppq))
+        b.state = *state;
+        b.midi.clear();
+        if (!b.engine.load(b.state, b.ppq))
             return false;
         b.engine.prepare(b.sampleRate, b.maxBlock);
         b.tempo = 120.0f;
@@ -116,7 +120,32 @@ void lynx_gb_set_param(void* instance, int index, int raw) noexcept
         return;
     auto& b = *static_cast<Bridge*>(instance);
     if (b.loaded && index >= 0 && index < lynx::grossbeat::paramCount)
+    {
+        b.state.params[static_cast<std::size_t>(index)] = raw;
         b.engine.setParam(index, raw);
+    }
+}
+
+int lynx_gb_note(void* instance, bool on, int channel, int note) noexcept
+{
+    if (instance == nullptr)
+        return -1;
+    auto& b = *static_cast<Bridge*>(instance);
+    if (!b.loaded || !b.state.midiTrigger || channel < 0 || channel > 15 || note < 0 || note > 127)
+        return -1;
+
+    const std::array<int, 2> current { b.state.params[0], b.state.params[1] };
+    const auto selected = b.midi.note(on, channel, note, current, [&b](int kind, int slot) noexcept {
+        const auto index = static_cast<std::size_t>(kind * lynx::grossbeat::slotsPerKind + slot);
+        return b.state.slots[index].keyHeld;
+    });
+    if (selected.first < 0 || selected.second < 0)
+        return -1;
+
+    const auto parameter = selected.first;
+    b.state.params[static_cast<std::size_t>(parameter)] = selected.second;
+    b.engine.setParam(parameter, selected.second);
+    return parameter * lynx::grossbeat::slotsPerKind + selected.second;
 }
 
 void lynx_gb_set_transport(void* instance, double tempo, double positionBeats, bool hasPosition, bool playing) noexcept

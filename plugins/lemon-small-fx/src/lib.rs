@@ -131,6 +131,8 @@ pub trait Sound: Send {
     fn midi_note(&mut self, _on: bool, _channel: u8, _note: u8) {}
     /// Attach an editor extension after initialization so UI-owned state can be queued safely.
     fn bind_editor(&mut self, _extension: Arc<dyn editor::Extension>) {}
+    /// Maximum binary state size to reserve before the audio callback starts.
+    fn state_capacity_hint(&self) -> usize { 0 }
     /// New settings: they act from this block on (gains glide where the original's do).
     fn set(&mut self, v: &[i32]);
     fn set_sample_rate(&mut self, rate: u32);

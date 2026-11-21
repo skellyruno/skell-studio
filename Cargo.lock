@@ -4399,6 +4399,8 @@ dependencies = [
  "cc",
  "lemon-small-fx",
  "nih_plug",
+ "os-plugkit",
+ "os-ui",
 ]
 
 [[package]]

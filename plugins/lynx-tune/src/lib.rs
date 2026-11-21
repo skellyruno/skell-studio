@@ -212,6 +212,53 @@ mod tests {
     }
 
     #[test]
+    fn editor_exposes_all_eight_controls_and_can_capture() {
+        let params = std::sync::Arc::new(lemon_small_fx::params::FxParams::new(SPEC));
+        let mut logic = lemon_small_fx::editor::Logic::new(
+            SPEC,
+            params,
+            std::sync::Arc::new(lemon_small_fx::Shared::default()),
+            None,
+        );
+        let mut canvas = os_ui::Canvas::new(SPEC.size.0, SPEC.size.1, 1.0).unwrap();
+        logic.paint(&mut canvas, &os_plugkit::palette());
+        assert_eq!(
+            logic.hits.iter().filter(|h| matches!(h.t, lemon_small_fx::view::Target::Knob(_))).count(),
+            SETTINGS.len()
+        );
+        if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
+            canvas.pixmap.save_png(std::path::PathBuf::from(dir).join("skell-tune.png")).unwrap();
+        }
+    }
+
+    #[test]
+    fn corrects_off_scale_tone_to_the_nearest_c_major_note() {
+        fn estimate_hz(samples: &[f32], rate: f32) -> Option<f32> {
+            let mut crossings = Vec::with_capacity(512);
+            for (i, pair) in samples.windows(2).enumerate() {
+                if pair[0] <= 0.0 && pair[1] > 0.0 {
+                    let fraction = -pair[0] / (pair[1] - pair[0]).max(f32::MIN_POSITIVE);
+                    crossings.push(i as f32 + fraction);
+                }
+            }
+            let first = *crossings.first()?;
+            let last = *crossings.last()?;
+            let cycles = crossings.len().saturating_sub(1);
+            (cycles > 0 && last > first).then_some(rate * cycles as f32 / (last - first))
+        }
+
+        let rate = 48000u32;
+        let mut sound = TuneSound::new(rate, &[0, 1, 0, 0, 0, 0, 1000, 1]);
+        let mut left = tone(rate, 233.082f32, 1.5);
+        let mut right = left.clone();
+        sound.process(&mut left, &mut right);
+        let measured = estimate_hz(&left[rate as usize..], rate as f32)
+            .expect("corrected output should contain stable positive-going crossings");
+        // A#3 is outside C major; B3 (246.94 Hz) is the closest allowed note.
+        assert!((measured - 246.94).abs() < 4.0, "expected B3, got {measured:.2} Hz");
+    }
+
+    #[test]
     fn engine_processes_audio_with_stable_pdc_and_midi_input() {
         let mut sound = TuneSound::new(48000, &SPEC.start());
         assert_eq!(sound.latency(), 1204);

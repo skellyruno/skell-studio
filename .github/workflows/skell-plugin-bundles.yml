@@ -1,0 +1,91 @@
+name: Skell Studio — Windows plugin suite bundles
+
+on:
+  push:
+    branches: [main, dev/skell-verified-upgrade]
+    paths:
+      - ".github/workflows/skell-plugin-bundles.yml"
+      - "crates/os-dsp/**"
+      - "crates/os-engine/**"
+      - "crates/os-host/**"
+      - "crates/os-hostlink/**"
+      - "crates/os-plugkit/**"
+      - "plugins/**"
+      - "tools/bundle-plugins/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/skell-plugin-bundles.yml"
+      - "crates/os-dsp/**"
+      - "crates/os-engine/**"
+      - "crates/os-host/**"
+      - "crates/os-hostlink/**"
+      - "crates/os-plugkit/**"
+      - "plugins/**"
+      - "tools/bundle-plugins/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skell-plugin-bundles-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  windows-plugin-suite:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run core dynamics, delay, reverb and EQ plugin tests
+        shell: pwsh
+        run: cargo test --locked -p lemon-limiter -p lemon-delay -p lemon-reverb -p lemon-hall -p lemon-parametric-eq-2 -p press -p gross-beat -p fruity-compressor
+
+      - name: Build the complete Windows VST3 and CLAP plugin suite
+        shell: pwsh
+        run: cargo run --locked --release -p bundle-plugins
+
+      - name: Validate requested core plugin bundles and AMD64 modules
+        shell: pwsh
+        run: |
+          $names = @("ML Limiter", "ML Delay", "ML Reverb", "ML Hall", "ML EQ", "ML Press", "Skell Beat", "Skell Compressor")
+          foreach ($name in $names) {
+            $vst3 = Join-Path "target/bundled" "$name.vst3/Contents/x86_64-win/$name.vst3"
+            $clap = Join-Path "target/bundled" "$name.clap"
+            foreach ($module in @($vst3, $clap)) {
+              if (-not (Test-Path -LiteralPath $module -PathType Leaf)) {
+                throw "Missing plugin module: $module"
+              }
+              $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $module))
+              if ($bytes.Length -lt 512 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+                throw "Invalid PE/DOS header: $module"
+              }
+              $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+              if ($pe -lt 0 -or ($pe + 6) -gt $bytes.Length -or
+                  $bytes[$pe] -ne 0x50 -or $bytes[$pe + 1] -ne 0x45 -or
+                  $bytes[$pe + 2] -ne 0 -or $bytes[$pe + 3] -ne 0) {
+                throw "Invalid PE signature: $module"
+              }
+              $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+              if ($machine -ne 0x8664) {
+                throw "Expected AMD64 (0x8664), got 0x$($machine.ToString('x4')): $module"
+              }
+              Write-Host "AMD64 OK: $module ($($bytes.Length) bytes)"
+            }
+          }
+
+      - name: Upload Windows VST3 and CLAP plugin suite
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkellStudio-Windows-x64-VST3-CLAP-Plugin-Suite
+          path: target/bundled/
+          if-no-files-found: error
+          retention-days: 7

@@ -4377,6 +4377,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "gross-beat"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "lemon-small-fx",
+ "nih_plug",
+ "os-plugkit",
+ "os-ui",
+]
+
+[[package]]
+name = "fruity-compressor"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "lemon-small-fx",
+ "nih_plug",
+ "os-plugkit",
+ "os-ui",
+]
+
+[[package]]
 name = "softbuffer"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

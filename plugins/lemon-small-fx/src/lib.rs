@@ -133,6 +133,17 @@ pub trait Sound: Send {
     /// Forgets what the sound holds (a delay line), as at the start of a song.
     fn reset(&mut self);
     fn process(&mut self, left: &mut [f32], right: &mut [f32]);
+    /// Processing with an optional stereo auxiliary/sidechain input. Existing effects ignore it.
+    fn process_with_sidechain(&mut self, left: &mut [f32], right: &mut [f32], sidechain: Option<(&[f32], &[f32])>) {
+        let _ = sidechain;
+        self.process(left, right);
+    }
+    /// Apply the saved binary plug-in state during initialization (not on the audio thread).
+    fn set_saved_state(&mut self, _state: &[u8]) {}
+    /// Host transport for tempo- and song-position-aware effects.
+    fn set_transport(&mut self, _tempo: f64, _position_beats: Option<f64>, _playing: bool) {}
+    /// Processing latency in samples for the current settings (e.g. a look-ahead or pitch corrector).
+    fn latency(&self) -> u32 { 0 }
 }
 
 /// Everything that makes one of the effects.
@@ -196,6 +207,16 @@ impl Spec {
 
 /// What makes a plugin type of one of the effects: its description and its ids.
 pub trait Kind: 'static + Send + Sync {
+    /// Host-visible vendor; existing effects keep their current AQUILA identity unless overridden.
+    const VENDOR: &'static str = "AQUILA";
+    /// Host audio layout. The default is the existing stereo in/out layout.
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
+        AudioIOLayout {
+            main_input_channels: NonZeroU32::new(2),
+            main_output_channels: NonZeroU32::new(2),
+            ..AudioIOLayout::const_default()
+        }
+    ];
     const SPEC: &'static Spec;
     const CLAP_ID: &'static str;
     const CLAP_DESCRIPTION: &'static str;
@@ -225,6 +246,8 @@ pub struct SmallFx<K: Kind> {
     shared: Arc<Shared>,
     /// Made in `initialize` (for the sample rate).
     dsp: Option<Box<dyn Sound>>,
+    /// Last latency reported to the host; refreshed when settings change.
+    latency: u32,
     raw: Vec<u8>,
     raw_seen: u64,
     kind: PhantomData<K>,
@@ -236,6 +259,7 @@ impl<K: Kind> Default for SmallFx<K> {
             params: Arc::new(FxParams::new(K::SPEC)),
             shared: Arc::new(Shared::default()),
             dsp: None,
+            latency: 0,
             raw: params::default_state(K::SPEC),
             raw_seen: u64::MAX,
             kind: PhantomData,
@@ -265,13 +289,12 @@ impl<K: Kind> SmallFx<K> {
 
 impl<K: Kind> Plugin for SmallFx<K> {
     const NAME: &'static str = K::SPEC.name;
-    const VENDOR: &'static str = "AQUILA";
+    const VENDOR: &'static str = K::VENDOR;
     const URL: &'static str = "";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] =
-        &[AudioIOLayout { main_input_channels: NonZeroU32::new(2), main_output_channels: NonZeroU32::new(2), ..AudioIOLayout::const_default() }];
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = K::AUDIO_IO_LAYOUTS;
     const SAMPLE_ACCURATE_AUTOMATION: bool = false;
 
     type SysExMessage = ();
@@ -285,19 +308,22 @@ impl<K: Kind> Plugin for SmallFx<K> {
         Some(Box::new(editor::FxEditor::new(K::SPEC, self.params.clone(), self.shared.clone())))
     }
 
-    fn initialize(&mut self, _layout: &AudioIOLayout, config: &BufferConfig, _ctx: &mut impl InitContext<Self>) -> bool {
+    fn initialize(&mut self, _layout: &AudioIOLayout, config: &BufferConfig, ctx: &mut impl InitContext<Self>) -> bool {
         let rate = config.sample_rate.round() as u32;
         self.shared.rate.store(rate, Ordering::Relaxed);
         self.raw_seen = u64::MAX;
         let s = self.settings();
         let v = &s[..K::SPEC.settings.len()];
         match &mut self.dsp {
-            Some(d) => {
-                d.set_sample_rate(rate);
-                d.set(v);
-            }
+            Some(d) => d.set_sample_rate(rate),
             None => self.dsp = Some((K::SPEC.sound)(rate, v)),
         }
+        if let Some(d) = &mut self.dsp {
+            d.set_saved_state(&self.raw);
+            d.set(v);
+        }
+        self.latency = self.dsp.as_ref().map_or(0, |d| d.latency());
+        ctx.set_latency_samples(self.latency);
         true
     }
 
@@ -307,16 +333,27 @@ impl<K: Kind> Plugin for SmallFx<K> {
         }
     }
 
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &mut impl ProcessContext<Self>) -> ProcessStatus {
+    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, ctx: &mut impl ProcessContext<Self>) -> ProcessStatus {
         let s = self.settings();
         let Some(dsp) = &mut self.dsp else { return ProcessStatus::Normal };
         dsp.set(&s[..K::SPEC.settings.len()]);
+        let transport = ctx.transport();
+        dsp.set_transport(transport.tempo.unwrap_or(120.0), transport.pos_beats(), transport.playing);
+        let sidechain = aux.inputs.first()
+            .map(|b| b.as_slice_immutable())
+            .filter(|channels| channels.len() >= 2)
+            .map(|channels| (&*channels[0], &*channels[1]));
+        let latency = dsp.latency();
+        if latency != self.latency {
+            self.latency = latency;
+            ctx.set_latency_samples(latency);
+        }
         let out = buffer.as_slice();
         if out.len() < 2 {
             return ProcessStatus::Normal;
         }
         let (left, right) = out.split_at_mut(1);
-        dsp.process(left[0], right[0]);
+        dsp.process_with_sidechain(left[0], right[0], sidechain);
         if K::SPEC.rings { ProcessStatus::KeepAlive } else { ProcessStatus::Normal }
     }
 }

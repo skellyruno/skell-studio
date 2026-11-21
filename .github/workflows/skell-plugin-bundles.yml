@@ -15,7 +15,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
   pull_request:
-    branches: [main, feature/skell-fl-fst-presets-lynx-audit-20261120]
+    branches: [main, feature/skell-fl-fst-presets-lynx-audit-20261120, feature/skell-lynx-reeverb2-in-place-20261121]
     paths:
       - ".github/workflows/skell-plugin-bundles.yml"
       - "crates/os-dsp/**"
@@ -47,7 +47,20 @@ jobs:
 
       - name: Run core dynamics, delay, reverb and EQ plugin tests
         shell: pwsh
-        run: cargo test --locked -p lemon-limiter -p lemon-delay -p lemon-reverb -p lemon-hall -p lemon-parametric-eq-2 -p press -p gross-beat -p fruity-compressor
+        run: |
+          $shotDir = Join-Path $env:GITHUB_WORKSPACE "target/skell-plugin-shots"
+          New-Item -ItemType Directory -Force -Path $shotDir | Out-Null
+          $env:OS_SHOT_DIR = $shotDir
+          cargo test --locked -p lemon-limiter -p lemon-delay -p lemon-reverb -p lemon-hall -p lemon-parametric-eq-2 -p press -p gross-beat -p fruity-compressor
+
+      - name: Upload native Skell plugin editor captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkellStudio-Native-Plugin-Editor-Captures
+          path: target/skell-plugin-shots/*.png
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Build the complete Windows VST3 and CLAP plugin suite
         shell: pwsh

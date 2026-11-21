@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! Widget looks of the Lemon design: flat rounded squares on neutral greys, one lemon brand colour; knobs stay
+//! Widget looks used by Skell plug-in editors: matte-black panels, neon-green accents and rounded-square controls; knobs stay
 //! round. Every painter takes the same geometry as its Classic twin in `kit.rs`: the design changes the look,
 //! never the layout. The views call the `DAW parts` below directly where they draw their own shapes.
 // spec: ui/lemon-design.md
@@ -505,15 +505,15 @@ pub fn lemon_mark(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Color) {
     c.line(cx-s*0.1,cy+s,cx+s,cy+s,stroke,col);
 }
 
-/// A plugin wordmark: the lemon mark and "ML" small in lemon above `name` large and grey, right-aligned at
+/// A Skell wordmark: a native skull and "SKELL" in neon green above `name`, right-aligned at
 /// `right` (or left-aligned at `right` when `left`). `top` = top of the small line.
 pub fn wordmark(c: &mut Canvas, x: f32, top: f32, left: bool, name: &str, big: Font, small: Font) {
-    let (wn, ws) = (spaced_width(c, big, name, 3.0), spaced_width(c, small, "ML", 3.0));
+    let (wn, ws) = (spaced_width(c, big, name, 3.0), spaced_width(c, small, "SKELL", 2.0));
     let lh_s = c.line_height(small);
     let x0 = if left { x } else { x - wn };
-    let sx = if left { x0 + 12.0 } else { (x - ws).max(x0 + 12.0) };
-    lemon_mark(c, sx - 8.0, top + lh_s / 2.0, 4.5, brand::MAIN);
-    spaced(c, small, sx, top, brand::MAIN, "ML", 3.0);
+    let sx = if left { x0 + 17.0 } else { (x - ws).max(x0 + 17.0) };
+    skell_mark(c, sx - 10.0, top + lh_s / 2.0, 5.2, brand::MAIN);
+    spaced(c, small, sx, top, brand::MAIN, "SKELL", 2.0);
     spaced(c, big, x0, top + lh_s - 2.0, plug::WORDMARK, name, 3.0);
 }
 

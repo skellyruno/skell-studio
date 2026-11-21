@@ -88,13 +88,15 @@ Limiter, dedicated compressor, Delay, Reverb and EQ have been selected from the 
 
 A separate Pro-style limiter/compressor/EQ (LYNX Apex, Crest, Facet) is not part of this core migration. They are distinct optional products, not replacements for the selected FL processors.
 
-### In-place upgrade license boundary — 2026-11-21
+### In-place LYNX engine replacement — 2026-11-21
 
-The selected LYNX Delay 3, Reeverb 2, Fruity Limiter and Parametric EQ 2 implementations are AGPL-3.0 source. The corresponding existing Skell crates (`lemon-delay`, `lemon-reverb`, `lemon-limiter` and `lemon-parametric-eq-2`) inherit the workspace's `GPL-3.0-or-later` declaration, and `crates/os-app` links all four with the `linked` feature. Directly copying the LYNX engines into these shared crates would cross the current application/plugin licensing boundary and could change the obligations for the combined Studio distribution.
+The user has prioritized direct DSP replacement to get the audio engine work moving. **ML Reverb is now ported in place to the LYNX SHARE Fruity Reeverb 2 engine.** The existing ML Reverb product remains the same plug-in: its display name, VST3 class ID, CLAP ID, 15 parameter IDs, two option IDs, 66-byte FL state codec, preset identity and UI remain unchanged. The new bridge maps the existing raw 15-knob state plus tempo-predelay and mid/side flags directly into LYNX's `reeverb2::Settings`.
 
-**Do not vendor those AGPL engines into the linked crates until the distribution architecture is deliberately resolved.** Viable paths to evaluate are: (1) an explicit decision to distribute the combined Studio under the applicable AGPL terms; (2) a standalone AGPL plug-in module that preserves the existing plug-in identity/state contract without linking its engine into the Studio executable; or (3) a separately authored clean-room implementation that does not copy the AGPL implementation source. Path 2 still needs a careful duplicate-module/host-discovery plan and does not by itself upgrade the in-app linked effect. This is an engineering/licensing gate, not a legal opinion.
+The vendored engine-only translation unit is pinned to LYNX SHARE 0.1.30 commit `88ec555ea2bce9714c92707cc06a5abfd317c900`, excludes LYNX's DAW-specific effect wrapper, and carries its attribution and full AGPL-3.0-only text. The `lemon-reverb` package metadata now reflects that source. Final combined-distribution review is deferred from this implementation milestone; it remains a release follow-up, not a reason to omit the source notices.
 
-Until that decision is made, the existing in-app effects keep their current Rust DSP and saved-state behavior. The 2026-11-21 Skelly Audio vendor-metadata pass is cosmetic only: ML Delay, ML Reverb, ML Limiter and ML EQ retain their current display names, CLAP IDs, VST3 class IDs, parameter IDs and state formats.
+**Local C++ verification:** the selected engine rendered finite output at 44.1, 48 and 96 kHz; host block sizes 1, 17, 64, 127, 512, 2,048 and 8,192 samples matched exactly in the tested 48 kHz render; mid/side mode changed the response; and a 100-block 8,192-frame C ABI bridge stress test recorded zero heap allocations after initialize/reserve. These are engine/bridge smoke checks, not a Windows VST3 host or FL Studio project round-trip.
+
+ML Limiter, ML Delay and ML EQ remain selected for the next in-place ports. Their raw-state, sidechain, automation, latency and editor/analyzer contracts must be mapped before replacement; no duplicate products are planned.
 
 ## Build and test gates
 

@@ -193,7 +193,7 @@ impl LemonEq {
 
 impl Plugin for LemonEq {
     const NAME: &'static str = "ML EQ";
-    const VENDOR: &'static str = "AQUILA";
+    const VENDOR: &'static str = "Skelly Audio";
     const URL: &'static str = "";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -284,7 +284,7 @@ impl Plugin for LemonEq {
 // plugins by them (spec: plugins/plugin-formats.md, identity).
 impl ClapPlugin for LemonEq {
     const CLAP_ID: &'static str = "org.openstudio.open-parametric-eq-2";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("AQUILA's 7-band parametric EQ");
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("Skelly Audio's 7-band parametric EQ");
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::AudioEffect, ClapFeature::Equalizer, ClapFeature::Stereo];

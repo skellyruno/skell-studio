@@ -79,14 +79,14 @@ The selected LYNX Tune engine still needs its own Skell VST3/CLAP wrapper, nativ
 
 ### Existing processor upgrades
 
-Limiter, dedicated compressor, Delay, Reverb and EQ have been selected from the source comparison but have not yet been ported into their Skell plug-ins. The next port must retain:
-- Existing Skell parameter/automation identifiers wherever the control meaning is unchanged.
-- Existing FL state import/export and unknown stored bytes.
-- Preset and session backward compatibility.
-- Sidechain behavior and plug-in delay compensation.
-- Existing UI identity/layout unless an intentional Skell UI improvement is tested.
+The selected in-place LYNX migrations are progressing as separate, compatibility-preserving drafts:
+- **ML Reverb → Fruity Reeverb 2:** ported in PR #16; its Windows VST3/CLAP suite passed.
+- **ML Delay → Fruity Delay 3:** ported in PR #18; its Windows plugin tests and full VST3/CLAP bundle passed.
+- **ML Limiter → Fruity Limiter:** port underway in PR #20; not yet verified.
+- **ML EQ → Parametric EQ 2:** selected, not yet ported.
 
-A separate Pro-style limiter/compressor/EQ (LYNX Apex, Crest, Facet) is not part of this core migration. They are distinct optional products, not replacements for the selected FL processors.
+Each migration keeps the existing product rather than adding a duplicate. The next gates are full host/preset round-trips, sidechain and automation verification, and audio A/B regression checks. A separate Pro-style limiter/compressor/EQ (LYNX Apex, Crest, Facet) remains optional and is not a substitute for these FL processor upgrades.
+
 
 ### In-place LYNX engine replacement — 2026-11-21
 
@@ -96,7 +96,7 @@ The vendored engine-only translation unit is pinned to LYNX SHARE 0.1.30 commit 
 
 **Local C++ verification:** the selected engine rendered finite output at 44.1, 48 and 96 kHz; host block sizes 1, 17, 64, 127, 512, 2,048 and 8,192 samples matched exactly in the tested 48 kHz render; mid/side mode changed the response; and a 100-block 8,192-frame C ABI bridge stress test recorded zero heap allocations after initialize/reserve. These are engine/bridge smoke checks, not a Windows VST3 host or FL Studio project round-trip.
 
-ML Limiter, ML Delay and ML EQ remain selected for the next in-place ports. Their raw-state, sidechain, automation, latency and editor/analyzer contracts must be mapped before replacement; no duplicate products are planned.
+ML Reverb and ML Delay have now been ported in their existing wrappers. ML Limiter is being ported in a separate draft, and ML EQ remains selected for the next pass. No duplicate Limiter, Delay, Reverb or EQ products are planned.
 
 ## Build and test gates
 
@@ -109,16 +109,22 @@ Required before any release:
 4. FL Studio tests with real project/preset state round-trips.
 5. Audio A/B against reference captures and regression tests at 44.1/48/96 kHz, odd block sizes and tempo/transport jumps.
 6. LYNX Tune port and the same Windows/host/DSP checks.
-7. Port the selected Limiter, Compressor, Delay, Reverb and EQ engines one at a time, with their state mappings and regressions.
+7. Complete the Limiter and EQ ports, then verify all upgraded processors together in a real VST3 host and FL Studio projects.
 
 ## Verification boundary
 
 - Existing Skell plugin inventory: confirmed by source inspection.
 - LYNX selection and parity figures: transcribed from the supplied LYNX SHARE source documentation; not independently rerun during this integration.
 - Gross Beat engine C++ bridge: compiled and smoke-tested locally against the supplied LYNX 0.1.30 archive; factory state was 27,046 bytes with 72 slots, the 15-frame dry delay is confirmed in engine source, a selected-slot render produced finite output, and 100 × 4,096-frame processing blocks performed zero measured heap allocations. Variable host blocks (1, 17, 64, 127, 512, 2,048 and 8,192 frames) differed by less than 6×10⁻⁸ in the local render comparison. This is not a Windows plug-in or in-host test.
-- Skell Beat Rust wrapper and Windows VST3/CLAP artifact: pending exact-head CI.
+- Skell Beat Rust wrapper and Windows VST3/CLAP artifact: its exact PR #17 head passed plugin tests, full VST3/CLAP bundling and AMD64 validation. The integrated candidate reruns these gates.
 - LYNX Tune wrapper: selected, not implemented.
-- FL Studio project round-trip, DAW automation, full Gross Beat curve editor, MIDI slot triggering and vocal A/B: not yet verified.
+- Skell Beat MIDI slot selection is implemented and its note-range tests passed, but MIDI host/FL Studio routing, the in-editor MIDI toggle, the full 72-slot curve/point editor, FL project round-trips, DAW automation and vocal A/B are not yet verified.
+
+### In-place LYNX Fruity Delay 3 replacement — 2026-11-21
+
+ML Delay is being ported in place to the pinned LYNX SHARE 0.1.30 Fruity Delay 3 engine. Its existing wrapper, plugin identity, parameter IDs, parameter ordering, 108-byte version-1 state format, FL preset mappings and editor remain unchanged. The adapter passes the current 26 raw stored controls through LYNX's `delay3EngineValue` mapping, applies changed values only (so its smoothing vector does not churn every host block), and sends host tempo at each block. The C++ engine's constructor reserves its internal 26-entry parameter smoothing list and creates the delay/filter buffers during plugin initialization.
+
+Pinned upstream revision: `88ec555ea2bce9714c92707cc06a5abfd317c900`. The engine-only translation unit keeps the LYNX Fruity Delay 3 engine and excludes its DAW-specific effect-slot wrapper and Fruity Delay 2 implementation. Build/test and real host state/preset validation are still required.
 
 
 ### Skell Beat MIDI slot triggering — 2026-11-21
@@ -126,3 +132,7 @@ Required before any release:
 Skell Beat accepts Basic MIDI note input. At each note's sample offset, C5–B7 selects Time slots 1–36 and C2–B4 selects Volume slots 1–36, matching LYNX's Gross Beat keyboard map. New Skell Beat factory states enable MIDI triggering; when an existing FL/Gross Beat state contains an explicit MIDI-trigger option, that saved setting remains authoritative. Note and channel held-state tracking is delegated to LYNX's fixed-capacity `MidiSlots` helper. The plugin dispatches audio in event-bounded slices so a note changes the slot before the corresponding sample. MIDI selection is allocation-free in the callback.
 
 Current gap: the Skell Beat panel does not yet expose the source application's MIDI-trigger toggle or a 72-slot curve/point editor. Those are separate UI/state tasks and are not claimed complete by this MIDI-input port.
+
+### Shared Skell plugin editor identity — 2026-11-21
+
+The shared small-effect editors now use a native vector skull + SKELL wordmark with matte-black/deep-green panels and neon-green accents. Control positions, hit regions, plug-in IDs, automation IDs and saved-state formats remain unchanged. The real renderer capture is uploaded by the Windows plugin-suite workflow for inspection; passing compilation alone is not considered visual verification.

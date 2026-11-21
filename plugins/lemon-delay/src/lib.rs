@@ -1,9 +1,9 @@
 // Copyright (C) 2026 ItsAlphaNeon
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-only
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
 //! Lemon Delay: Lemon Studio's stereo delay (a recreation of FL's Fruity Delay 3) as a VST3 / CLAP plugin
-//! (nih-plug). The sound is `os_engine::effects::delay`.
+//! (nih-plug). The sound is the pinned LYNX SHARE Fruity Delay 3 engine.
 //!
 // spec: plugins/lemon-delay.md, plugins/fruity-delay-3.md, plugins/plugin-formats.md
 #![allow(semicolon_in_expressions_from_non_local_macros)]
@@ -11,13 +11,15 @@
 pub mod editor;
 pub mod params;
 pub mod view;
+mod lynx;
 
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use nih_plug::prelude::*;
-use os_engine::effects::delay::{Delay, Settings};
+use os_engine::effects::delay::Settings;
+use lynx::LynxDelay3;
 
 use params::DelayParams;
 
@@ -38,7 +40,7 @@ pub struct LemonDelay {
     params: Arc<DelayParams>,
     shared: Arc<Shared>,
     /// Made in `initialize` (its lines are sized for the sample rate).
-    dsp: Option<Delay>,
+    dsp: Option<LynxDelay3>,
     raw: Vec<u8>,
     raw_seen: u64,
 }
@@ -95,13 +97,9 @@ impl Plugin for LemonDelay {
         self.raw_seen = u64::MAX;
         let s = self.settings();
         let rate = config.sample_rate.round() as u32;
-        match &mut self.dsp {
-            Some(d) => {
-                d.set_sample_rate(rate);
-                d.set(&s);
-            }
-            None => self.dsp = Some(Delay::with_settings(rate, &s, 120.0)),
-        }
+        let Some(mut dsp) = LynxDelay3::new(rate) else { return false };
+        dsp.set(&s, 120.0);
+        self.dsp = Some(dsp);
         true
     }
 
@@ -114,10 +112,7 @@ impl Plugin for LemonDelay {
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, ctx: &mut impl ProcessContext<Self>) -> ProcessStatus {
         let s = self.settings();
         let Some(dsp) = &mut self.dsp else { return ProcessStatus::Normal };
-        dsp.set(&s);
-        if let Some(bpm) = ctx.transport().tempo {
-            dsp.set_tempo(bpm);
-        }
+        dsp.set(&s, ctx.transport().tempo.unwrap_or(120.0));
         let out = buffer.as_slice();
         if out.len() < 2 {
             return ProcessStatus::Normal;

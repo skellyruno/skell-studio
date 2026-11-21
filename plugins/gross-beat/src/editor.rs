@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use nih_plug::prelude::GuiContext;
 use lemon_small_fx::editor::{self, Extension};
 use lemon_small_fx::params::FxParams;
-use lemon_small_fx::view::{self, Target, ViewState};
+use lemon_small_fx::view::{self, ViewState};
 use os_theme::design::lemon as brand;
 use os_ui::kit::lemon::plug;
 use os_ui::{Canvas, Color, Font, Rect};
@@ -22,6 +22,7 @@ unsafe extern "C" {
     fn lynx_gb_state_get_point(data: *const u8, size: usize, slot: i32, index: i32,
         x: *mut f64, y: *mut f32, tension: *mut f32, kind: *mut i32) -> bool;
     fn lynx_gb_state_render_slot(data: *const u8, size: usize, slot: i32, out: *mut f32, count: i32) -> i32;
+    fn lynx_gb_state_level(data: *const u8, size: usize, slot: i32, beat: f64) -> f32;
     fn lynx_gb_state_midi_trigger(data: *const u8, size: usize) -> i32;
     fn lynx_gb_state_edit(data: *const u8, size: usize, operation: i32, slot: i32, index: i32,
         x: f64, y: f32, kind: i32, tension: f32, out: *mut u8, capacity: i32, result_index: *mut i32) -> i32;
@@ -155,10 +156,6 @@ impl BeatEditorExtension {
         (GRAPH_X + (point.x / 4.0) as f32 * GRAPH_W, GRAPH_Y + (1.0 - point.y) * GRAPH_H)
     }
 
-    fn set_selected(&self, ui: &mut UiState, selected: Option<usize>) {
-        ui.selected = selected;
-    }
-
     fn cycle_curve(&self, ui: &UiState) {
         let Some(index) = ui.selected else { return };
         let raw = self.raw();
@@ -166,14 +163,6 @@ impl BeatEditorExtension {
         let Some(p) = self.point(&raw, slot, index) else { return };
         let kind = (p.kind + 1) % CURVE_NAMES.len() as i32;
         let _ = self.edit(3, slot, index, p.x, p.y, kind, p.tension);
-    }
-
-    fn add_at(&self, ui: &mut UiState, x: f64, y: f32) {
-        let slot = Self::slot_index(ui);
-        if let Some(index) = self.edit(1, slot, 0, x, y, 2, 0.0) {
-            ui.selected = Some(index);
-            ui.dragging = false;
-        }
     }
 
     fn draw_text(c: &mut Canvas, x: f32, y: f32, color: Color, text: &str) {
@@ -334,12 +323,10 @@ impl Extension for BeatEditorExtension {
             if x >= 538.0 && x <= 622.0 {
                 let raw = self.raw();
                 let count = self.point_count(&raw, slot);
-                let level = if count > 0 {
-                    let mut out = vec![1.0f32; 1];
-                    let ok = unsafe { lynx_gb_state_render_slot(raw.as_ptr(), raw.len(), slot, out.as_mut_ptr(), 1) } == 1;
-                    if ok { out[0] } else { 1.0 }
-                } else { 1.0 };
                 let beat = if let Some(p) = ui.selected.and_then(|i| self.point(&raw, slot, i)) { (p.x + 0.25).min(3.9) } else { 2.0 };
+                let level = if count > 0 {
+                    unsafe { lynx_gb_state_level(raw.as_ptr(), raw.len(), slot, beat) }
+                } else { 1.0 };
                 if let Some(index) = self.edit(1, slot, 0, beat, level, 2, 0.0) {
                     ui.selected = Some(index);
                 }

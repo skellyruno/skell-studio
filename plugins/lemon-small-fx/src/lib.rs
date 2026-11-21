@@ -331,6 +331,10 @@ impl<K: Kind> Plugin for SmallFx<K> {
             None => self.dsp = Some((K::SPEC.sound)(rate, v)),
         }
         if let Some(d) = &mut self.dsp {
+            let capacity = d.state_capacity_hint();
+            if self.raw.capacity() < capacity {
+                self.raw.reserve(capacity.saturating_sub(self.raw.len()));
+            }
             d.set_saved_state(&self.raw);
             if let Some(extension) = self.shared.extension.clone() {
                 d.bind_editor(extension);

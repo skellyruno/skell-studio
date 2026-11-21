@@ -130,6 +130,8 @@ impl Sound for BeatSound {
         extension.bind_engine_handle(self.instance.as_ptr() as usize);
     }
 
+    fn state_capacity_hint(&self) -> usize { 1_048_576 }
+
     fn midi_note(&mut self, on: bool, channel: u8, note: u8) {
         unsafe { lynx_gb_note(self.instance.as_ptr(), on, i32::from(channel), i32::from(note)); }
     }

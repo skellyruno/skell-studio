@@ -10,6 +10,7 @@ on:
       - "crates/os-host/**"
       - "crates/os-hostlink/**"
       - "crates/os-plugkit/**"
+      - "crates/os-vst3/**"
       - "plugins/**"
       - "tools/bundle-plugins/**"
       - "Cargo.toml"

@@ -60,5 +60,5 @@ mod tests {
         let expected=render(48000,4096,false);
         for n in [1,17,64,127,512,2048,8192]{assert_eq!(expected,render(48000,n,false),"block {n}");}
     }
-    #[test] fn 96khz_remains_finite(){let x=render(96000,257,false);assert!(x.iter().all(|v|v.is_finite()));}
+    #[test] fn sample_rate_96khz_remains_finite(){let x=render(96000,257,false);assert!(x.iter().all(|v|v.is_finite()));}
 }

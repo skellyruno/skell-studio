@@ -15262,3 +15262,14 @@ Vintage FL Studio artwork and cursor resources
 Original artwork: Image-Line / respective rights holders. Included with
 redistribution permission confirmed by the Lemon Studio publisher. See
 crates/os-app/assets/vintage-2005/README.txt and manifest.json in the source.
+
+
+LYNX SHARE — Fruity Parametric EQ 2 DSP
+========================================
+Source: https://github.com/Ka1-S/LYNX-SHARE
+Pinned source snapshot: LYNX SHARE 0.1.30, commit 88ec555ea2bce9714c92707cc06a5abfd317c900.
+Adapted files: ParametricEqFl.h/.cpp, ParametricEqLinear.h/.cpp, Simd.h and CpuFeatures.h. The DAW model is replaced
+by a minimal EffectParams shim; no LYNX application, UI or JUCE code is included.
+License: GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+Full license: plugins/lemon-parametric-eq-2/vendor/lynx/LICENSE-AGPL-3.0.txt.
+The standalone VST3/CLAP target links this source; the Studio linked build keeps its existing in-tree EQ.

@@ -15,6 +15,8 @@ pub mod editor;
 pub mod params;
 pub mod view;
 pub mod visibility;
+#[cfg(not(feature = "linked"))]
+mod lynx;
 
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicI32, Ordering};
@@ -96,6 +98,9 @@ pub struct LemonEq {
     offline: bool,
     /// The original's processing (every mode), and the parameters it was last given as stored values.
     eq: Equalizer,
+    #[cfg(not(feature = "linked"))]
+    lynx_eq: lynx::LynxEq,
+    routes: [u8; 7],
     gain_match:gain_match::GainMatch,
     audition:os_engine::effects::eq::dynamic::Audition,
     applied: [i32; PARAMS],
@@ -121,6 +126,9 @@ impl Default for LemonEq {
             gain_match:gain_match::GainMatch::default(),
             audition:os_engine::effects::eq::dynamic::Audition::new(44100.),
             eq: Equalizer::new(44100.0, &applied, opts),
+            #[cfg(not(feature = "linked"))]
+            lynx_eq: lynx::LynxEq::new(44100, &applied, opts).expect("LYNX EQ initialization"),
+            routes: [0; 7],
             applied,
             opts,
             latency: 0,
@@ -140,7 +148,8 @@ impl LemonEq {
         }
         if let Ok(b) = self.params.extra.try_read() {
             self.opts = Options::from_image(&b);
-            self.eq.set_routes(routed::routes(&b,false));
+            self.routes = routed::routes(&b,false);
+            self.eq.set_routes(self.routes);
             self.monitor = (params::byte(&b, params::MONITOR_BYTE), params::opt(&b, params::Opt::MonitorInput));
             self.extra_seen = v;
         }
@@ -159,14 +168,39 @@ impl LemonEq {
                 self.eq.set_param(i, new);
             }
         }
+        #[cfg(not(feature = "linked"))]
+        self.lynx_eq.set(&p, self.opts);
     }
 
     fn process_eq(&mut self, left: &mut [f32], right: &mut [f32], solo: Option<usize>) {
+        #[cfg(feature = "linked")]
         self.eq.process(left, right);
+        #[cfg(not(feature = "linked"))]
+        {
+            if self.routes == [0; 7] {
+                self.lynx_eq.process(left, right);
+                self.eq.process_dynamic_only(left, right);
+            } else {
+                self.eq.process(left, right);
+            }
+        }
         // Isolate the monitoring range without changing the EQ's routing, enable mask or delay.
         if let Some(k) = solo {
             let band = self.params.settings(self.opts.mask).bands[k];
             self.audition.process(left, right, band);
+        }
+    }
+
+    fn engine_latency(&self) -> u32 {
+        #[cfg(feature = "linked")]
+        { self.eq.latency() as u32 }
+        #[cfg(not(feature = "linked"))]
+        {
+            if self.routes == [0; 7] {
+                self.lynx_eq.latency().saturating_add(self.eq.dynamic_latency() as u32)
+            } else {
+                self.eq.latency() as u32
+            }
         }
     }
 
@@ -226,11 +260,17 @@ impl Plugin for LemonEq {
         self.read_extra();
         self.applied = self.params.settings(self.opts.mask).params();
         self.eq = Equalizer::new(self.sr, &self.applied, self.opts);
-        self.eq.set_routes(routed::routes(&self.params.extra_copy(),false));
+        self.routes = routed::routes(&self.params.extra_copy(),false);
+        self.eq.set_routes(self.routes);
+        #[cfg(not(feature = "linked"))]
+        {
+            self.lynx_eq = lynx::LynxEq::new(config.sample_rate as u32, &self.applied, self.opts)
+                .expect("LYNX EQ initialization");
+        }
         // Restore dynamics before reporting latency. CLAP reinitializes after a live delay
         // change; reporting the static-only delay here causes an endless restart/reset loop.
         self.apply();
-        self.latency = self.eq.latency() as u32;
+        self.latency = self.engine_latency();
         ctx.set_latency_samples(self.latency);
         self.feed = Vec::with_capacity(config.max_buffer_size as usize);
         true
@@ -241,6 +281,8 @@ impl Plugin for LemonEq {
         self.gain_match.reset();
         self.eq.reset();
         self.eq.preroll();
+        #[cfg(not(feature = "linked"))]
+        self.lynx_eq.reset();
     }
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, ctx: &mut impl ProcessContext<Self>) -> ProcessStatus {
@@ -249,7 +291,7 @@ impl Plugin for LemonEq {
             .then_some(solo as usize);
         self.apply();
         // The delay is looked at every block and reported when it has changed (LIN on or off, its size, HQ Enhanced).
-        let latency = self.eq.latency() as u32;
+        let latency = self.engine_latency();
         if latency != self.latency {
             self.latency = latency;
             ctx.set_latency_samples(latency);

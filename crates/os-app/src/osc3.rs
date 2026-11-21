@@ -335,7 +335,7 @@ mod tests {
         let state = fst_state(&listed[0].path, LEMON_TRIO).unwrap().unwrap();
         assert_eq!(
             lemon_3x_osc::params::fl_from_plugin_state(&state),
-            Some(fl)
+            Some(fl.clone())
         );
         assert!(fst_state(&listed[0].path, crate::citrus::CITRUS).is_none());
 

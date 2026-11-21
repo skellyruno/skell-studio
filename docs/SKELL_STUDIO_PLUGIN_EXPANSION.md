@@ -1,6 +1,6 @@
 # Skell Studio plugin selection and expansion plan
 
-Audit date: 2026-11-20
+Audit date: 2026-11-21
 
 ## Selection rule
 
@@ -52,13 +52,14 @@ Implemented on this branch:
 - MIDI note-to-slot triggering: C5–B7 selects Time slots 1–36 and C2–B4 selects Volume slots 1–36. Event-bounded processing applies note events at their sample offsets.
 - Host parameter controls remain available alongside the curve workspace.
 - Host state serialization preserves the complete binary slot map, including all 72 maps and MIDI option. The 1 MiB state capacity is reserved before audio processing.
-- Seven Beat tests passed on the previous validation revision, including the full 72-slot state restore and editor workspace test. The current revision moves the left section heading upward after the real screenshot exposed overlap with the tab row; a fresh capture is required to confirm the correction.
+- The full Skell Beat test group passed on the exact Windows plugin-suite revision (including all 72-slot state/edit persistence, MIDI trigger and editor workspace checks). The fresh native capture confirms the left section title moved to y=218 and no longer overlaps the tab row.
 - VST3/CLAP bundle manifest and Windows AMD64 artifact-validation workflow.
 - Full AGPL license text and source attribution are included.
 
 Still unverified:
-- A real VST3 host save/close/reopen round-trip and a complete FL Studio project save/reopen round-trip.
-- A real DAW host scan/automation pass, audio A/B and CPU profiling.
+- Third-party DAW plugin scanning, automation recording/replay, and editor lifecycle checks in a full external host.
+- A complete FL Studio project save/close/reopen round-trip. The Studio VST3 host now verifies the FL wrapper chunk and VST3 preset state, but this is not a full FL Studio application session test.
+- Audio A/B and CPU/real-time profiling.
 - Factory envelopes are the LYNX clean-room factory bank based on documented behaviour; no proprietary FL factory assets were copied.
 
 ### Skell Compressor — first integration pass
@@ -72,7 +73,7 @@ Implemented on this branch:
 - FL binary state layout v1–v3, including preservation of flags/sidechain bytes not directly exposed as automation.
 - Shared Skell native editor and Windows VST3/CLAP bundle gate.
 
-Local C++ verification against the uploaded LYNX SHARE 0.1.30 source: zero allocations during 100 processing blocks, bit-identical output across the tested 1/17/64/127/512/2048/4096/8192 block sizes, finite output, and a measured difference when an external sidechain is used. Exact Windows Rust/plugin build and real-host state/sidechain tests are still pending.
+Local C++ verification against the uploaded LYNX SHARE 0.1.30 source: zero allocations during 100 processing blocks, bit-identical output across the tested 1/17/64/127/512/2048/4096/8192 block sizes, finite output, and a measured difference when an external sidechain is used. The exact-head Windows Rust/plugin tests and VST3/CLAP bundle builds now pass. Full external-host automation, sidechain A/B, FL Studio project state reopen and CPU profiling remain.
 
 ### AutoTune-style pitch correction — Skell Tune wrapper
 
@@ -80,11 +81,11 @@ LYNX Tune remains the selected engine; the duplicate SnapTune wrapper is not bei
 
 The first Skell UI exposes Key, Scale, Retune, Humanize, Formant Shift, Transpose, Mix and Voice Range. Basic MIDI input is accepted, note masks from all host MIDI channels are merged for the engine's selected MIDI source, and the engine's fixed PDC latency is reported to the host. The wrapper has a new, distinct CLAP ID and VST3 class ID; the existing SnapTune source and all existing plugin identities remain untouched.
 
-Tests cover control text/parse stability, host parameter-field serialization, MIDI note forwarding, finite audio and latency reporting. The first Windows test attempt compiled the C++ Tune engine but stopped on a missing Rust `Params` trait import in the new state test. That import and the explicit `linked` feature declaration are now fixed; the corrected exact-head CI result is pending. The current wrapper exposes the core controls only; LYNX's extended vibrato, speed-link, note-map, custom-scale and reference-tone options remain engine defaults and are not yet surfaced as Skell controls.
+Tests cover control text/parse stability, parameter-state serialization, editor rendering, finite audio/PDC/MIDI handling, and a measured off-scale tone correction. The exact-head Windows plugin test group, MSVC release-mode VST3/CLAP bundle build, Studio-host module load, parameter edit, FL-wrapper save/restore and VST3 preset restore all pass. The wrapper exposes the core eight controls only; LYNX's extended vibrato, speed-link, note-map, custom-scale and reference-tone options remain engine defaults and are not yet surfaced as Skell controls.
 
 ### Existing processor upgrades
 
-The selected in-place LYNX engine adapters are now present for ML Limiter, ML Delay, ML Reverb and the normal static stereo path of ML EQ. ML EQ retains the existing dynamic stage and routes non-default band-routing configurations through the established routed engine until that graph is ported. Skell Compressor remains a separate, distinct plug-in. The integrations preserve the existing host-facing identities and stored-state layouts by design; real host automation and full DAW state reopen tests remain required.
+The selected in-place LYNX engine adapters are now present for ML Limiter, ML Delay, ML Reverb and the normal static stereo path of ML EQ. ML EQ retains the existing dynamic stage and routes non-default band-routing configurations through the established routed engine until that graph is ported. Skell Compressor remains a separate, distinct plug-in. The integrations preserve existing host-facing IDs and stored-state layouts. Exact-head plugin tests and the VST3 host state round-trip are green for ML EQ, Skell Beat and Skell Tune; the existing Limiter/Delay/Reverb upgrades still need explicit external-DAW automation, sidechain/PDC and FL project reopen passes.
 
 A separate Pro-style limiter/compressor/EQ (LYNX Apex, Crest, Facet) is not part of this core migration. They are distinct optional products, not replacements for the selected FL processors.
 
@@ -100,25 +101,26 @@ ML Limiter, ML Delay, ML Reverb and ML EQ now have selected in-place engine inte
 
 ## Build and test gates
 
-The branch adds a Windows VST3/CLAP build-and-bundle gate for the plugin suite. It tests ML Limiter, ML Delay, ML Reverb, ML Hall, ML EQ, ML Press, Skell Beat, Skell Compressor and Skell Tune, packages VST3 and CLAP modules, validates AMD64 PE headers and uploads the artifact for inspection.
+The branch adds a Windows VST3/CLAP build-and-bundle gate for the plugin suite. On 2026-11-21 the exact-head test step passed, the full Release VST3/CLAP package build passed, the Studio VST3 host round-trip passed for ML EQ/Skell Beat/Skell Tune, the nine named core products passed AMD64 PE-header validation (18 VST3/CLAP modules), and the 66-module suite artifact uploaded successfully.
 
 Required before any release:
-1. Exact-head Windows Rust tests, plug-in compilation and VST3/CLAP bundle validation.
-2. Gross Beat transport, block-size, state restore, reset/seek and parameter automation tests; add audio-thread allocation audit and measured CPU.
-3. Real Windows VST3 host scan, editor open/close/resize and host state save/restore.
-4. FL Studio tests with real project/preset state round-trips.
-5. Audio A/B against reference captures and regression tests at 44.1/48/96 kHz, odd block sizes and tempo/transport jumps.
-6. Finish LYNX Tune's extended controls and run vocal A/B, CPU, allocation and host MIDI checks.
-7. Complete real host and project/preset state save/reopen validation for each affected plugin, including the remaining compressor, routing and sidechain cases.
+1. Run a full Windows third-party DAW scan, automation recording/replay, editor open/close/resize and latency/PDC check across the shipped VST3s.
+2. Run FL Studio application-level project and preset save/close/reopen tests. The current Studio host validates component state wrapped in FL's VST3 state container; that does not replace the FL Studio app test.
+3. Perform blind audio A/B against reference captures at 44.1/48/96 kHz, odd callback sizes, tempo/transport jumps and real vocal material for Tune.
+4. Profile CPU and latency, and audit audio-thread allocations/locks for Beat's queued state swap and the Tune/EQ engines under stress.
+5. Finish Tune's extended vibrato, speed-link, keyboard mapping and reference-tone controls, then re-run the vocal benchmarks.
+6. Port the non-default EQ routing graph into LYNX or maintain/document the existing routed-engine fallback; validate dynamic/spectral interactions.
+7. Verify Limiter/Delay/Reverb/Compressor FL parameter/state/sidechain/PDC compatibility in a real FL Studio project.
 
 ## Verification boundary
 
 - Existing Skell plugin inventory: confirmed by source inspection.
 - LYNX selection and parity figures: transcribed from the supplied LYNX SHARE source documentation; not independently rerun during this integration.
 - Gross Beat engine C++ bridge: compiled and smoke-tested locally against the supplied LYNX 0.1.30 archive; factory state was 27,046 bytes with 72 slots, the 15-frame dry delay is confirmed in engine source, a selected-slot render produced finite output, and 100 × 4,096-frame processing blocks performed zero measured heap allocations. Variable host blocks (1, 17, 64, 127, 512, 2,048 and 8,192 frames) differed by less than 6×10⁻⁸ in the local render comparison. This is not a Windows plug-in or in-host test.
-- Skell Beat's full 72-slot curve editor, MIDI mapping and host-field serialization tests are implemented; its seven tests passed on the prior plugin-suite revision. A refreshed post-layout-fix capture and latest exact-head suite are pending.
-- LYNX Tune's separate Windows VST3/CLAP wrapper and C++ engine source are implemented; the first MSVC C++ compile succeeded, while the first Rust test compile found a missing trait import. The trait import and feature declaration fix are in the latest candidate; exact-head CI is pending.
-- Native VST3 host scan/save/reopen and FL Studio project save/reopen remain unverified. Current coverage is plugin parameter-state field serialization, Beat's complete 72-slot state serialization test, and the separate FL FST preset-import regression.
+- Skell Beat's complete 72-slot editor and MIDI mapping passed its exact-head Windows test group. The fresh native capture confirms the y=218 title fix; all 72 slot maps and MIDI option persistence are tested.
+- LYNX Tune's distinct Windows VST3/CLAP wrapper and pinned YIN/TD-PSOLA C++ engine passed exact-head tests, MSVC Release bundle build, UI capture, in-process VST3 load, parameter edit, component-state restore and preset-state restore.
+- The Studio's real VST3 host loaded ML EQ, Skell Beat and Skell Tune from their built Windows VST3 bundles. For each it changed a host parameter, saved the host wrapper state, loaded it into a fresh instance and restored the same value from both the wrapper and a VST3 preset container. This is confirmed in Actions run 44913193451.
+- FL Studio application project/session save/reopen remains unverified. The existing FL FST preset-import regression is a separate compatibility test, not a substitute for a full DAW session round-trip.
 
 ### In-place LYNX Fruity Delay 3 replacement — 2026-11-21
 

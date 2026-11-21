@@ -321,7 +321,6 @@ fn hosts_an_effect() {
 #[test]
 fn automation_is_sample_accurate() {
     use os_engine::HostedEffect;
-    use os_host::Plugin as _;
     use vst3_sys::vst::{IParamValueQueue, IParameterChanges};
     let Some(m) = module("Lemon Parametric EQ") else { return };
     let mut p = Plugin::new(&m, &m.plugins()[0].id).unwrap();

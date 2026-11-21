@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license = "AGPL-3.0-only"
 
+[features]
+linked = []
+
 [lib]
 crate-type = ["cdylib", "lib"]
 doctest = false

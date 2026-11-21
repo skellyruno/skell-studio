@@ -249,7 +249,8 @@ mod tests {
 
         let rate = 48000u32;
         let mut sound = TuneSound::new(rate, &[0, 1, 0, 0, 0, 0, 1000, 1]);
-        let mut left = tone(rate, 233.082f32, 1.5);
+        // 238 Hz is about 58.36 MIDI: B3 is nearer than A3 in C major, avoiding an exact tie.
+        let mut left = tone(rate, 238.0f32, 1.5);
         let mut right = left.clone();
         sound.process(&mut left, &mut right);
         let measured = estimate_hz(&left[rate as usize..], rate as f32)

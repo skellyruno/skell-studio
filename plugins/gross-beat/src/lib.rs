@@ -234,6 +234,23 @@ mod tests {
     }
 
     #[test]
+    fn midi_notes_select_the_matching_time_and_volume_slots() {
+        let state = factory_state();
+        let instance = ptr::NonNull::new(unsafe { lynx_gb_new(48000, 4096) })
+            .expect("Gross Beat bridge allocation");
+        assert!(unsafe { lynx_gb_load(instance.as_ptr(), state.as_ptr(), state.len()) });
+        // Gross Beat's key map: C5..B7 => time 1..36; C2..B4 => volume 1..36.
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 60) }, 0);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 95) }, 35);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 24) }, 36);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 59) }, 71);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 23) }, -1);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 96) }, -1);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 16, 60) }, -1);
+        unsafe { lynx_gb_delete(instance.as_ptr()); }
+    }
+
+    #[test]
     fn playback_is_finite_and_responds_to_time_slot_selection() {
         let state = factory_state();
         let mut sound = BeatSound::new(48000, &[0, 0, 256, 256, 1765, 5000, 0, 0]);

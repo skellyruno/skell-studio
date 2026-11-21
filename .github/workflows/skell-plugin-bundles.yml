@@ -15,7 +15,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
   pull_request:
-    branches: [main]
+    branches: [main, feature/skell-fl-fst-presets-lynx-audit-20261120]
     paths:
       - ".github/workflows/skell-plugin-bundles.yml"
       - "crates/os-dsp/**"

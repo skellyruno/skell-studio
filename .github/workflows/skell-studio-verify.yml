@@ -10,12 +10,13 @@ on:
       - "crates/os-theme/**"
       - "crates/os-paths/**"
       - "plugins/smith/**"
+      - "plugins/lemon-reverb/**"
       - "plugins/lemon-chop/**"
       - "crates/os-hostlink/**"
       - "Cargo.toml"
       - "Cargo.lock"
   pull_request:
-    branches: [main]
+    branches: [main, feature/skell-fl-fst-presets-lynx-audit-20261120]
     paths:
       - ".github/workflows/skell-studio-verify.yml"
       - "crates/os-app/**"

@@ -6,15 +6,12 @@ edition.workspace = true
 license = "AGPL-3.0-only"
 
 [features]
+default = []
 linked = []
 
 [lib]
 crate-type = ["cdylib", "lib"]
 doctest = false
-
-[features]
-default = []
-linked = []
 
 [dependencies]
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", default-features = false, features = ["vst3"] }

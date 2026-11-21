@@ -134,7 +134,7 @@ impl Sound for BeatSound {
 
     fn set_saved_state(&mut self, state: &[u8]) {
         if !state.is_empty() {
-            let ok = unsafe { lynx_gb_load(self.instance.as_ptr(), state.as_ptr(), state.len()); }
+            let ok = unsafe { lynx_gb_load(self.instance.as_ptr(), state.as_ptr(), state.len()) };
             debug_assert!(ok, "Gross Beat saved state could not be parsed");
             if ok { self.apply_params(); }
         }

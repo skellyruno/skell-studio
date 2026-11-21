@@ -6,6 +6,9 @@
 use lemon_small_fx::{Card, Control, Kind, Mark, Setting, SmallFx, Sound, Spec};
 use nih_plug::prelude::{nih_export_clap, nih_export_vst3, ClapFeature, Vst3SubCategory};
 use std::{ffi::c_void, ptr};
+use std::sync::Arc;
+
+mod editor;
 
 unsafe extern "C" {
     fn lynx_gb_factory_state(out: *mut u8, capacity: i32) -> i32;
@@ -19,6 +22,16 @@ unsafe extern "C" {
     fn lynx_gb_process(instance: *mut c_void, left: *mut f32, right: *mut f32, frames: i32);
     fn lynx_gb_reset(instance: *mut c_void);
     fn lynx_gb_latency() -> i32;
+    fn lynx_gb_state_point_count(data: *const u8, size: usize, slot: i32) -> i32;
+    fn lynx_gb_state_get_point(data: *const u8, size: usize, slot: i32, index: i32,
+        x: *mut f64, y: *mut f32, tension: *mut f32, kind: *mut i32) -> bool;
+    fn lynx_gb_state_render_slot(data: *const u8, size: usize, slot: i32, out: *mut f32, count: i32) -> i32;
+    fn lynx_gb_state_midi_trigger(data: *const u8, size: usize) -> i32;
+    fn lynx_gb_state_edit(data: *const u8, size: usize, operation: i32, slot: i32, index: i32,
+        x: f64, y: f32, kind: i32, tension: f32, out: *mut u8, capacity: i32, result_index: *mut i32) -> i32;
+    fn lynx_gb_state_set_midi_trigger(data: *const u8, size: usize, enabled: bool,
+        out: *mut u8, capacity: i32) -> i32;
+    fn lynx_gb_queue_state(instance: *mut c_void, data: *const u8, size: usize) -> bool;
 }
 
 const SETTINGS: [Setting; 8] = [
@@ -33,14 +46,14 @@ const SETTINGS: [Setting; 8] = [
 ];
 
 const CONTROLS: [Control; 8] = [
-    Control::Knob { id: "time_slot", cx: 52.0, cy: 128.0, r: 21.0, caption: "TIME SLOT", bipolar: false },
-    Control::Knob { id: "volume_slot", cx: 149.0, cy: 128.0, r: 21.0, caption: "VOLUME SLOT", bipolar: false },
-    Control::Knob { id: "time_mix", cx: 246.0, cy: 128.0, r: 21.0, caption: "TIME MIX", bipolar: false },
-    Control::Knob { id: "volume_mix", cx: 343.0, cy: 128.0, r: 21.0, caption: "VOLUME MIX", bipolar: false },
-    Control::Knob { id: "attack", cx: 440.0, cy: 128.0, r: 21.0, caption: "ATTACK", bipolar: false },
-    Control::Knob { id: "release", cx: 537.0, cy: 128.0, r: 21.0, caption: "RELEASE", bipolar: false },
-    Control::Knob { id: "tension", cx: 634.0, cy: 128.0, r: 21.0, caption: "TENSION", bipolar: true },
-    Control::Knob { id: "hold", cx: 731.0, cy: 128.0, r: 21.0, caption: "HOLD", bipolar: false },
+    Control::Knob { id: "time_slot", cx: 72.0, cy: 126.0, r: 21.0, caption: "TIME SLOT", bipolar: false },
+    Control::Knob { id: "volume_slot", cx: 208.0, cy: 126.0, r: 21.0, caption: "VOLUME SLOT", bipolar: false },
+    Control::Knob { id: "time_mix", cx: 344.0, cy: 126.0, r: 21.0, caption: "TIME MIX", bipolar: false },
+    Control::Knob { id: "volume_mix", cx: 480.0, cy: 126.0, r: 21.0, caption: "VOLUME MIX", bipolar: false },
+    Control::Knob { id: "attack", cx: 616.0, cy: 126.0, r: 21.0, caption: "ATTACK", bipolar: false },
+    Control::Knob { id: "release", cx: 752.0, cy: 126.0, r: 21.0, caption: "RELEASE", bipolar: false },
+    Control::Knob { id: "tension", cx: 888.0, cy: 126.0, r: 21.0, caption: "TENSION", bipolar: true },
+    Control::Knob { id: "hold", cx: 1024.0, cy: 126.0, r: 21.0, caption: "HOLD", bipolar: false },
 ];
 
 fn factory_state() -> Vec<u8> {
@@ -113,6 +126,10 @@ impl BeatSound {
 }
 
 impl Sound for BeatSound {
+    fn bind_editor(&mut self, extension: Arc<dyn lemon_small_fx::editor::Extension>) {
+        extension.bind_engine_handle(self.instance.as_ptr() as usize);
+    }
+
     fn midi_note(&mut self, on: bool, channel: u8, note: u8) {
         unsafe { lynx_gb_note(self.instance.as_ptr(), on, i32::from(channel), i32::from(note)); }
     }
@@ -178,12 +195,12 @@ pub const SPEC: &Spec = &Spec {
     tail: &[],
     blank: Some(factory_state),
     locate: Some(state_parameter_offset),
-    size: (784, 258),
-    cards: &[Card { x0: 8.0, x1: 776.0, y0: 22.0, y1: 215.0, heading: "TIME TRAVEL & VOLUME" }],
+    size: (1100, 540),
+    cards: &[Card { x0: 8.0, x1: 1092.0, y0: 22.0, y1: 195.0, heading: "TIME TRAVEL & VOLUME" }],
     controls: &CONTROLS,
     display: None,
-    mark: Mark { x: 770.0, y: 240.0, anchor: 1.0, stacked: false },
-    hint: Some(os_ui::Rect::new(12.0, 222.0, 500.0, 18.0)),
+    mark: Mark { x: 1088.0, y: 526.0, anchor: 1.0, stacked: false },
+    hint: None,
     labels: &[],
     text,
     parse,
@@ -194,6 +211,9 @@ pub const SPEC: &Spec = &Spec {
 pub struct BeatKind;
 
 impl Kind for BeatKind {
+    fn editor_extension(params: Arc<lemon_small_fx::params::FxParams>) -> Option<Arc<dyn lemon_small_fx::editor::Extension>> {
+        Some(Arc::new(editor::BeatEditorExtension::new(params)))
+    }
     const MIDI_INPUT: nih_plug::prelude::MidiConfig = nih_plug::prelude::MidiConfig::Basic;
     const VENDOR: &'static str = "Skell Audio";
     const SPEC: &'static Spec = SPEC;
@@ -221,6 +241,42 @@ mod tests {
         (0..(rate as f32 * seconds) as usize)
             .map(|i| (std::f32::consts::TAU * 220.0 * i as f32 / rate as f32).sin() * 0.25)
             .collect()
+    }
+
+    #[test]
+    fn curve_state_editing_preserves_all_72_slots_and_midi_option() {
+        let state = factory_state();
+        let slot = 12;
+        let count = unsafe { lynx_gb_state_point_count(state.as_ptr(), state.len(), slot) };
+        assert!(count >= 2);
+        let (mut x, mut y, mut tension, mut kind) = (0.0, 0.0, 0.0, 0);
+        assert!(unsafe { lynx_gb_state_get_point(state.as_ptr(), state.len(), slot, 1,
+            &mut x, &mut y, &mut tension, &mut kind) });
+        let mut selected = -1;
+        let needed = unsafe { lynx_gb_state_edit(state.as_ptr(), state.len(), 3, slot, 1,
+            x, y, kind, 0.25, std::ptr::null_mut(), 0, &mut selected) };
+        assert!(needed > 0);
+        let mut changed = vec![0u8; needed as usize];
+        assert_eq!(unsafe { lynx_gb_state_edit(state.as_ptr(), state.len(), 3, slot, 1,
+            x, y, kind, 0.25, changed.as_mut_ptr(), needed, &mut selected) }, needed);
+        assert!(changed.len() >= state.len() - 64);
+        for other in 0..72 {
+            assert!(unsafe { lynx_gb_state_point_count(changed.as_ptr(), changed.len(), other) } >= 2,
+                "slot {other} was lost during state serialization");
+        }
+        assert_eq!(unsafe { lynx_gb_state_midi_trigger(changed.as_ptr(), changed.len()) }, 1);
+        let midi_needed = unsafe { lynx_gb_state_set_midi_trigger(changed.as_ptr(), changed.len(),
+            false, std::ptr::null_mut(), 0) };
+        assert!(midi_needed > 0);
+        let mut midi_off = vec![0u8; midi_needed as usize];
+        assert_eq!(unsafe { lynx_gb_state_set_midi_trigger(changed.as_ptr(), changed.len(),
+            false, midi_off.as_mut_ptr(), midi_needed) }, midi_needed);
+        assert_eq!(unsafe { lynx_gb_state_midi_trigger(midi_off.as_ptr(), midi_off.len()) }, 0);
+        let mut px = 0.0; let mut py = 0.0; let mut pt = 0.0; let mut pk = 0;
+        assert!(unsafe { lynx_gb_state_get_point(midi_off.as_ptr(), midi_off.len(), slot, 1,
+            &mut px, &mut py, &mut pt, &mut pk) });
+        assert!((pt - 0.25).abs() < 1e-5);
+        assert_eq!(px, x); assert_eq!(py, y); assert_eq!(pk, kind);
     }
 
     #[test]
@@ -318,14 +374,12 @@ mod tests {
     }
 
     #[test]
-    fn editor_exposes_all_eight_controls_and_can_capture() {
+    fn editor_exposes_eight_host_controls_and_the_full_curve_workspace() {
         let params = Arc::new(lemon_small_fx::params::FxParams::new(SPEC));
-        let mut logic = editor::Logic::new(
-            SPEC,
-            params,
-            Arc::new(lemon_small_fx::Shared::default()),
-            None,
-        );
+        let mut shared = lemon_small_fx::Shared::default();
+        shared.extension = BeatKind::editor_extension(params.clone());
+        let shared = Arc::new(shared);
+        let mut logic = editor::Logic::new(SPEC, params, shared, None);
         let mut canvas = os_ui::Canvas::new(SPEC.size.0, SPEC.size.1, 1.0).unwrap();
         logic.paint(&mut canvas, &os_plugkit::palette());
         assert_eq!(logic.hits.iter().filter(|h| matches!(h.t, lemon_small_fx::view::Target::Knob(_))).count(), 8);

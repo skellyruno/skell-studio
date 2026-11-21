@@ -496,13 +496,31 @@ pub fn spaced_width(c: &mut Canvas, f: Font, s: &str, track: f32) -> f32 {
     s.chars().map(|ch| c.text_width(f, ch.encode_utf8(&mut [0; 4]))).sum::<f32>() + track * n.saturating_sub(1) as f32
 }
 
-/// The small lemon drawn next to plugin wordmarks: a tilted oval with a nub at each end, `s` = half its length.
+/// A compact native Skell skull used by plug-in wordmarks. `s` is half the head width.
+pub fn skell_mark(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Color) {
+    let hole = plug::BG;
+    // Soft green halo, followed by a solid skull silhouette.
+    c.fill_circle(cx, cy, s * 1.45, col.with_alpha(20));
+    let head = Rect::new(cx - s, cy - s, s * 2.0, s * 1.48);
+    c.fill_rrect(head, s * 0.56, col);
+    let jaw = Rect::new(cx - s * 0.68, cy + s * 0.24, s * 1.36, s * 0.72);
+    c.fill_rrect(jaw, s * 0.16, col);
+    // Eye sockets, nose and teeth are cut out in matte black.
+    c.fill_circle(cx - s * 0.38, cy - s * 0.03, s * 0.22, hole);
+    c.fill_circle(cx + s * 0.38, cy - s * 0.03, s * 0.22, hole);
+    c.fill_polygon(&[
+        (cx, cy + s * 0.18),
+        (cx - s * 0.15, cy + s * 0.43),
+        (cx + s * 0.15, cy + s * 0.43),
+    ], hole);
+    c.line(cx - s * 0.38, cy + s * 0.62, cx + s * 0.38, cy + s * 0.62, 0.85, hole);
+    c.line(cx - s * 0.13, cy + s * 0.66, cx - s * 0.13, cy + s * 0.89, 0.8, hole);
+    c.line(cx + s * 0.13, cy + s * 0.66, cx + s * 0.13, cy + s * 0.89, 0.8, hole);
+}
+
+/// Kept as a source-compatible alias for internal callers with the older helper name.
 pub fn lemon_mark(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Color) {
-    let x = cx - s;
-    let y = cy - s;
-    let stroke = (s * 0.26).max(1.);
-    c.polyline(&[(x,y+2.*s),(x,y),(cx,y+s),(cx+s,y),(cx+s,y+2.*s)], stroke, col);
-    c.line(cx-s*0.1,cy+s,cx+s,cy+s,stroke,col);
+    skell_mark(c, cx, cy, s, col);
 }
 
 /// A Skell wordmark: a native skull and "SKELL" in neon green above `name`, right-aligned at

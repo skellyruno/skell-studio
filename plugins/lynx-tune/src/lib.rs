@@ -178,6 +178,7 @@ nih_export_vst3!(SkellTune);
 mod tests {
     use super::*;
     use lemon_small_fx::params::FxParams;
+    use nih_plug::prelude::Params;
 
     fn tone(rate: u32, hz: f32, seconds: f32) -> Vec<f32> {
         (0..(rate as f32 * seconds) as usize)

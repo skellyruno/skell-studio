@@ -26,6 +26,8 @@ use crate::{Shared, Spec};
 
 /// Optional non-parameter instrument controls, called only on the editor thread.
 pub trait Extension: Send + Sync {
+    /// Opaque per-instance engine bridge for editor-thread state queues.
+    fn bind_engine_handle(&self, _handle: usize) {}
     /// (Route id, source label, automatable depth parameter id).
     fn modulation_routes(&self, _id: &str) -> Vec<(usize, &'static str, &'static str)> { Vec::new() }
     fn remove_modulation(&self, _id: &str, _route: usize, _context: Option<&Arc<dyn GuiContext>>) {}

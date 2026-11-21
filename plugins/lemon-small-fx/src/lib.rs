@@ -129,6 +129,8 @@ pub struct Display {
 pub trait Sound: Send {
     /// Incoming MIDI note hook for effects that opt into note input.
     fn midi_note(&mut self, _on: bool, _channel: u8, _note: u8) {}
+    /// Attach an editor extension after initialization so UI-owned state can be queued safely.
+    fn bind_editor(&mut self, _extension: Arc<dyn editor::Extension>) {}
     /// New settings: they act from this block on (gains glide where the original's do).
     fn set(&mut self, v: &[i32]);
     fn set_sample_rate(&mut self, rate: u32);
@@ -209,6 +211,8 @@ impl Spec {
 
 /// What makes a plugin type of one of the effects: its description and its ids.
 pub trait Kind: 'static + Send + Sync {
+    /// Optional per-instance editor extension (used by plugins with non-parameter state editors).
+    fn editor_extension(_params: Arc<params::FxParams>) -> Option<Arc<dyn editor::Extension>> { None }
     /// MIDI input is opt-in; normal effects keep their existing ports unchanged.
     const MIDI_INPUT: MidiConfig = MidiConfig::None;
     /// Host-visible vendor; existing effects keep their current AQUILA identity unless overridden.
@@ -259,9 +263,12 @@ pub struct SmallFx<K: Kind> {
 
 impl<K: Kind> Default for SmallFx<K> {
     fn default() -> Self {
+        let params = Arc::new(FxParams::new(K::SPEC));
+        let mut shared = Shared::default();
+        shared.extension = K::editor_extension(params.clone());
         SmallFx {
-            params: Arc::new(FxParams::new(K::SPEC)),
-            shared: Arc::new(Shared::default()),
+            params,
+            shared: Arc::new(shared),
             dsp: None,
             latency: 0,
             raw: params::default_state(K::SPEC),
@@ -325,6 +332,9 @@ impl<K: Kind> Plugin for SmallFx<K> {
         }
         if let Some(d) = &mut self.dsp {
             d.set_saved_state(&self.raw);
+            if let Some(extension) = self.shared.extension.clone() {
+                d.bind_editor(extension);
+            }
             d.set(v);
         }
         self.latency = self.dsp.as_ref().map_or(0, |d| d.latency());

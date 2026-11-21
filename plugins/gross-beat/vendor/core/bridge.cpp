@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <new>
 #include <vector>
 
@@ -312,6 +313,21 @@ float lynx_gb_state_level(const std::uint8_t* data, std::size_t size, int slot, 
         return lynx::grossbeat::levelAt(state->slots[static_cast<std::size_t>(slot)], std::clamp(beat, 0.0, 4.0));
     }
     catch (...) { return 0.0f; }
+}
+
+int lynx_gb_state_render_slot(const std::uint8_t* data, std::size_t size, int slot, float* out, int count) noexcept
+{
+    try
+    {
+        if (data == nullptr || slot < 0 || slot >= 72 || out == nullptr || count <= 0) return -1;
+        const auto state = lynx::grossbeat::parseState(data, size);
+        if (!state) return -1;
+        const auto values = lynx::grossbeat::renderSlot(state->slots[static_cast<std::size_t>(slot)], count);
+        if (values.size() != static_cast<std::size_t>(count)) return -1;
+        std::copy(values.begin(), values.end(), out);
+        return count;
+    }
+    catch (...) { return -1; }
 }
 
 int lynx_gb_state_midi_trigger(const std::uint8_t* data, std::size_t size) noexcept

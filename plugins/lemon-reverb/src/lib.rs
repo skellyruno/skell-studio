@@ -3,7 +3,7 @@
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
 //! Lemon Reverb: Lemon Studio's plate reverb (a recreation of FL's Fruity Reeverb 2) as a VST3 / CLAP plugin
-//! (nih-plug). The sound is `os_engine::effects::reverb`.
+//! (nih-plug). The sound is the pinned LYNX SHARE Fruity Reeverb 2 engine.
 //!
 // spec: plugins/lemon-reverb.md, plugins/fruity-reeverb-2.md, plugins/plugin-formats.md
 #![allow(semicolon_in_expressions_from_non_local_macros)]
@@ -18,7 +18,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use nih_plug::prelude::*;
-use os_engine::effects::reverb::{Reverb, Settings};
+use os_engine::effects::reverb::Settings;
+mod lynx;
+use lynx::LynxReverb2;
 
 use params::ReverbParams;
 
@@ -38,7 +40,7 @@ impl Default for Shared {
 pub struct LemonReverb {
     params: Arc<ReverbParams>,
     shared: Arc<Shared>,
-    dsp: Reverb,
+    dsp: Option<LynxReverb2>,
     raw: Vec<u8>,
     raw_seen: u64,
 }
@@ -48,7 +50,7 @@ impl Default for LemonReverb {
         LemonReverb {
             params: Arc::new(ReverbParams::default()),
             shared: Arc::new(Shared::default()),
-            dsp: Reverb::new(44100, Settings::default(), 120.0),
+            dsp: None,
             raw: params::default_state(),
             raw_seen: u64::MAX,
         }
@@ -100,26 +102,26 @@ impl Plugin for LemonReverb {
         self.shared.rate.store(config.sample_rate as u32, Ordering::Relaxed);
         self.raw_seen = u64::MAX;
         let s = self.settings();
-        self.dsp = Reverb::new(config.sample_rate.round() as u32, s, 120.0);
+        let Some(mut dsp) = LynxReverb2::new(config.sample_rate.round() as u32, 8192) else { return false };
+        dsp.set(&s, 120.0);
+        self.dsp = Some(dsp);
         true
     }
 
     fn reset(&mut self) {
-        self.dsp.clear();
+        if let Some(dsp) = &mut self.dsp { dsp.reset(); }
     }
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, ctx: &mut impl ProcessContext<Self>) -> ProcessStatus {
         let s = self.settings();
-        self.dsp.set(s);
-        if let Some(bpm) = ctx.transport().tempo {
-            self.dsp.set_tempo(bpm);
-        }
+        let Some(dsp) = &mut self.dsp else { return ProcessStatus::Normal };
+        dsp.set(&s, ctx.transport().tempo.unwrap_or(120.0));
         let out = buffer.as_slice();
         if out.len() < 2 {
             return ProcessStatus::Normal;
         }
         let (left, right) = out.split_at_mut(1);
-        self.dsp.process(left[0], right[0]);
+        dsp.process(left[0], right[0]);
         // The tail rings on after the input stops.
         ProcessStatus::KeepAlive
     }

@@ -2231,6 +2231,7 @@ dependencies = [
 name = "lemon-limiter"
 version = "0.0.1"
 dependencies = [
+ "cc",
  "nih_plug",
  "os-engine",
  "os-hostlink",

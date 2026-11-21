@@ -119,3 +119,9 @@ Required before any release:
 - Skell Beat Rust wrapper and Windows VST3/CLAP artifact: pending exact-head CI.
 - LYNX Tune wrapper: selected, not implemented.
 - FL Studio project round-trip, DAW automation, full Gross Beat curve editor, MIDI slot triggering and vocal A/B: not yet verified.
+
+### In-place LYNX Fruity Limiter replacement — 2026-11-21
+
+ML Limiter is being ported in place to the pinned LYNX SHARE 0.1.30 Fruity Limiter engine. The existing plugin name, VST3 class ID, CLAP ID, 18 parameter IDs, parameter order, 169-byte version-7 state image, spare bank, sidechain index, exact-ceiling option byte, attack-hold gesture, editor pages and history display are retained. LYNX uses the same 18 raw control ranges/defaults and maps the existing exact-ceiling flag directly.
+
+The engine allocates its peak/RMS windows, look-ahead delay and stereo scratch buffers during initialize. The bridge chunks every host block into LYNX's 512-frame engine blocks, passes the optional stereo sidechain through preallocated interleaved scratch, and reports the source look-ahead latency. The editor's history feed remains live using a preallocated input-peak copy and nonblocking publication; its detector-level rail is an input-peak approximation until the exact engine tap is exposed. Windows tests and real FL/VST3 state and sidechain round-trips remain required.

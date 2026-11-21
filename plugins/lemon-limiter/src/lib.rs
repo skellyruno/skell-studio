@@ -1,9 +1,9 @@
 // Copyright (C) 2026 ItsAlphaNeon
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-only
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
 //! Lemon Limiter: Lemon Studio's limiter, compressor and noise gate (a recreation of FL's Fruity Limiter) as a VST3 /
-//! CLAP plugin (nih-plug). The sound is `os_engine::effects::dynamics`.
+//! CLAP plugin (nih-plug). The sound is the pinned LYNX SHARE Fruity Limiter engine.
 //!
 // spec: plugins/lemon-limiter.md, plugins/fruity-limiter-dsp.md, plugins/plugin-formats.md
 #![allow(semicolon_in_expressions_from_non_local_macros)]
@@ -17,7 +17,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::*;
-use os_engine::effects::dynamics::{Column, Dynamics, DEFAULTS, LIM_ATT, PARAMS};
+use os_engine::effects::dynamics::{Column, DEFAULTS, LIM_ATT, PARAMS};
+mod lynx;
+use lynx::LynxLimiter;
 
 use params::LimiterParams;
 
@@ -68,7 +70,11 @@ impl History {
 pub struct LemonLimiter {
     params: Arc<LimiterParams>,
     shared: Arc<Shared>,
-    dsp: Dynamics,
+    dsp: Option<LynxLimiter>,
+    /// Preallocated peak copy used by the editor meter; one value per input sample.
+    meter_input: Vec<f32>,
+    meter_acc: Column,
+    meter_n: usize,
     raw_seen: u64,
     flags: u8,
     sidechain: u8,
@@ -82,7 +88,10 @@ impl Default for LemonLimiter {
         LemonLimiter {
             params: Arc::new(LimiterParams::default()),
             shared: Arc::new(Shared::default()),
-            dsp: Dynamics::new(44100.0, DEFAULTS, 0),
+            dsp: None,
+            meter_input: Vec::new(),
+            meter_acc: Column { gain: f32::MAX, ..Column::default() },
+            meter_n: 0,
             raw_seen: u64::MAX,
             flags: 0,
             sidechain: 0,
@@ -117,20 +126,36 @@ impl LemonLimiter {
         p
     }
 
-    fn publish(&mut self) {
-        if self.dsp.columns.is_empty() {
+    fn publish_meter(&mut self, left: &[f32], right: &[f32]) {
+        let n = left.len().min(right.len()).min(self.meter_input.len());
+        if n == 0 { return; }
+        let column_len = self.shared.column_len.load(Ordering::Relaxed).max(1) as usize;
+        let Ok(mut history) = self.shared.history.try_lock() else {
+            self.meter_n = 0;
+            self.meter_acc = Column { gain: f32::MAX, ..Column::default() };
             return;
-        }
-        if let Ok(mut h) = self.shared.history.try_lock() {
-            let n = h.cols.len();
-            for c in self.dsp.columns.drain(..) {
-                let p = h.pos;
-                h.cols[p] = c;
-                h.pos = (p + 1) % n;
-                h.written += 1;
+        };
+        let capacity = history.cols.len();
+        if capacity == 0 { return; }
+        for i in 0..n {
+            let input = self.meter_input[i];
+            let output = left[i].abs().max(right[i].abs());
+            let gain = if input > 1.0e-12 { (output / input).clamp(0.0, 64.0) } else { 1.0 };
+            self.meter_acc.input = self.meter_acc.input.max(input);
+            self.meter_acc.output = self.meter_acc.output.max(output);
+            // Retained detector rail approximation until an exact engine tap is wired.
+            self.meter_acc.level = self.meter_acc.level.max(input);
+            self.meter_acc.gain = self.meter_acc.gain.min(gain);
+            self.meter_n += 1;
+            if self.meter_n >= column_len {
+                let pos = history.pos;
+                history.cols[pos] = self.meter_acc;
+                history.pos = (pos + 1) % capacity;
+                history.written += 1;
+                self.meter_n = 0;
+                self.meter_acc = Column { gain: f32::MAX, ..Column::default() };
             }
         }
-        self.dsp.columns.clear();
     }
 }
 
@@ -170,33 +195,37 @@ impl Plugin for LemonLimiter {
         self.raw_seen = u64::MAX;
         self.read_raw();
         let p = self.values();
-        self.dsp = Dynamics::new(f64::from(config.sample_rate), p, self.flags);
-        self.latency = self.dsp.latency() as u32;
+        let Some(mut dsp) = LynxLimiter::new(config.sample_rate.round() as u32) else { return false };
+        dsp.set(&p, self.flags);
+        self.latency = dsp.latency();
         ctx.set_latency_samples(self.latency);
+        self.dsp = Some(dsp);
+        self.meter_input = vec![0.0; config.max_buffer_size as usize];
+        self.meter_n = 0;
+        self.meter_acc = Column { gain: f32::MAX, ..Column::default() };
         true
     }
 
     fn reset(&mut self) {
-        self.dsp.reset();
+        if let Some(dsp) = &mut self.dsp { dsp.reset(); }
+        self.meter_n = 0;
+        self.meter_acc = Column { gain: f32::MAX, ..Column::default() };
     }
 
     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, ctx: &mut impl ProcessContext<Self>) -> ProcessStatus {
         self.read_raw();
         let p = self.values();
-        self.dsp.set_params(&p);
-        self.dsp.set_flags(self.flags);
-        let lat = self.dsp.latency() as u32;
+        let Some(dsp) = &mut self.dsp else { return ProcessStatus::Normal };
+        dsp.set(&p, self.flags);
+        let lat = dsp.latency();
         if lat != self.latency {
             self.latency = lat;
             ctx.set_latency_samples(lat);
         }
         let meter = self.shared.editor_open.load(Ordering::Relaxed);
-        self.dsp.set_meter(if meter { self.shared.column_len.load(Ordering::Relaxed).max(1) as usize } else { 0 });
 
         let out = buffer.as_slice();
-        if out.len() < 2 {
-            return ProcessStatus::Normal;
-        }
+        if out.len() < 2 { return ProcessStatus::Normal; }
         let key = (self.sidechain != 0)
             .then(|| aux.inputs.first())
             .flatten()
@@ -204,12 +233,19 @@ impl Plugin for LemonLimiter {
             .filter(|s| s.len() >= 2)
             .map(|s| (&*s[0], &*s[1]));
         let (left, right) = out.split_at_mut(1);
-        self.dsp.process(left[0], right[0], key);
+        let meter_frames = left[0].len().min(right[0].len()).min(self.meter_input.len());
         if meter {
-            self.publish();
+            for i in 0..meter_frames {
+                self.meter_input[i] = left[0][i].abs().max(right[0][i].abs());
+            }
+        }
+        dsp.process(left[0], right[0], key);
+        let asleep = dsp.asleep();
+        if meter {
+            self.publish_meter(&left[0][..meter_frames], &right[0][..meter_frames]);
         }
         // Asleep: the host may stop calling until sound comes in again (spec §7).
-        if self.dsp.asleep() { ProcessStatus::Normal } else { ProcessStatus::KeepAlive }
+        if asleep { ProcessStatus::Normal } else { ProcessStatus::KeepAlive }
     }
 }
 

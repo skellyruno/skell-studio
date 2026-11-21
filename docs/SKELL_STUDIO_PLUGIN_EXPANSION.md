@@ -119,3 +119,9 @@ Required before any release:
 - Skell Beat Rust wrapper and Windows VST3/CLAP artifact: pending exact-head CI.
 - LYNX Tune wrapper: selected, not implemented.
 - FL Studio project round-trip, DAW automation, full Gross Beat curve editor, MIDI slot triggering and vocal A/B: not yet verified.
+
+### In-place LYNX Fruity Delay 3 replacement — 2026-11-21
+
+ML Delay is being ported in place to the pinned LYNX SHARE 0.1.30 Fruity Delay 3 engine. Its existing wrapper, plugin identity, parameter IDs, parameter ordering, 108-byte version-1 state format, FL preset mappings and editor remain unchanged. The adapter passes the current 26 raw stored controls through LYNX's `delay3EngineValue` mapping, applies changed values only (so its smoothing vector does not churn every host block), and sends host tempo at each block. The C++ engine's constructor reserves its internal 26-entry parameter smoothing list and creates the delay/filter buffers during plugin initialization.
+
+Pinned upstream revision: `88ec555ea2bce9714c92707cc06a5abfd317c900`. The engine-only translation unit keeps the LYNX Fruity Delay 3 engine and excludes its DAW-specific effect-slot wrapper and Fruity Delay 2 implementation. Build/test and real host state/preset validation are still required.

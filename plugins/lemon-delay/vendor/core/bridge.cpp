@@ -1,3 +1,7 @@
+// Copyright (C) 2026 ItsAlphaNeon
+// SPDX-License-Identifier: AGPL-3.0-only
+// Adapted from LYNX SHARE 0.1.30, commit 88ec555ea2bce9714c92707cc06a5abfd317c900.
+
 #include "core/FruityDelay.h"
 #include <algorithm>
 #include <array>

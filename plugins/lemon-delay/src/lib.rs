@@ -1,5 +1,5 @@
 // Copyright (C) 2026 ItsAlphaNeon
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-only
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
 //! Lemon Delay: Lemon Studio's stereo delay (a recreation of FL's Fruity Delay 3) as a VST3 / CLAP plugin

@@ -14,7 +14,7 @@
 use os_theme::design::lemon as brand; // Stable theme namespace; its displayed skin name is Skell.
 use os_theme::Palette;
 use os_ui::kit::eq as keq;
-use os_ui::kit::skell::{self as skell, plug};
+use os_ui::kit::lemon::{self as skell, plug};
 use os_ui::kit::{inst, State};
 use os_ui::{Canvas, Color, Font, Rect};
 

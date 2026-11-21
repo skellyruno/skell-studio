@@ -88,6 +88,14 @@ Limiter, dedicated compressor, Delay, Reverb and EQ have been selected from the 
 
 A separate Pro-style limiter/compressor/EQ (LYNX Apex, Crest, Facet) is not part of this core migration. They are distinct optional products, not replacements for the selected FL processors.
 
+### In-place upgrade license boundary — 2026-11-21
+
+The selected LYNX Delay 3, Reeverb 2, Fruity Limiter and Parametric EQ 2 implementations are AGPL-3.0 source. The corresponding existing Skell crates (`lemon-delay`, `lemon-reverb`, `lemon-limiter` and `lemon-parametric-eq-2`) inherit the workspace's `GPL-3.0-or-later` declaration, and `crates/os-app` links all four with the `linked` feature. Directly copying the LYNX engines into these shared crates would cross the current application/plugin licensing boundary and could change the obligations for the combined Studio distribution.
+
+**Do not vendor those AGPL engines into the linked crates until the distribution architecture is deliberately resolved.** Viable paths to evaluate are: (1) an explicit decision to distribute the combined Studio under the applicable AGPL terms; (2) a standalone AGPL plug-in module that preserves the existing plug-in identity/state contract without linking its engine into the Studio executable; or (3) a separately authored clean-room implementation that does not copy the AGPL implementation source. Path 2 still needs a careful duplicate-module/host-discovery plan and does not by itself upgrade the in-app linked effect. This is an engineering/licensing gate, not a legal opinion.
+
+Until that decision is made, the existing in-app effects keep their current Rust DSP and saved-state behavior. The 2026-11-21 Skelly Audio vendor-metadata pass is cosmetic only: ML Delay, ML Reverb, ML Limiter and ML EQ retain their current display names, CLAP IDs, VST3 class IDs, parameter IDs and state formats.
+
 ## Build and test gates
 
 The branch adds a Windows VST3/CLAP build-and-bundle gate for the plugin suite. It tests ML Limiter, ML Delay, ML Reverb, ML Hall, ML EQ, ML Press and Skell Beat, packages VST3 and CLAP modules, validates AMD64 PE headers and uploads the artifact for inspection.

@@ -14,6 +14,7 @@ unsafe extern "C" {
     fn lynx_gb_load(instance: *mut c_void, data: *const u8, size: usize) -> bool;
     fn lynx_gb_prepare(instance: *mut c_void, sample_rate: i32, max_block: i32);
     fn lynx_gb_set_param(instance: *mut c_void, index: i32, raw: i32);
+    fn lynx_gb_note(instance: *mut c_void, on: bool, channel: i32, note: i32) -> i32;
     fn lynx_gb_set_transport(instance: *mut c_void, tempo: f64, position_beats: f64, has_position: bool, playing: bool);
     fn lynx_gb_process(instance: *mut c_void, left: *mut f32, right: *mut f32, frames: i32);
     fn lynx_gb_reset(instance: *mut c_void);
@@ -112,6 +113,10 @@ impl BeatSound {
 }
 
 impl Sound for BeatSound {
+    fn midi_note(&mut self, on: bool, channel: u8, note: u8) {
+        unsafe { lynx_gb_note(self.instance.as_ptr(), on, i32::from(channel), i32::from(note)); }
+    }
+
     fn set(&mut self, values: &[i32]) {
         for (dst, src) in self.params.iter_mut().zip(values.iter().copied()) { *dst = src; }
         self.apply_params();
@@ -189,6 +194,7 @@ pub const SPEC: &Spec = &Spec {
 pub struct BeatKind;
 
 impl Kind for BeatKind {
+    const MIDI_INPUT: nih_plug::prelude::MidiConfig = nih_plug::prelude::MidiConfig::Basic;
     const VENDOR: &'static str = "Skell Audio";
     const SPEC: &'static Spec = SPEC;
     const CLAP_ID: &'static str = "com.skellstudio.skellbeat";
@@ -225,6 +231,23 @@ mod tests {
         assert_eq!(parse(0, &text(0, 3)), Some(3));
         assert_eq!(parse(1, &text(1, 35)), Some(35));
         assert_eq!(parse(6, &text(6, -128)), Some(-128));
+    }
+
+    #[test]
+    fn midi_notes_select_the_matching_time_and_volume_slots() {
+        let state = factory_state();
+        let instance = ptr::NonNull::new(unsafe { lynx_gb_new(48000, 4096) })
+            .expect("Gross Beat bridge allocation");
+        assert!(unsafe { lynx_gb_load(instance.as_ptr(), state.as_ptr(), state.len()) });
+        // Gross Beat's key map: C5..B7 => time 1..36; C2..B4 => volume 1..36.
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 60) }, 0);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 95) }, 35);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 24) }, 36);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 59) }, 71);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 23) }, -1);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 0, 96) }, -1);
+        assert_eq!(unsafe { lynx_gb_note(instance.as_ptr(), true, 16, 60) }, -1);
+        unsafe { lynx_gb_delete(instance.as_ptr()); }
     }
 
     #[test]

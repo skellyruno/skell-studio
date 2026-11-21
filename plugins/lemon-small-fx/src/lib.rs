@@ -127,6 +127,8 @@ pub struct Display {
 
 /// The sound of an effect, made for a sample rate from the settings in the original's order.
 pub trait Sound: Send {
+    /// Incoming MIDI note hook for effects that opt into note input.
+    fn midi_note(&mut self, _on: bool, _channel: u8, _note: u8) {}
     /// New settings: they act from this block on (gains glide where the original's do).
     fn set(&mut self, v: &[i32]);
     fn set_sample_rate(&mut self, rate: u32);
@@ -207,6 +209,8 @@ impl Spec {
 
 /// What makes a plugin type of one of the effects: its description and its ids.
 pub trait Kind: 'static + Send + Sync {
+    /// MIDI input is opt-in; normal effects keep their existing ports unchanged.
+    const MIDI_INPUT: MidiConfig = MidiConfig::None;
     /// Host-visible vendor; existing effects keep their current AQUILA identity unless overridden.
     const VENDOR: &'static str = "AQUILA";
     /// Host audio layout. The default is the existing stereo in/out layout.
@@ -289,6 +293,7 @@ impl<K: Kind> SmallFx<K> {
 
 impl<K: Kind> Plugin for SmallFx<K> {
     const NAME: &'static str = K::SPEC.name;
+    const MIDI_INPUT: MidiConfig = K::MIDI_INPUT;
     const VENDOR: &'static str = K::VENDOR;
     const URL: &'static str = "";
     const EMAIL: &'static str = "";
@@ -337,8 +342,9 @@ impl<K: Kind> Plugin for SmallFx<K> {
         let s = self.settings();
         let Some(dsp) = &mut self.dsp else { return ProcessStatus::Normal };
         dsp.set(&s[..K::SPEC.settings.len()]);
-        let transport = ctx.transport();
-        dsp.set_transport(transport.tempo.unwrap_or(120.0), transport.pos_beats(), transport.playing);
+        let transport_tempo = ctx.transport().tempo.unwrap_or(120.0);
+        let transport_position = ctx.transport().pos_beats();
+        let transport_playing = ctx.transport().playing;
         let sidechain = aux.inputs.first()
             .map(|b| b.as_slice_immutable())
             .filter(|channels| channels.len() >= 2)
@@ -353,7 +359,37 @@ impl<K: Kind> Plugin for SmallFx<K> {
             return ProcessStatus::Normal;
         }
         let (left, right) = out.split_at_mut(1);
-        dsp.process_with_sidechain(left[0], right[0], sidechain);
+        if K::MIDI_INPUT == MidiConfig::None {
+            dsp.set_transport(transport_tempo, transport_position, transport_playing);
+            dsp.process_with_sidechain(left[0], right[0], sidechain);
+        } else {
+            let frames = left[0].len().min(right[0].len());
+            let rate = f64::from(self.shared.rate.load(Ordering::Relaxed).max(1));
+            let beats_at = |offset: usize| transport_position.map(|position|
+                position + offset as f64 * transport_tempo / (60.0 * rate));
+            let mut offset = 0usize;
+            let mut next_event = ctx.next_event();
+            while let Some(event) = next_event {
+                let timing = (event.timing() as usize).min(frames);
+                if timing > offset {
+                    dsp.set_transport(transport_tempo, beats_at(offset), transport_playing);
+                    dsp.process_with_sidechain(&mut left[0][offset..timing], &mut right[0][offset..timing], sidechain);
+                    offset = timing;
+                }
+                match event {
+                    NoteEvent::NoteOn { channel, note, velocity, .. } => dsp.midi_note(velocity > 0.0, channel, note),
+                    NoteEvent::NoteOff { channel, note, .. } | NoteEvent::Choke { channel, note, .. } => {
+                        dsp.midi_note(false, channel, note)
+                    }
+                    _ => {}
+                }
+                next_event = ctx.next_event();
+            }
+            if offset < frames {
+                dsp.set_transport(transport_tempo, beats_at(offset), transport_playing);
+                dsp.process_with_sidechain(&mut left[0][offset..frames], &mut right[0][offset..frames], sidechain);
+            }
+        }
         if K::SPEC.rings { ProcessStatus::KeepAlive } else { ProcessStatus::Normal }
     }
 }

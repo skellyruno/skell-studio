@@ -2131,6 +2131,7 @@ dependencies = [
 name = "lemon-delay"
 version = "0.0.1"
 dependencies = [
+ "cc",
  "nih_plug",
  "os-engine",
  "os-hostlink",

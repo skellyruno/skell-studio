@@ -830,6 +830,9 @@ void fill (Slot& slot, const char* name, const Shape& shape)
 State factoryState()
 {
     auto s = emptyState();
+    // Skell Beat exposes MIDI slot triggering as a first-class feature; new instances start enabled.
+    // State loaded from an existing FL preset still preserves its stored MIDI-trigger byte.
+    s.midiTrigger = true;
     auto time = [&s] (int i) -> Slot& { return s.slots[(std::size_t) i]; };
     auto volume = [&s] (int i) -> Slot& { return s.slots[(std::size_t) (slotsPerKind + i)]; };
 

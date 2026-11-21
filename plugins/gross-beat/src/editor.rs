@@ -195,7 +195,7 @@ impl Extension for BeatEditorExtension {
 
         c.fill_rrect(Rect::new(LEFT_X, LEFT_Y, LEFT_W, PANEL_H), 8.0, panel);
         c.fill_rrect(Rect::new(GRAPH_X, LEFT_Y, 752.0, PANEL_H), 8.0, panel);
-        Self::draw_text(c, 18.0, 225.0, bright, "72 ENVELOPE SLOTS");
+        Self::draw_text(c, 18.0, 218.0, bright, "72 ENVELOPE SLOTS");
         Self::draw_text(c, 340.0, 225.0, bright, "CURVE / POINT EDITOR");
 
         let time_tab = Rect::new(16.0, 232.0, 142.0, 26.0);

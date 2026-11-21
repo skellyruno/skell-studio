@@ -15273,3 +15273,14 @@ by a minimal EffectParams shim; no LYNX application, UI or JUCE code is included
 License: GNU Affero General Public License v3.0 only (AGPL-3.0-only).
 Full license: plugins/lemon-parametric-eq-2/vendor/lynx/LICENSE-AGPL-3.0.txt.
 The standalone VST3/CLAP target links this source; the Studio linked build keeps its existing in-tree EQ.
+
+
+LYNX SHARE — LYNX Tune pitch-correction DSP
+=========================================
+Source: https://github.com/Ka1-S/LYNX-SHARE
+Pinned source revision: 0.1.30, commit 88ec555ea2bce9714c92707cc06a5abfd317c900.
+Adapted components: src/core/LynxTune.cpp/.h and src/core/VocalPitch.cpp/.h, plus the required Simd.h subset.
+The DAW-specific Song/EffectSlot integration and Send Scale To All traversal are excluded from the isolated module. Skell's C ABI bridge supplies the Effect/EffectParams/NoteMask interface and the host MIDI-note mask.
+Licence: GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+Full licence text: plugins/lynx-tune/vendor/LICENSE-AGPL-3.0.txt.
+The Tune implementation is packaged as the separate Skell Tune VST3/CLAP plug-in; its source and licence accompany the module.

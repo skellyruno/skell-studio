@@ -51,7 +51,7 @@ jobs:
           $shotDir = Join-Path $env:GITHUB_WORKSPACE "target/skell-plugin-shots"
           New-Item -ItemType Directory -Force -Path $shotDir | Out-Null
           $env:OS_SHOT_DIR = $shotDir
-          cargo test --locked -p lemon-limiter -p lemon-delay -p lemon-reverb -p lemon-hall -p lemon-parametric-eq-2 -p press -p gross-beat -p fruity-compressor
+          cargo test --locked -p lemon-limiter -p lemon-delay -p lemon-reverb -p lemon-hall -p lemon-parametric-eq-2 -p press -p gross-beat -p fruity-compressor -p lynx-tune
 
       - name: Upload native Skell plugin editor captures
         if: always()
@@ -69,7 +69,7 @@ jobs:
       - name: Validate requested core plugin bundles and AMD64 modules
         shell: pwsh
         run: |
-          $names = @("ML Limiter", "ML Delay", "ML Reverb", "ML Hall", "ML EQ", "ML Press", "Skell Beat", "Skell Compressor")
+          $names = @("ML Limiter", "ML Delay", "ML Reverb", "ML Hall", "ML EQ", "ML Press", "Skell Beat", "Skell Compressor", "Skell Tune")
           foreach ($name in $names) {
             $vst3 = Join-Path "target/bundled" "$name.vst3/Contents/x86_64-win/$name.vst3"
             $clap = Join-Path "target/bundled" "$name.clap"

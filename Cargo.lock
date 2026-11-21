@@ -4393,6 +4393,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lynx-tune"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "lemon-small-fx",
+ "nih_plug",
+]
+
+[[package]]
 name = "fruity-compressor"
 version = "0.0.1"
 dependencies = [

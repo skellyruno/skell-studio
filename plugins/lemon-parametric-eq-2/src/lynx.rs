@@ -63,7 +63,11 @@ mod tests{
         let reference=render(512);
         for block in [1,17,64,127,2048,8192]{
             let candidate=render(block);
-            assert!(reference.iter().zip(candidate).all(|(a,b)|(a-b).abs()<2e-6),"block {block}");
+            let max_delta=reference.iter().zip(&candidate)
+                .map(|(a,b)|(a-b).abs()).fold(0.0f32,f32::max);
+            // LYNX flushes sub-2^-24 filter histories at each process block, so callback boundaries
+            // can alter a few samples near the state floor. Bound and report the worst-case error.
+            assert!(max_delta<1.0e-5,"block {block}, max abs delta {max_delta:e}");
         }
     }
     #[test]fn scalar_stage_cascade_matches_reference(){assert!(unsafe{skell_lynx_eq_stages_match(0x51E11)});}

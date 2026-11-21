@@ -8,7 +8,7 @@
 // spec: plugins/vst3-hosting.md
 
 use super::*;
-use os_host::Library as _;
+use os_host::{Library as _, Plugin as _};
 
 /// `<target>/bundled/<name>.vst3` of this test's own build folder, or of the usual ones.
 fn bundle(name: &str) -> Option<PathBuf> {
@@ -96,6 +96,55 @@ fn lists_instrument_and_effect_classes() {
     assert_eq!(d.path, bundle("Lemon Sampler").unwrap());
     let Some(eq) = module("Lemon Parametric EQ") else { return };
     assert!(eq.plugins()[0].is_effect(), "{:?}", eq.plugins()[0].features);
+}
+
+/// Load the actual built VST3 modules and round-trip parameter state through the Studio host's FL wrapper
+/// and VST3 preset container. This is host integration coverage, not a full FL Studio application project test.
+#[test]
+fn hosts_skell_plugins_and_roundtrips_component_state_through_host_wrapper() {
+    for name in ["ML EQ", "Skell Beat", "Skell Tune"] {
+        let m = module(name).unwrap_or_else(|| panic!("{name}.vst3 must be bundled before host round-trip tests"));
+        let d = m.plugins().iter().find(|plugin| plugin.name == name)
+            .unwrap_or_else(|| panic!("VST3 factory must expose {name}")).clone();
+        assert!(d.is_effect(), "{name} must register as an audio effect");
+
+        let shared = m.clone().create(&d.id).unwrap_or_else(|e| panic!("create {name}: {e}"));
+        let mut first = shared.lock().unwrap();
+        assert!(first.activate(48000), "{name} activates at 48 kHz");
+        let info = (0..first.param_count())
+            .filter_map(|index| first.param_info(index))
+            .find(|parameter| parameter.automatable && !parameter.read_only)
+            .unwrap_or_else(|| panic!("{name} exposes an automatable parameter"));
+        let before = first.param_value(info.id).expect("parameter value");
+        let requested = if before < 0.5 { 0.73 } else { 0.27 };
+        assert!(first.set_param(info.id, requested), "{name} accepts host parameter edit");
+
+        let (mut left, mut right) = (vec![0.01f32; 256], vec![0.01f32; 256]);
+        first.process_fx(48000, &mut left, &mut right);
+        assert!(left.iter().chain(&right).all(|sample| sample.is_finite()), "{name} host processing stays finite");
+        let edited = first.param_value(info.id).expect("edited parameter value");
+        assert!((edited - before).abs() > 0.05, "{name} host edit reaches the controller");
+
+        let saved = first.save_state().expect("VST3 component state");
+        let fl = fl_state::FlState::parse(&saved).expect("Studio FL wrapper around VST3 component state");
+        assert!(fl.params.contains(&info.id), "{name} wrapper preserves the automatable ParamID");
+
+        let second_shared = m.clone().create(&d.id).expect("create second VST3 instance");
+        let mut second = second_shared.lock().unwrap();
+        assert!(second.load_state(&saved), "{name} restores component state into a fresh instance");
+        let restored = second.param_value(info.id).expect("restored parameter value");
+        assert!((restored - edited).abs() < 1.0e-4, "{name} restored parameter {restored}, expected {edited}");
+
+        let vst_preset = preset::Preset {
+            class_id: d.id.clone(),
+            component: fl.component.clone(),
+            controller: fl.controller.clone().unwrap_or_default(),
+        };
+        assert!(second.load_state(&vst_preset.to_bytes()), "{name} accepts its own VST3 preset container");
+        let preset_restored = second.param_value(info.id).expect("preset-restored parameter value");
+        assert!((preset_restored - edited).abs() < 1.0e-4, "{name} VST3 preset preserves its parameter state");
+        eprintln!("{name}: hosted ParamID {}, value {before:.4} -> {edited:.4}; FL wrapper + VST3 preset restored", info.id);
+    }
 }
 
 /// An instrument plays notes, saves its state in FL Studio's wrapper layout and loads it into a second instance.

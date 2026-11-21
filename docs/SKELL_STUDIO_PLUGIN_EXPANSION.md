@@ -119,3 +119,10 @@ Required before any release:
 - Skell Beat Rust wrapper and Windows VST3/CLAP artifact: pending exact-head CI.
 - LYNX Tune wrapper: selected, not implemented.
 - FL Studio project round-trip, DAW automation, full Gross Beat curve editor, MIDI slot triggering and vocal A/B: not yet verified.
+
+
+### Skell Beat MIDI slot triggering — 2026-11-21
+
+Skell Beat accepts Basic MIDI note input. At each note's sample offset, C5–B7 selects Time slots 1–36 and C2–B4 selects Volume slots 1–36, matching LYNX's Gross Beat keyboard map. New Skell Beat factory states enable MIDI triggering; when an existing FL/Gross Beat state contains an explicit MIDI-trigger option, that saved setting remains authoritative. Note and channel held-state tracking is delegated to LYNX's fixed-capacity `MidiSlots` helper. The plugin dispatches audio in event-bounded slices so a note changes the slot before the corresponding sample. MIDI selection is allocation-free in the callback.
+
+Current gap: the Skell Beat panel does not yet expose the source application's MIDI-trigger toggle or a 72-slot curve/point editor. Those are separate UI/state tasks and are not claimed complete by this MIDI-input port.

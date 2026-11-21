@@ -9,10 +9,11 @@ on:
       - "crates/os-flp/**"
       - "crates/os-dsp/**"
       - "crates/os-theme/**"
+      - "crates/os-ui/**"
       - "crates/os-paths/**"
       - "plugins/smith/**"
+      - "plugins/lemon-small-fx/**"
       - "plugins/lemon-reverb/**"
-      - "plugins/lemon-delay/**"
       - "plugins/lemon-chop/**"
       - "crates/os-hostlink/**"
       - "Cargo.toml"
@@ -20,6 +21,7 @@ on:
   pull_request:
     branches: [main, feature/skell-fl-fst-presets-lynx-audit-20261120, feature/skell-lynx-reeverb2-in-place-20261121]
     paths:
+      - "crates/os-ui/**"
       - "plugins/**"
       - ".github/workflows/skell-studio-verify.yml"
       - "crates/os-app/**"

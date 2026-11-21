@@ -658,8 +658,14 @@ void runStage (Stage& st, float* io, int n) noexcept
 // overlap, with the interleaved left / right pair in the two lanes of an SSE2 double vector: per lane the same IEEE
 // double operations in the same order as runStage.
 // (always inlined: runStagesAvx2 below takes the same body in VEX encoding)
+#if defined(_MSC_VER)
+ #define LYNX_EQ_ALWAYS_INLINE __forceinline
+#else
+ #define LYNX_EQ_ALWAYS_INLINE __attribute__ ((always_inline)) inline
+#endif
+
 template <int count>
-__attribute__ ((always_inline)) inline void runStagesN (Stage* const* st, float* io, int n) noexcept
+LYNX_EQ_ALWAYS_INLINE void runStagesN (Stage* const* st, float* io, int n) noexcept
 {
     __m128d x1[count], x2[count], y1[count], y2[count];
     for (int k = 0; k < count; ++k)

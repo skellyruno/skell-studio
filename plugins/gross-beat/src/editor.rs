@@ -304,7 +304,8 @@ impl Extension for BeatEditorExtension {
                     if values.iter().any(|v| (v - values[0]).abs() > 0.0001) {
                         for (j, level) in values.iter().enumerate() {
                             path[j] = (x + 2.0 + j as f32 / (THUMB_SAMPLES - 1) as f32 * (SLOT_W - 4.0),
-                                y + 2.0 + (1.0 - level.clamp(0.0, 1.0)) * (SLOT_H - 4.0));
+                                // Keep the mini envelope below the slot title, never behind text.
+                                y + 12.0 + (1.0 - level.clamp(0.0, 1.0)) * 4.0);
                         }
                         c.polyline(&path, 1.0, if editing { color } else { inactive });
                     }
@@ -312,7 +313,7 @@ impl Extension for BeatEditorExtension {
                 if active || editing { c.stroke_rrect(rect, 2.0, if editing { 1.5 } else { 1.0 }, color); }
                 let name = Self::slot_name(&tiles.titles, source);
                 let title: String = name.chars().take(14).collect();
-                c.text_clip(Font::new(9).bold(), x + 5.0, y + 4.0, SLOT_W - 10.0,
+                c.text_clip(Font::new(9).bold(), x + 5.0, y + 1.0, SLOT_W - 10.0,
                     if active || editing { text } else { muted }, &title);
             }
         }
@@ -327,7 +328,8 @@ impl Extension for BeatEditorExtension {
         }
         let name = Self::slot_name(&tiles.titles, ui.kind * 36 + ui.slot);
         c.text_clip(Font::new(12).bold(), 643.0, 51.0, 425.0, accent,
-            &format!("{:02}  {}", ui.slot + 1, name));
+            &format!("{} SLOT {:02}  /  {}", if ui.kind == 0 { "TIME" } else { "VOLUME" }, ui.slot + 1,
+                if name == format!("{:02}", ui.slot + 1) { "UNTITLED" } else { &name }));
         // Narrow FL/LYNX-style envelope tool column with a real snap selector.
         c.fill_rrect(Rect::new(344.0, 90.0, 58.0, 443.0), 3.0, dark);
         Self::draw_text(c, 350.0, 104.0, muted, "SNAP");

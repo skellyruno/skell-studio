@@ -439,7 +439,15 @@ int lynx_gb_state_thumbnails(const std::uint8_t* data, std::size_t size,
             const auto& slot = parsed->slots[static_cast<std::size_t>(i)];
             const auto curve = lynx::grossbeat::renderSlot(slot, sampleCount);
             if (curve.size() != static_cast<std::size_t>(sampleCount)) return -1;
-            std::copy(curve.begin(), curve.end(), out + static_cast<std::size_t>(i) * sampleCount);
+            // Some valid LYNX curve modes overshoot the normalized display rail.
+            // Clamp preview pixels only; do not change the source state or audio DSP.
+            auto* preview = out + static_cast<std::size_t>(i) * sampleCount;
+            for (int j = 0; j < sampleCount; ++j)
+            {
+                const float level = curve[static_cast<std::size_t>(j)];
+                if (!std::isfinite(level)) return -1; // nonfinite remains a real error
+                preview[j] = std::clamp(level, 0.0f, 1.0f);
+            }
             auto* dest = names + static_cast<std::size_t>(i) * nameBytes;
             std::memset(dest, 0, static_cast<std::size_t>(nameBytes));
             const auto length = std::min(slot.name.size(), static_cast<std::size_t>(nameBytes - 1));

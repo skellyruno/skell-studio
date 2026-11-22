@@ -102,6 +102,34 @@ jobs:
             }
           }
 
+      - name: Write exact-commit VST3/CLAP module checksums
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path -LiteralPath "target/bundled").Path
+          $modules = @(Get-ChildItem -LiteralPath $root -File -Recurse |
+            Where-Object { $_.Extension -in @(".vst3", ".clap") } |
+            Sort-Object FullName)
+          $vst3 = @($modules | Where-Object { $_.Extension -eq ".vst3" })
+          $clap = @($modules | Where-Object { $_.Extension -eq ".clap" })
+          if ($vst3.Count -lt 9 -or $vst3.Count -ne $clap.Count) {
+            throw "VST3/CLAP module mismatch: VST3=$($vst3.Count), CLAP=$($clap.Count)"
+          }
+          $manifest = @(
+            "Skell Studio Windows plugin bundle"
+            "Commit: $env:GITHUB_SHA"
+            "Target: Windows x64 / AMD64"
+            "VST3 modules: $($vst3.Count)"
+            "CLAP modules: $($clap.Count)"
+            "SHA-256 checksums:"
+          )
+          foreach ($module in $modules) {
+            $relative = [System.IO.Path]::GetRelativePath($root, $module.FullName)
+            $hash = (Get-FileHash -LiteralPath $module.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $manifest += "$hash  $relative"
+          }
+          $manifest | Set-Content -LiteralPath (Join-Path $root "BUILD_MANIFEST.txt") -Encoding utf8
+          Write-Host "Manifest generated: $($vst3.Count) VST3 and $($clap.Count) CLAP modules at $env:GITHUB_SHA"
+
       - name: Upload Windows VST3 and CLAP plugin suite
         uses: actions/upload-artifact@v4
         with:

@@ -2,13 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! `cargo run -p bundle-plugins [-- --install]`: builds every Lemon Studio plugin in release mode (in
-//! `<target>/plugins`) and writes `<target>/bundled/<Name>.vst3` (bundle folder) and `<Name>.clap` (a bundle folder too
-//! on macOS, ad-hoc signed like the VST3 one so Apple silicon loads them); `--install` copies them to the per-user
-//! plugin folders (no admin rights needed): `%LOCALAPPDATA%\Programs\Common\{VST3,CLAP}` on Windows, `~/.vst3` and `~/.clap` on Linux,
-//! `~/Library/Audio/Plug-Ins/{VST3,CLAP}` on macOS. A plugin whose installed copy is already this build is left as it
-//! is, so the run from source (`cargo run -p os-app --release`, which installs them before it starts) costs little when
-//! nothing changed, and the plugin scan has nothing new to look at.
+//! `cargo run -p bundle-plugins [-- --install]` builds one VST3 per plugin into
+//! `<target>/bundled/<Name>.vst3`. The --install option copies only VST3 to
+//! the user's platform VST3 folder. Existing user-installed CLAP binaries are
+//! deliberately untouched to preserve sessions that reference CLAP identities.
 //!
 // spec: plugins/plugin-formats.md (bundles and install folders)
 
@@ -40,6 +37,14 @@ fn main() {
     let target = if target.is_relative() { root.join(target) } else { target };
     let out = target.join("bundled");
     std::fs::create_dir_all(&out).expect("bundled folder");
+    // A reused build directory must not silently ship stale CLAP bundles.
+    for entry in std::fs::read_dir(&out).expect("read bundled folder") {
+        let path = entry.expect("bundle entry").path();
+        if path.extension().is_some_and(|ext| ext == "clap") {
+            if path.is_dir() { std::fs::remove_dir_all(&path).expect("remove obsolete CLAP bundle"); }
+            else { std::fs::remove_file(&path).expect("remove obsolete CLAP module"); }
+        }
+    }
     // A build folder of their own: Lemon Studio links some plugins with their `linked` feature, and a plugin library's
     // file names carry no hash, so the app's build and this one would each overwrite the other's and rebuild every time.
     let build = target.join("plugins");
@@ -55,55 +60,43 @@ fn main() {
         let lib = build.join("release").join(library_file(stem));
         let built = std::fs::metadata(&lib).and_then(|m| m.modified()).expect("library time stamp");
         let vst3 = out.join(format!("{name}.vst3"));
-        let clap = out.join(format!("{name}.clap"));
         if cfg!(target_os = "macos") {
             mac_bundle(&lib, &vst3, pkg, name);
-            mac_bundle(&lib, &clap, pkg, name);
         } else {
             let arch = vst3.join("Contents").join(BUNDLE_ARCH);
             std::fs::create_dir_all(&arch).expect("vst3 bundle");
             std::fs::copy(&lib, arch.join(bundle_module(name))).expect("copy vst3");
-            std::fs::copy(&lib, &clap).expect("copy clap");
         }
         stamp(&module(&vst3, name), built);
-        stamp(&module(&clap, name), built);
-        println!("{}\n{}", vst3.display(), clap.display());
+        println!("{}", vst3.display());
         if install {
-            let (vst3_dir, clap_dir) = install_dirs();
+            let vst3_dir = install_dir();
+            // Only migrate legacy VST3 names. Never remove an installed CLAP that
+            // an existing DAW project might still reference.
             for old in OLD_NAMES {
-                for path in [vst3_dir.join(format!("{old}.vst3")), clap_dir.join(format!("{old}.clap"))] {
-                    let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
-                }
+                let path = vst3_dir.join(format!("{old}.vst3"));
+                let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
             }
-            let copies = [(&vst3, vst3_dir.join(format!("{name}.vst3"))), (&clap, clap_dir.join(format!("{name}.clap")))];
-            if copies.iter().all(|(from, to)| same_build(&module(from, name), &module(to, name))) {
+            let to = vst3_dir.join(format!("{name}.vst3"));
+            if same_build(&module(&vst3, name), &module(&to, name)) {
                 println!("{name} is installed and up to date");
                 continue;
             }
-            for (from, to) in &copies {
-                // Replaced whole, never rewritten in place: a file left from an older build would break a macOS
-                // bundle's signature, and on Linux and macOS a program that has the old build loaded keeps it intact.
-                let _ = if to.is_dir() { std::fs::remove_dir_all(to) } else { std::fs::remove_file(to) };
-                if from.is_dir() {
-                    copy_dir(from, to).expect("install bundle");
-                } else {
-                    std::fs::create_dir_all(to.parent().expect("plugin folder")).expect("plugin folder");
-                    std::fs::copy(from, to).expect("install plugin");
-                }
-                stamp(&module(to, name), built);
+            let _ = if to.is_dir() { std::fs::remove_dir_all(&to) } else { std::fs::remove_file(&to) };
+            if vst3.is_dir() { copy_dir(&vst3, &to).expect("install VST3 bundle"); }
+            else {
+                std::fs::create_dir_all(to.parent().expect("VST3 folder")).expect("VST3 folder");
+                std::fs::copy(&vst3, &to).expect("install VST3 plugin");
             }
-            println!("installed to {} and {}", vst3_dir.display(), clap_dir.display());
+            stamp(&module(&to, name), built);
+            println!("installed VST3 to {}", vst3_dir.display());
         }
     }
 }
 
-/// The plugin's module inside `bundle` (`.vst3` or `.clap`): a CLAP plugin is the module itself outside macOS.
+/// VST3 module inside the platform bundle.
 fn module(bundle: &Path, name: &str) -> PathBuf {
-    if !cfg!(target_os = "macos") && bundle.extension().is_some_and(|e| e == "clap") {
-        bundle.to_path_buf()
-    } else {
-        bundle.join("Contents").join(BUNDLE_ARCH).join(bundle_module(name))
-    }
+    bundle.join("Contents").join(BUNDLE_ARCH).join(bundle_module(name))
 }
 
 /// Gives a module the time stamp of the library it was made from, whatever the copy gave it: copies of one build then
@@ -146,7 +139,7 @@ fn bundle_module(name: &str) -> String {
     }
 }
 
-/// A macOS plugin bundle at `bundle` (`.vst3` or `.clap`, written afresh): `Contents/Info.plist`, `Contents/PkgInfo`
+/// A macOS VST3 bundle at `bundle` (written afresh): `Contents/Info.plist`, `Contents/PkgInfo`
 /// and the module in `Contents/MacOS`, ad-hoc signed (Apple silicon loads no unsigned code).
 fn mac_bundle(lib: &Path, bundle: &Path, pkg: &str, name: &str) {
     if bundle.is_dir() {
@@ -201,16 +194,15 @@ fn info_plist(id: &str, name: &str) -> String {
     )
 }
 
-/// The per-user VST3 and CLAP folders.
-fn install_dirs() -> (PathBuf, PathBuf) {
+/// VST3 only: keep existing installed CLAP copies untouched for project recall.
+fn install_dir() -> PathBuf {
     if cfg!(windows) {
-        let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA")).join("Programs").join("Common");
-        (local.join("VST3"), local.join("CLAP"))
+        PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA"))
+            .join("Programs").join("Common").join("VST3")
     } else if cfg!(target_os = "macos") {
-        let plugins = PathBuf::from(std::env::var_os("HOME").expect("HOME")).join("Library").join("Audio").join("Plug-Ins");
-        (plugins.join("VST3"), plugins.join("CLAP"))
+        PathBuf::from(std::env::var_os("HOME").expect("HOME"))
+            .join("Library").join("Audio").join("Plug-Ins").join("VST3")
     } else {
-        let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
-        (home.join(".vst3"), home.join(".clap"))
+        PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".vst3")
     }
 }

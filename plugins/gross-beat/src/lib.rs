@@ -3,7 +3,7 @@
 //! Standalone Skell Beat VST3/CLAP effect. The processing core is the clean-room
 //! LYNX Gross Beat engine, isolated from LYNX's DAW-specific Effect wrapper.
 
-use lemon_small_fx::{Card, Control, Kind, Mark, Setting, SmallFx, Sound, Spec};
+use lemon_small_fx::{Control, Kind, Mark, Setting, SmallFx, Sound, Spec};
 use nih_plug::prelude::{nih_export_clap, nih_export_vst3, ClapFeature, Vst3SubCategory};
 use std::{ffi::c_void, ptr};
 use std::sync::Arc;
@@ -27,6 +27,8 @@ unsafe extern "C" {
         x: *mut f64, y: *mut f32, tension: *mut f32, kind: *mut i32) -> bool;
     fn lynx_gb_state_render_slot(data: *const u8, size: usize, slot: i32, out: *mut f32, count: i32) -> i32;
     fn lynx_gb_state_midi_trigger(data: *const u8, size: usize) -> i32;
+    fn lynx_gb_state_thumbnails(data: *const u8, size: usize,
+        out: *mut f32, samples: i32, names: *mut u8, name_bytes: i32) -> i32;
     fn lynx_gb_state_edit(data: *const u8, size: usize, operation: i32, slot: i32, index: i32,
         x: f64, y: f32, kind: i32, tension: f32, out: *mut u8, capacity: i32, result_index: *mut i32) -> i32;
     fn lynx_gb_state_set_midi_trigger(data: *const u8, size: usize, enabled: bool,
@@ -46,14 +48,16 @@ const SETTINGS: [Setting; 8] = [
 ];
 
 const CONTROLS: [Control; 8] = [
-    Control::Knob { id: "time_slot", cx: 72.0, cy: 126.0, r: 21.0, caption: "TIME SLOT", bipolar: false },
-    Control::Knob { id: "volume_slot", cx: 208.0, cy: 126.0, r: 21.0, caption: "VOLUME SLOT", bipolar: false },
-    Control::Knob { id: "time_mix", cx: 344.0, cy: 126.0, r: 21.0, caption: "TIME MIX", bipolar: false },
-    Control::Knob { id: "volume_mix", cx: 480.0, cy: 126.0, r: 21.0, caption: "VOLUME MIX", bipolar: false },
-    Control::Knob { id: "attack", cx: 616.0, cy: 126.0, r: 21.0, caption: "ATTACK", bipolar: false },
-    Control::Knob { id: "release", cx: 752.0, cy: 126.0, r: 21.0, caption: "RELEASE", bipolar: false },
-    Control::Knob { id: "tension", cx: 888.0, cy: 126.0, r: 21.0, caption: "TENSION", bipolar: true },
-    Control::Knob { id: "hold", cx: 1024.0, cy: 126.0, r: 21.0, caption: "HOLD", bipolar: false },
+    // Automation IDs remain stable. LYNX's grid selects slots; these knobs remain
+    // accessible for hosts and existing project automation at the panel edges.
+    Control::Knob { id: "time_slot", cx: 46.0, cy: 71.0, r: 18.0, caption: "TIME SLOT", bipolar: false },
+    Control::Knob { id: "time_mix", cx: 121.0, cy: 71.0, r: 18.0, caption: "TIME MIX", bipolar: false },
+    Control::Knob { id: "hold", cx: 197.0, cy: 71.0, r: 18.0, caption: "HOLD", bipolar: false },
+    Control::Knob { id: "volume_slot", cx: 273.0, cy: 71.0, r: 18.0, caption: "VOL SLOT", bipolar: false },
+    Control::Knob { id: "volume_mix", cx: 46.0, cy: 656.0, r: 18.0, caption: "VOL MIX", bipolar: false },
+    Control::Knob { id: "attack", cx: 121.0, cy: 656.0, r: 18.0, caption: "ATTACK", bipolar: false },
+    Control::Knob { id: "release", cx: 197.0, cy: 656.0, r: 18.0, caption: "RELEASE", bipolar: false },
+    Control::Knob { id: "tension", cx: 273.0, cy: 656.0, r: 18.0, caption: "TENSION", bipolar: true },
 ];
 
 fn factory_state() -> Vec<u8> {
@@ -197,11 +201,11 @@ pub const SPEC: &Spec = &Spec {
     tail: &[],
     blank: Some(factory_state),
     locate: Some(state_parameter_offset),
-    size: (1100, 540),
-    cards: &[Card { x0: 8.0, x1: 1092.0, y0: 22.0, y1: 195.0, heading: "TIME TRAVEL & VOLUME" }],
+    size: (1100, 720),
+    cards: &[],
     controls: &CONTROLS,
     display: None,
-    mark: Mark { x: 1088.0, y: 526.0, anchor: 1.0, stacked: false },
+    mark: Mark { x: 1088.0, y: 698.0, anchor: 1.0, stacked: false },
     hint: None,
     labels: &[],
     text,
@@ -373,6 +377,17 @@ mod tests {
         let restored = lemon_small_fx::params::FxParams::new(SPEC);
         restored.deserialize_fields(&host_fields);
         assert_eq!(restored.raw_copy(), state, "the host state field must preserve every slot map and option byte");
+    }
+
+    #[test]
+    fn all_72_slot_thumbnails_and_titles_are_batched_from_lynx_state() {
+        let state = factory_state();
+        let mut levels = [0.0f32; 72 * 16];
+        let mut titles = [0u8; 72 * 32];
+        let count = unsafe { lynx_gb_state_thumbnails(state.as_ptr(), state.len(),
+            levels.as_mut_ptr(), 16, titles.as_mut_ptr(), 32) };
+        assert_eq!(count, 72);
+        assert!(levels.iter().all(|v| v.is_finite() && *v >= 0.0 && *v <= 1.0));
     }
 
     #[test]

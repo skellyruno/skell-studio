@@ -7,6 +7,7 @@
 #include <utility>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -417,6 +418,34 @@ int lynx_gb_state_set_midi_trigger(const std::uint8_t* data, std::size_t size, b
         if (!parsed) return -1;
         parsed->midiTrigger = enabled;
         return write_state_result(*parsed, out, capacity);
+    }
+    catch (...) { return -1; }
+}
+
+// Batched editor-only thumbnail/slot-title renderer. One state parse per frame,
+// following LYNX's 4x9 Gross Beat grids; never called from the audio thread.
+int lynx_gb_state_thumbnails(const std::uint8_t* data, std::size_t size,
+    float* out, int sampleCount, char* names, int nameBytes) noexcept
+{
+    if (data == nullptr || out == nullptr || names == nullptr ||
+        sampleCount < 8 || sampleCount > 128 || nameBytes < 8 || nameBytes > 96)
+        return -1;
+    try
+    {
+        const auto parsed = lynx::grossbeat::parseState(data, size);
+        if (!parsed) return -1;
+        for (int i = 0; i < 72; ++i)
+        {
+            const auto& slot = parsed->slots[static_cast<std::size_t>(i)];
+            const auto curve = lynx::grossbeat::renderSlot(slot, sampleCount);
+            if (curve.size() != static_cast<std::size_t>(sampleCount)) return -1;
+            std::copy(curve.begin(), curve.end(), out + static_cast<std::size_t>(i) * sampleCount);
+            auto* dest = names + static_cast<std::size_t>(i) * nameBytes;
+            std::memset(dest, 0, static_cast<std::size_t>(nameBytes));
+            const auto length = std::min(slot.name.size(), static_cast<std::size_t>(nameBytes - 1));
+            std::memcpy(dest, slot.name.data(), length);
+        }
+        return 72;
     }
     catch (...) { return -1; }
 }

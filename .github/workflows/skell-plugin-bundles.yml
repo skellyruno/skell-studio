@@ -1,4 +1,4 @@
-name: Skell Studio — Windows plugin suite bundles
+name: Skell Studio — Windows VST3-only plugin bundles
 
 on:
   push:
@@ -63,7 +63,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Build the complete Windows VST3 and CLAP plugin suite
+      - name: Build the complete Windows VST3 plugin suite
         shell: pwsh
         run: cargo run --locked --release -p bundle-plugins
 
@@ -73,14 +73,17 @@ jobs:
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
         run: cargo test --locked -p os-vst3 hosts_skell_plugins_and_roundtrips_component_state_through_host_wrapper -- --nocapture
 
-      - name: Validate requested core plugin bundles and AMD64 modules
+      - name: Validate 33 VST3 bundles and AMD64 modules
         shell: pwsh
         run: |
           $names = @("ML Limiter", "ML Delay", "ML Reverb", "ML Hall", "ML EQ", "ML Press", "Skell Beat", "Skell Compressor", "Skell Tune")
+          $allVst3 = @(Get-ChildItem -Path "target/bundled" -Directory -Filter "*.vst3")
+          if ($allVst3.Count -ne 33) { throw "Expected 33 VST3 bundles, found $($allVst3.Count)" }
+          $staleClap = @(Get-ChildItem -Path "target/bundled" -Filter "*.clap")
+          if ($staleClap.Count -ne 0) { throw "CLAP found in VST3-only release output" }
           foreach ($name in $names) {
             $vst3 = Join-Path "target/bundled" "$name.vst3/Contents/x86_64-win/$name.vst3"
-            $clap = Join-Path "target/bundled" "$name.clap"
-            foreach ($module in @($vst3, $clap)) {
+            foreach ($module in @($vst3)) {
               if (-not (Test-Path -LiteralPath $module -PathType Leaf)) {
                 throw "Missing plugin module: $module"
               }
@@ -102,24 +105,24 @@ jobs:
             }
           }
 
-      - name: Write exact-commit VST3/CLAP module checksums
+      - name: Write exact-commit VST3 module checksums
         shell: pwsh
         run: |
           $root = (Resolve-Path -LiteralPath "target/bundled").Path
           $modules = @(Get-ChildItem -LiteralPath $root -File -Recurse |
-            Where-Object { $_.Extension -in @(".vst3", ".clap") } |
+            Where-Object { $_.Extension -eq ".vst3" } |
             Sort-Object FullName)
-          $vst3 = @($modules | Where-Object { $_.Extension -eq ".vst3" })
-          $clap = @($modules | Where-Object { $_.Extension -eq ".clap" })
-          if ($vst3.Count -lt 9 -or $vst3.Count -ne $clap.Count) {
-            throw "VST3/CLAP module mismatch: VST3=$($vst3.Count), CLAP=$($clap.Count)"
+          $clap = @(Get-ChildItem -LiteralPath $root -Recurse |
+            Where-Object { $_.Extension -eq ".clap" })
+          if ($modules.Count -ne 33 -or $clap.Count -ne 0) {
+            throw "Expected 33 VST3 and zero CLAP modules, found VST3=$($modules.Count), CLAP=$($clap.Count)"
           }
           $manifest = @(
-            "Skell Studio Windows plugin bundle"
+            "Skell Studio Windows VST3-only plugin bundle"
             "Commit: $env:GITHUB_SHA"
             "Target: Windows x64 / AMD64"
-            "VST3 modules: $($vst3.Count)"
-            "CLAP modules: $($clap.Count)"
+            "VST3 modules: $($modules.Count)"
+            "CLAP modules: 0 (not distributed)"
             "SHA-256 checksums:"
           )
           foreach ($module in $modules) {
@@ -128,12 +131,12 @@ jobs:
             $manifest += "$hash  $relative"
           }
           $manifest | Set-Content -LiteralPath (Join-Path $root "BUILD_MANIFEST.txt") -Encoding utf8
-          Write-Host "Manifest generated: $($vst3.Count) VST3 and $($clap.Count) CLAP modules at $env:GITHUB_SHA"
+          Write-Host "Manifest generated: $($modules.Count) VST3 modules at $env:GITHUB_SHA"
 
-      - name: Upload Windows VST3 and CLAP plugin suite
+      - name: Upload Windows VST3 plugin suite
         uses: actions/upload-artifact@v4
         with:
-          name: SkellStudio-Windows-x64-VST3-CLAP-Plugin-Suite
+          name: SkellStudio-Windows-x64-VST3-Plugin-Suite
           path: target/bundled/
           if-no-files-found: error
           retention-days: 7

@@ -16,6 +16,77 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
+/// The original screenshot is only a visual reference. A real anatomy
+/// wallpaper will be used when the user's OG image is installed.
+const WALLPAPERS: &str = "Wallpapers";
+const MAX_IMAGE_BYTES: usize = 48 * 1024 * 1024;
+const DEFAULT_NAMES: [&str; 3] = ["skell-anatomy.png", "skell-anatomy.jpg", "skell-anatomy.jpeg"];
+
+pub fn library_dir() -> Option<PathBuf> { os_paths::user_dir().map(|p| p.join(WALLPAPERS)) }
+
+fn anatomy_default() -> Option<PathBuf> {
+    let dir = library_dir()?;
+    DEFAULT_NAMES.iter().map(|name| dir.join(name)).find(|p| p.is_file())
+}
+
+fn image_extension(path: &Path) -> bool {
+    path.extension().and_then(|x| x.to_str())
+        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg"))
+}
+
+/// Library files are referenced by path; themes and FL projects are not rewritten.
+fn saved_wallpapers() -> Vec<PathBuf> {
+    let Some(dir) = library_dir() else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut images: Vec<_> = entries.flatten().map(|e| e.path())
+        .filter(|p| p.is_file() && image_extension(p)).collect();
+    images.sort_by_key(|p| p.file_name().map(|s| s.to_ascii_lowercase()));
+    images.truncate(30);
+    images
+}
+
+/// Copy the selected image into the persistent library, preserving existing
+/// pictures and adding a numeric suffix on conflicts. UI thread only.
+fn import_picture(path: &Path) -> Result<PathBuf, String> {
+    if !image_extension(path) { return Err("Only PNG and JPEG wallpapers are supported".into()); }
+    let info = std::fs::metadata(path).map_err(|e| format!("Wallpaper unavailable: {e}"))?;
+    if info.len() == 0 || info.len() > MAX_IMAGE_BYTES as u64 {
+        return Err("Wallpaper must be 48 MB or smaller".into());
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("Could not read wallpaper: {e}"))?;
+    if decode(&bytes).is_none() {
+        return Err("Wallpaper is invalid or larger than the 8192-pixel limit".into());
+    }
+    let folder = library_dir().ok_or("No user wallpaper folder available")?;
+    std::fs::create_dir_all(&folder).map_err(|e| format!("Could not create wallpaper folder: {e}"))?;
+    let stem: String = path.file_stem().and_then(|s| s.to_str()).unwrap_or("wallpaper")
+        .chars().take(48).map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("png").to_ascii_lowercase();
+    for i in 0..256 {
+        let filename = if i == 0 { format!("{stem}.{ext}") } else { format!("{stem}-{i}.{ext}") };
+        let dest = folder.join(filename);
+        if dest.exists() {
+            if std::fs::read(&dest).ok().as_deref() == Some(bytes.as_slice()) { return Ok(dest); }
+            continue;
+        }
+        std::fs::write(&dest, &bytes).map_err(|e| format!("Could not save wallpaper: {e}"))?;
+        return Ok(dest);
+    }
+    Err("Too many wallpaper files with the same name".into())
+}
+
+fn selected_name(theme: Option<&str>) -> Option<String> {
+    match crate::settings_file::get("skell_wallpaper_mode").as_deref() {
+        Some("off") => None,
+        Some("custom") => crate::settings_file::get("skell_wallpaper_path")
+            .or_else(|| theme.map(str::to_owned)),
+        Some("default") => anatomy_default().map(|p| p.to_string_lossy().into_owned()),
+        _ => anatomy_default().map(|p| p.to_string_lossy().into_owned())
+            .or_else(|| theme.map(str::to_owned)),
+    }
+}
+
+
 use os_ui::Rect;
 
 use crate::app::Ui;
@@ -129,14 +200,14 @@ pub fn forget() {
 /// Draws the applied theme's picture over `work` (the workspace right of the browser), covering it. False when the
 /// theme has none or it cannot be read: the plain colour shows.
 pub fn paint(ui: &mut Ui, work: Rect) -> bool {
-    let Some(name) = ui.t.wallpaper.as_deref() else { return false };
+    let Some(name) = selected_name(ui.t.wallpaper.as_deref()) else { return false };
     let k = ui.c.scale;
     let (dw, dh) = ((work.w * k).round().max(1.0) as usize, (work.h * k).round().max(1.0) as usize);
     HELD.with(|held| {
         let mut held = held.borrow_mut();
         if held.as_ref().is_none_or(|h| h.name != name) {
             // Read once per name (a name still relative is the user folder's, where `current.flstheme` is).
-            let image = read(&resolve(name, crate::app::theme_dir().as_deref()));
+            let image = read(&resolve(&name, crate::app::theme_dir().as_deref()));
             *held = Some(Held { name: name.to_string(), image, scaled: None });
         }
         let h = held.as_mut().expect("just set");
@@ -155,11 +226,22 @@ pub fn paint(ui: &mut Ui, work: Rect) -> bool {
 /// the colour has no picker outside Theme ▸ Adjustments yet).
 pub fn items(_: &crate::app::State) -> Vec<crate::playlist::PItem> {
     use crate::playlist::{Cmd, PItem};
-    vec![
-        PItem::new("Set image wallpaper...", Cmd::Wallpaper),
-        PItem::new("Set dynamic wallpaper / HTML document...", Cmd::Nothing).off(),
-        PItem::new("Set background color...", Cmd::Nothing).off(),
-    ]
+    let mut out = vec![
+        PItem::new("Add wallpaper from picture...", Cmd::Wallpaper),
+        PItem::new("Use Skell anatomy default", Cmd::WallpaperDefault),
+        PItem::new("No wallpaper", Cmd::WallpaperOff),
+    ];
+    let saved = saved_wallpapers();
+    if !saved.is_empty() {
+        out.push(PItem::sep());
+        out.push(PItem::head("My wallpapers"));
+        for path in saved {
+            let name = path.file_stem().map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Picture".to_owned());
+            out.push(PItem::new(name, Cmd::WallpaperSelect(path)));
+        }
+    }
+    out
 }
 
 impl crate::app::App {
@@ -174,13 +256,41 @@ impl crate::app::App {
     /// The applied theme shows picture `path` over the workspace (`BackMode` 2, `BackPicFilename` its absolute name),
     /// live and kept for the next start, as Theme ▸ Adjustments keep their changes.
     pub(crate) fn set_wallpaper(&mut self, path: &Path) {
-        let name = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let name = if path.is_file() {
+            match import_picture(path) {
+                Ok(path) => path,
+                Err(message) => { self.state.message = Some(message); return; }
+            }
+        } else {
+            // Preserve loading of a legacy theme path even if the file was removed.
+            std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+        };
         let text = os_theme::fl::set_key(&self.theme_text(), "BackMode", "2");
         let text = os_theme::fl::set_key(&text, "BackPicFilename", &name.to_string_lossy());
         self.theme_edit(text);
         self.theme_store();
+        crate::settings_file::write("skell_wallpaper_path", &name.to_string_lossy());
+        crate::settings_file::write("skell_wallpaper_mode", "custom");
         forget();
-        self.state.message = Some(format!("Wallpaper: {}", name.display()));
+        self.state.message = Some(format!("Wallpaper saved: {}", name.display()));
+        self.invalidate();
+    }
+
+    pub(crate) fn wallpaper_default(&mut self) {
+        crate::settings_file::write("skell_wallpaper_mode", "default");
+        forget();
+        self.state.message = Some(match anatomy_default() {
+            Some(path) => format!("Skell anatomy wallpaper: {}", path.display()),
+            None => "Default selected; add the OG image as Wallpapers/skell-anatomy.png".to_owned(),
+        });
+        self.invalidate();
+    }
+
+    pub(crate) fn wallpaper_off(&mut self) {
+        crate::settings_file::write("skell_wallpaper_mode", "off");
+        forget();
+        self.state.message = Some("Wallpaper hidden; saved pictures are retained".to_owned());
+        self.invalidate();
     }
 }
 
@@ -194,12 +304,25 @@ mod tests {
     fn set_image_wallpaper() {
         let mut app = crate::app::App::new(None);
         let items = items(&app.state);
-        assert_eq!(items.iter().map(|i| (i.label.to_string(), i.enabled)).collect::<Vec<_>>(), [("Set image wallpaper...".to_string(), true), ("Set dynamic wallpaper / HTML document...".to_string(), false), ("Set background color...".to_string(), false)]);
+        assert_eq!(items[0].label, "Add wallpaper from picture...");
+        assert_eq!(items[1].label, "Use Skell anatomy default");
+        assert_eq!(items[2].label, "No wallpaper");
         let pic = std::env::temp_dir().join("lemon-wall.png");
         app.set_wallpaper(&pic);
         let text = app.state.fl_text.clone().unwrap();
         assert_eq!(os_theme::fl::get_key(&text, "BackMode").as_deref(), Some("2"));
         assert_eq!(app.theme.colors.wallpaper.as_deref().map(PathBuf::from), Some(pic));
+    }
+
+    #[test]
+    fn wallpaper_user_mode_does_not_modify_plugin_or_project_state() {
+        crate::settings_file::write("skell_wallpaper_mode", "off");
+        assert_eq!(selected_name(Some("C:/existing.jpg")), None);
+        crate::settings_file::write("skell_wallpaper_mode", "custom");
+        crate::settings_file::write("skell_wallpaper_path", "C:/selected.png");
+        assert_eq!(selected_name(None), Some("C:/selected.png".to_owned()));
+        assert!(image_extension(Path::new("Skell.PNG")));
+        assert!(!image_extension(Path::new("skell.exe")));
     }
 
     /// A relative name is the theme file's folder's, with `\` read as a separator; absolute names and the rest of the

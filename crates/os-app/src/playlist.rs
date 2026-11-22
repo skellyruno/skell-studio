@@ -513,6 +513,9 @@ pub enum Cmd {
     Arrange(crate::arrange::Layout),
     /// VIEW ▸ Background ▸ Set image wallpaper... (`crate::wallpaper`).
     Wallpaper,
+    WallpaperSelect(std::path::PathBuf),
+    WallpaperDefault,
+    WallpaperOff,
     /// A toolbar preset picked (spec: ui/toolbar-menu.md §8).
     ToolbarPreset(crate::toolbar::PresetId),
     /// The toolbar editor's Save preset as... and Delete preset.
@@ -5551,6 +5554,18 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         }
         Cmd::Wallpaper => {
             app.wallpaper_dialog();
+            return None;
+        }
+        Cmd::WallpaperSelect(path) => {
+            app.set_wallpaper(&path);
+            return None;
+        }
+        Cmd::WallpaperDefault => {
+            app.wallpaper_default();
+            return None;
+        }
+        Cmd::WallpaperOff => {
+            app.wallpaper_off();
             return None;
         }
         Cmd::ToolbarPreset(id) => {

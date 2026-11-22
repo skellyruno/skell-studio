@@ -29,27 +29,39 @@ struct Bridge
     bool started = false;
     lynx::grossbeat::State* state = nullptr; // owned by the audio thread after load
     std::atomic<lynx::grossbeat::State*> pendingState { nullptr }; // parsed on the editor thread
-    std::array<std::atomic<lynx::grossbeat::State*>, 64> retired {};
+    // Intrusive, unbounded retired-state stack: no allocations, locks, or frees
+    // on the audio callback, and no dropped pointers after 64 rapid edits.
+    std::atomic<lynx::grossbeat::State*> retiredHead { nullptr };
     lynx::grossbeat::MidiSlots midi;
 
     void retire(lynx::grossbeat::State* old) noexcept
     {
         if (old == nullptr) return;
-        for (auto& slot : retired)
+        auto* head = retiredHead.load(std::memory_order_relaxed);
+        do
         {
-            lynx::grossbeat::State* empty = nullptr;
-            if (slot.compare_exchange_strong(empty, old, std::memory_order_release, std::memory_order_relaxed))
-                return;
+            old->nextRetired = head;
+        } while (!retiredHead.compare_exchange_weak(
+            head, old, std::memory_order_release, std::memory_order_relaxed));
+    }
+
+    // Called by the control thread (or during destruction), never from process().
+    void reclaimRetired() noexcept
+    {
+        auto* head = retiredHead.exchange(nullptr, std::memory_order_acquire);
+        while (head != nullptr)
+        {
+            auto* next = head->nextRetired;
+            delete head;
+            head = next;
         }
-        // Never free or block on the audio thread if the retire queue is saturated.
     }
 
     ~Bridge()
     {
         delete pendingState.exchange(nullptr, std::memory_order_acq_rel);
         delete state;
-        for (auto& slot : retired)
-            delete slot.exchange(nullptr, std::memory_order_acq_rel);
+        reclaimRetired();
     }
 };
 
@@ -117,8 +129,7 @@ bool lynx_gb_load(void* instance, const std::uint8_t* data, std::size_t size) no
         delete b.state;
         b.state = next.release();
         delete b.pendingState.exchange(nullptr, std::memory_order_acq_rel);
-        for (auto& slot : b.retired)
-            delete slot.exchange(nullptr, std::memory_order_acq_rel);
+        b.reclaimRetired();
         b.midi.clear();
         b.engine.prepare(b.sampleRate, b.maxBlock);
         b.tempo = 120.0f;
@@ -418,8 +429,7 @@ bool lynx_gb_queue_state(void* instance, const std::uint8_t* data, std::size_t s
     auto& b = *static_cast<Bridge*>(instance);
     try
     {
-        for (auto& slot : b.retired)
-            delete slot.exchange(nullptr, std::memory_order_acq_rel);
+        b.reclaimRetired();
         auto parsed = lynx::grossbeat::parseState(data, size);
         if (!parsed) return false;
         for (const auto& slot : parsed->slots)

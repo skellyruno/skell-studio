@@ -56,6 +56,9 @@ struct State
     // 0x83f890). FL saves it as one byte after the slots in its version-9 state; every older state (all demo projects
     // and presets) reads as on. A bare new FL instance (constructor 0x83fcf0) has it off.
     bool midiTrigger = true;
+    // Skell bridge-only, lock-free retirement link. Not included in serialized FL state.
+    // Written before publishing an old snapshot to the control-thread reclaim list.
+    State* nextRetired = nullptr;
 };
 
 // MIDI control of the slots (round 190ee, the editor's MIDI handler 0x848330): the 36 time slots answer the keys

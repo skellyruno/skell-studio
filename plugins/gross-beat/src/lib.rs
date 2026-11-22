@@ -376,6 +376,24 @@ mod tests {
     }
 
     #[test]
+    fn repeated_editor_state_swaps_keep_audio_finite() {
+        // Exercise the same pending/retired snapshot handoff as rapid curve edits.
+        // Destruction and reclamation must happen outside lynx_gb_process().
+        let state = factory_state();
+        let instance = ptr::NonNull::new(unsafe { lynx_gb_new(48000, 256) })
+            .expect("Gross Beat bridge allocation");
+        assert!(unsafe { lynx_gb_load(instance.as_ptr(), state.as_ptr(), state.len()) });
+        for _ in 0..192 {
+            assert!(unsafe { lynx_gb_queue_state(instance.as_ptr(), state.as_ptr(), state.len()) });
+            let mut left = [0.125f32; 64];
+            let mut right = [-0.125f32; 64];
+            unsafe { lynx_gb_process(instance.as_ptr(), left.as_mut_ptr(), right.as_mut_ptr(), 64) };
+            assert!(left.iter().chain(right.iter()).all(|value| value.is_finite()));
+        }
+        unsafe { lynx_gb_delete(instance.as_ptr()) };
+    }
+
+    #[test]
     fn editor_exposes_eight_host_controls_and_the_full_curve_workspace() {
         let params = Arc::new(lemon_small_fx::params::FxParams::new(SPEC));
         let mut shared = lemon_small_fx::Shared::default();

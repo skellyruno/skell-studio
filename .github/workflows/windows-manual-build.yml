@@ -33,17 +33,9 @@ jobs:
         with:
           shared-key: skell-windows-exe
           cache-on-failure: true
-      - name: Validate Skell Beat cached preview and builtin vendor identity
-        shell: pwsh
-        env:
-          OPENSTUDIO_NO_PLUGIN_BUILD: "1"
-          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
-        run: |
-          cargo test --locked -p gross-beat --lib
-          if ($LASTEXITCODE -ne 0) { throw "Skell Beat regression tests failed" }
-          cargo test --locked -p os-app --bin skell-studio builtin_vendor_branding_preserves_plugin_identity
-          if ($LASTEXITCODE -ne 0) { throw "Skell Studio builtin vendor regression failed" }
-
+      # Plugin/Studio jobs independently run Beat and vendor regression tests.
+      # This job should build the Release-mode engineering EXE without a second
+      # full debug test harness compile beforehand.
       - name: Build Skell Studio Windows x64 engineering executable
         shell: pwsh
         env:

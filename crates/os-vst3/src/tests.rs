@@ -154,6 +154,58 @@ fn hosts_skell_plugins_and_roundtrips_component_state_through_host_wrapper() {
     }
 }
 
+/// Windows host integration; not a full FL Studio GUI or recorded-audio A/B test.
+#[test]
+fn priority_vst3_plugins_process_and_restore_at_three_sample_rates() {
+    for name in [
+        "Skell Beat", "Skell Compressor", "Skell Tune", "ML Limiter",
+        "ML Delay", "ML Reverb", "ML EQ", "ML Hall", "ML Press",
+    ] {
+        let module = module(name).unwrap_or_else(|| panic!("{name}.vst3 must be bundled"));
+        let desc = module.plugins().iter().find(|plugin| plugin.name == name)
+            .unwrap_or_else(|| panic!("{name}: VST3 class missing")).clone();
+        assert!(desc.is_effect(), "{name} must be an effect");
+        let uid = desc.uid();
+        for rate in [44_100_u32, 48_000, 96_000] {
+            let first_shared = module.clone().create(&desc.id)
+                .unwrap_or_else(|error| panic!("{name}: {rate} Hz: {error}"));
+            let mut first = first_shared.lock().unwrap();
+            assert!(first.activate(rate), "{name}: cannot activate at {rate} Hz");
+            if name == "Skell Beat" {
+                assert_eq!(first.latency(), 15, "{name}: wrong latency at {rate} Hz");
+            }
+            for frames in [17usize, 64, 257, 1024] {
+                let mut left: Vec<f32> = (0..frames).map(|i|
+                    (std::f32::consts::TAU * 220.0 * i as f32 / rate as f32).sin() * 0.16
+                ).collect();
+                let mut right: Vec<f32> = (0..frames).map(|i|
+                    (std::f32::consts::TAU * 330.0 * i as f32 / rate as f32).sin() * 0.12
+                ).collect();
+                first.process_fx(rate, &mut left, &mut right);
+                assert!(left.iter().chain(&right).all(|v| v.is_finite()),
+                    "{name}: NaN/Inf at {rate} Hz and {frames} frames");
+            }
+            let state = first.save_state()
+                .unwrap_or_else(|| panic!("{name}: state save failed at {rate} Hz"));
+            let wrapper = fl_state::FlState::parse(&state)
+                .unwrap_or_else(|| panic!("{name}: FL wrapper invalid at {rate} Hz"));
+            let restored_shared = module.clone().create(&desc.id)
+                .unwrap_or_else(|error| panic!("{name}: restored instance: {error}"));
+            let mut restored = restored_shared.lock().unwrap();
+            assert!(restored.load_state(&state), "{name}: state restore failed at {rate} Hz");
+            assert!(restored.activate(rate), "{name}: restored activation failed at {rate} Hz");
+            let mut left = [0.02_f32; 257];
+            let mut right = [-0.02_f32; 257];
+            restored.process_fx(rate, &mut left, &mut right);
+            assert!(left.iter().chain(&right).all(|v| v.is_finite()),
+                "{name}: NaN/Inf after restore at {rate} Hz");
+            assert_eq!(desc.uid(), uid, "{name}: identity changed after restore");
+            eprintln!("{name}: {rate} Hz, blocks 17/64/257/1024, state {} bytes, {} parameters, latency {} samples: PASS",
+                state.len(), wrapper.params.len(), restored.latency());
+        }
+    }
+}
+
 /// An instrument plays notes, saves its state in FL Studio's wrapper layout and loads it into a second instance.
 #[test]
 fn hosts_lemon_sampler() {

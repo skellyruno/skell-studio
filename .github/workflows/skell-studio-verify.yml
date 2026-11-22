@@ -90,9 +90,18 @@ jobs:
           OPENSTUDIO_NO_PLUGIN_BUILD: "1"
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
         run: cargo test --locked -p os-engine main_pitch_automation_preserves_follow_offsets_and_ignores_opt_outs -- --nocapture
+      - name: Read-only archive-first retirement dry run
+        shell: pwsh
+        run: |
+          ./scripts/retire_ancestry_verified_branches.ps1
+
       - name: Run FL FST preset import regression
         shell: pwsh
         env:
           OPENSTUDIO_NO_PLUGIN_BUILD: "1"
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
-        run: cargo test --locked -p os-app --bin skell-studio fl_fst_presets
+        run: |
+          cargo test --locked -p os-app --bin skell-studio fl_fst_presets
+          if ($LASTEXITCODE -ne 0) { throw "FL FST regression failed" }
+          cargo test --locked -p os-app --bin skell-studio builtin_vendor_branding_preserves_plugin_identity
+          if ($LASTEXITCODE -ne 0) { throw "Built-in vendor identity regression failed" }

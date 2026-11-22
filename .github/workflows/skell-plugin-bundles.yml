@@ -88,7 +88,7 @@ jobs:
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
         run: cargo test --locked -p os-vst3 hosts_skell_plugins_and_roundtrips_component_state_through_host_wrapper -- --nocapture
 
-      - name: Validate six priority Windows VST3 plugins in external pluginval host
+      - name: Validate all 33 Windows VST3 plugins in external pluginval host
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -102,23 +102,45 @@ jobs:
           Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
           $validator = Get-ChildItem -Path $dir -File -Recurse -Filter "pluginval.exe" | Select-Object -First 1
           if (-not $validator) { throw "pluginval v1.0.4 Windows executable missing from official archive" }
-          foreach ($name in @("Skell Beat", "Skell Compressor", "Skell Tune", "ML Limiter", "ML Delay", "ML Reverb")) {
-            $module = Join-Path (Resolve-Path "target/bundled").Path "$name.vst3"
-            if (-not (Test-Path -LiteralPath $module -PathType Container)) { throw "Missing VST3 $module" }
-            $base = $name -replace " ", "-"
+          $bundled = @(Get-ChildItem -LiteralPath "target/bundled" -Directory -Filter "*.vst3" | Sort-Object Name)
+          if ($bundled.Count -ne 33) { throw "Expected 33 VST3 bundles, found $($bundled.Count)" }
+          $failures = [System.Collections.Generic.List[string]]::new()
+          $summary = @("plugin,status,strictness,tool_version")
+          foreach ($bundle in $bundled) {
+            $name = [IO.Path]::GetFileNameWithoutExtension($bundle.Name)
+            $module = $bundle.FullName
+            $base = $name -replace '[^A-Za-z0-9_-]', '-'
             $log = Join-Path $reports "$base.out.txt"
             $err = Join-Path $reports "$base.err.txt"
-            $args = "--strictness-level 5 --skip-gui-tests --validate `"$module`""
-            Write-Host "pluginval v1.0.4, strictness 5: $name"
-            $p = Start-Process -FilePath $validator.FullName -ArgumentList $args -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError $err
+            $arguments = "--strictness-level 5 --skip-gui-tests --validate `"$module`""
+            Write-Host "pluginval v1.0.4 strictness 5: $name"
+            $proc = $null
+            $status = "PASS"
             try {
-              if (-not $p.WaitForExit(180000)) {
-                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-                throw "pluginval timeout: $name"
+              $proc = Start-Process -FilePath $validator.FullName -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError $err
+              if (-not $proc.WaitForExit(180000)) {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                $status = "TIMEOUT"
+              } elseif ($proc.ExitCode -ne 0) {
+                $status = "FAIL:$($proc.ExitCode)"
               }
-              if ($p.ExitCode -ne 0) { throw "pluginval failed with exit $($p.ExitCode): $name" }
+            } catch {
+              $status = "ERROR"
+              "$_" | Add-Content -LiteralPath $err
+            } finally {
+              if ($null -ne $proc) { $proc.Dispose() }
+            }
+            $summary += "$name,$status,5,1.0.4"
+            if ($status -eq "PASS") {
               Write-Host "pluginval passed: $name"
-            } finally { $p.Dispose() }
+            } else {
+              $failures.Add("$name=$status")
+              Write-Warning "pluginval failed: $name ($status)"
+            }
+          }
+          $summary | Set-Content -LiteralPath (Join-Path $reports "PLUGINVAL_ALL_33_SUMMARY.csv") -Encoding utf8
+          if ($failures.Count -gt 0) {
+            throw "External VST3 validation failures ($($failures.Count)/33): $($failures -join ', ')"
           }
       - name: Upload external VST3 validator reports
         if: always()
@@ -128,6 +150,12 @@ jobs:
           path: target/pluginval-reports/
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Stress priority VST3s at 44.1/48/96 kHz through Studio host
+        shell: pwsh
+        env:
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        run: cargo test --locked -p os-vst3 priority_vst3_plugins_process_and_restore_at_three_sample_rates -- --nocapture
 
       - name: Validate 33 VST3 bundles and AMD64 modules
         shell: pwsh

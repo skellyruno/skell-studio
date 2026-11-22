@@ -173,6 +173,24 @@ jobs:
           if ($modules.Count -ne 33 -or $clap.Count -ne 0) {
             throw "Expected 33 VST3 and zero CLAP modules, found VST3=$($modules.Count), CLAP=$($clap.Count)"
           }
+          foreach ($needed in @(
+            "LICENSE-GPL-3.0-or-later.txt",
+            "THIRD-PARTY-NOTICES.txt",
+            "CREDITS_AND_LICENSES.md",
+            "SKELL-BEAT-LYNX-UI-NOTICE.md",
+            "SOURCE_AND_LICENSE_README.txt",
+            "licenses/Skell-Beat-AGPL-3.0.txt",
+            "licenses/Skell-Compressor-AGPL-3.0.txt",
+            "licenses/ML-Limiter-AGPL-3.0.txt",
+            "licenses/ML-Delay-AGPL-3.0.txt",
+            "licenses/ML-Reverb-AGPL-3.0.txt"
+          )) {
+            $file = Join-Path $root $needed
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Required release license or source notice missing: $needed" }
+            if ((Get-Item -LiteralPath $file).Length -lt 80) { throw "Suspiciously small license or source notice: $needed" }
+          }
+          $readme = Get-Content -LiteralPath (Join-Path $root "SOURCE_AND_LICENSE_README.txt") -Raw
+          if (-not $readme.Contains($env:SKELL_SOURCE_SHA)) { throw "Source notice does not match checkout revision" }
           $manifest = @(
             "Skell Studio Windows VST3-only plugin bundle"
             "Commit: $env:SKELL_SOURCE_SHA"

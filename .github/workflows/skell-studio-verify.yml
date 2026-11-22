@@ -72,6 +72,24 @@ jobs:
         run: |
           cargo check --locked -p os-app --bin skell-studio
           cargo check --locked -p os-app --bin skell-studio --features rt-audit
+      - name: Validate branch retirement script parses (never execute)
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/retire_ancestry_verified_branches.ps1).Path,
+            [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            throw "Branch retirement PowerShell syntax errors: $($errors.Count)"
+          }
+      - name: Verify main-pitch automation preserves channel offsets and opt-outs
+        shell: pwsh
+        env:
+          OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        run: cargo test --locked -p os-engine main_pitch_automation_preserves_follow_offsets_and_ignores_opt_outs -- --nocapture
       - name: Run FL FST preset import regression
         shell: pwsh
         env:

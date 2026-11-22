@@ -35,3 +35,6 @@ Inventory read from GitHub REST: 25 refs (1 main + 24 others). SHAs below are th
 | `main` | `bc857c1808378410420cdd40d8585b0be6fbfbb4` | protect |
 
 Source comparison details: `docs/BRANCH_CONSOLIDATION_AUDIT_2026-11-22.md`. The original 22 PRs had exactly one open draft (PR #22); closed PRs and historical branches are independent concepts.
+
+## Executable safe retirement plan
+`scripts/retire_ancestry_verified_branches.ps1` only acts on seven exact ancestry-contained historical SHA tips, never on `main` or the candidate. Default invocation checks ancestry and prints a plan. The explicit `-Apply -ConfirmArchiveAndRetire` mode first creates and verifies Git archive tag refs (which must remain protected from later deletion), then deletes each original branch using an exact-SHA `--force-with-lease`. Divergent histories are deliberately excluded and not safe for automatic deletion. GitHub connector in this session has no remote branch-delete action; **no branches were deleted here**. Only use the destructive mode after the legal/user owner has accepted branch retirement and the tip/merge-base verification still passes.

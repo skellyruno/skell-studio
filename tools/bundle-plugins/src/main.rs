@@ -30,6 +30,61 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+
+fn stage_distribution_metadata(root: &Path, out: &Path) {
+    // Copies are part of the distributable archive, not an installed plugin:
+    // do not alter host-visible VST3 identities, presets or existing CLAP files.
+    let documents = [
+        ("LICENSE", "LICENSE-GPL-3.0-or-later.txt"),
+        ("THIRD-PARTY-NOTICES.txt", "THIRD-PARTY-NOTICES.txt"),
+        ("CREDITS_AND_LICENSES.md", "CREDITS_AND_LICENSES.md"),
+        ("plugins/gross-beat/vendor/LYNX-UI-NOTICE.md", "SKELL-BEAT-LYNX-UI-NOTICE.md"),
+    ];
+    for (from, to) in documents {
+        std::fs::copy(root.join(from), out.join(to))
+            .unwrap_or_else(|err| panic!("required distribution notice {from}: {err}"));
+    }
+    // LYNX-derived source is AGPL, independently of the GPL root license.
+    // Each archive carries its affected plugin's complete AGPL license.
+    let agpl = [
+        ("gross-beat", "Skell-Beat"),
+        ("fruity-compressor", "Skell-Compressor"),
+        ("lemon-limiter", "ML-Limiter"),
+        ("lemon-delay", "ML-Delay"),
+        ("lemon-reverb", "ML-Reverb"),
+    ];
+    let licenses = out.join("licenses");
+    std::fs::create_dir_all(&licenses).expect("create plugin license folder");
+    for (pkg, display) in agpl {
+        let from = root.join("plugins").join(pkg).join("LICENSE-AGPL-3.0.txt");
+        let to = licenses.join(format!("{display}-AGPL-3.0.txt"));
+        std::fs::copy(&from, &to)
+            .unwrap_or_else(|err| panic!("required AGPL license {}: {err}", from.display()));
+    }
+    let revision = std::env::var("SKELL_SOURCE_SHA").ok()
+        .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+        .or_else(|| Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root)
+            .output().ok().filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|o| o.trim().to_owned()));
+    let revision = revision.unwrap_or_else(|| "UNKNOWN-SOURCE-REVISION".to_owned());
+    let readme = format!(
+        "SKELL STUDIO | WINDOWS/MAC/LINUX VST3 ENGINEERING BUNDLE\n\
+         Source revision: {revision}\n\
+         Repository: https://github.com/skellyruno/skell-studio\n\
+         Exact matching source: https://github.com/skellyruno/skell-studio/tree/{revision}\n\
+         Format: VST3 ONLY. Legacy installed CLAP plugins are not deleted; they have distinct host identities.\n\
+         Scope: engineering validation, not an approved stable/proprietary release.\n\
+         The top-level LICENSE-GPL-3.0-or-later.txt, THIRD-PARTY-NOTICES.txt, CREDITS_AND_LICENSES.md\n\
+         and licenses/*-AGPL-3.0.txt are required records; do not remove on redistribution.\n\
+         LYNX engine and editor adaptations have AGPL-3.0-only provenance.\n\
+         Source availability, attribution, dependency and commercial distribution compliance\n\
+         require legal verification before publication. A VST3 file does not waive these obligations.\n"
+    );
+    std::fs::write(out.join("SOURCE_AND_LICENSE_README.txt"), readme)
+        .expect("write source and license provenance");
+}
+
 fn main() {
     let install = std::env::args().any(|a| a == "--install");
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repository root");
@@ -92,6 +147,7 @@ fn main() {
             println!("installed VST3 to {}", vst3_dir.display());
         }
     }
+    stage_distribution_metadata(&root, &out);
 }
 
 /// VST3 module inside the platform bundle.

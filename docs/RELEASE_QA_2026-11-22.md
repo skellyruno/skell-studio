@@ -28,3 +28,8 @@ The first pinned-head Windows run (`4ec7080`) exposed an E0277 Rust type mismatc
 The deterministic DSP report now captures synthetic dry/wet RMS, unaligned residual, and per-callback P95/P99/max at 64 frames and 44.1/48/96 kHz. These are CI runner diagnostics, **not** real recorded-file listening tests, and the residual is not latency-aligned.
 
 The plugin suite now invokes external `pluginval` v1.0.4 (pinned official Tracktion release) at strictness level 5 without GUI tests, for Skell Beat, Skell Compressor, Skell Tune, ML Limiter, ML Delay, and ML Reverb. Exit status is a hard CI gate, reports are artifacts. This is independent plugin-host validation, not an FL Studio session or a replacement for GUI/DAW recall tests.
+
+## Packaging provenance and legal notice inclusion
+The initial 33-module VST3 engineering artifact had checksums but no adjacent root GPL / LYNX AGPL notices. The bundler now stages top-level GPL license, third-party notices, attribution, pinned source commit README, Skell Beat LYNX UI notice, and five LYNX-derived plugin AGPL license texts in `target/bundled`. CI verifies presence, nontrivial file size and source revision match. This improves engineering archive provenance; it **does not** certify legal redistribution compliance or substitute for full corresponding-source obligations. Original historical CLAP binaries remain untouched.
+
+The main-pitch follow-offset regression is now an explicit Windows `os-engine` test gate instead of a test merely present in the repository.

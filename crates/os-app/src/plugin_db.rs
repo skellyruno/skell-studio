@@ -738,7 +738,7 @@ pub fn category(d: &Descriptor) -> &'static str {
 }
 
 /// The built-in plugins' vendor in the menus.
-pub const BUILTIN_VENDOR: &str = "AQUILA";
+pub const BUILTIN_VENDOR: &str = "Skell Studio";
 pub const NO_VENDOR: &str = "(unknown vendor)";
 
 /// A plugin as the menus list it.
@@ -1107,6 +1107,24 @@ mod tests {
         assert!(!vendors_match("Xfer Records", "Vital Audio"));
     }
 
+    #[test]
+    fn builtin_vendor_branding_preserves_plugin_identity() {
+        let mut built_in = fx(Format::Vst3, "legacy.uid", "Legacy Builtin", "Original Vendor");
+        built_in.desc.path = std::env::current_exe().expect("test binary path");
+        let stable_uid = built_in.desc.uid();
+        let stable_vendor = built_in.desc.vendor.clone();
+        let menu = entries(&[built_in.clone()], &Prefs::default(), &HashSet::new());
+        assert!(menu[0].builtin);
+        assert_eq!(menu[0].vendor, "Skell Studio");
+        assert_eq!(menu[0].uid, stable_uid);
+        assert_eq!(built_in.desc.uid(), stable_uid);
+        assert_eq!(built_in.desc.vendor, stable_vendor);
+
+        let external = fx(Format::Vst3, "external.uid", "Outside", "Third Party Audio");
+        let menu = entries(&[external], &Prefs::default(), &HashSet::new());
+        assert!(!menu[0].builtin);
+        assert_eq!(menu[0].vendor, "Third Party Audio");
+    }
     /// Installed bundles of the built-in Lemon plugins are not scanned: the built-in copy is used.
     #[test]
     fn installed_copies_of_built_in_plugins_are_skipped() {

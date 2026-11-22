@@ -52,6 +52,7 @@ const SLOT_GAP: f32 = 4.0;
 const TIME_GRID_Y: f32 = 163.0;
 const VOLUME_GRID_Y: f32 = 388.0;
 const THUMB_SAMPLES: usize = 16;
+const GRAPH_SAMPLES: usize = 256;
 const NAME_BYTES: usize = 32;
 const SNAP_LABELS: [&str; 6] = ["OFF", "1/16", "1/8", "1/4", "1/2", "1 BEAT"];
 const SNAP_BEATS: [f64; 6] = [0.0, 0.0625, 0.125, 0.25, 0.5, 1.0];
@@ -104,11 +105,37 @@ struct TileCache {
     ready: bool,
     levels: [f32; 72 * THUMB_SAMPLES],
     titles: [u8; 72 * NAME_BYTES],
+    // Cache text labels on state changes instead of allocating 72 Strings per repaint.
+    display_names: [String; 72],
 }
 impl Default for TileCache {
     fn default() -> Self {
         Self { version: 0, ready: false, levels: [0.0; 72 * THUMB_SAMPLES],
-            titles: [0; 72 * NAME_BYTES] }
+            titles: [0; 72 * NAME_BYTES],
+            display_names: std::array::from_fn(|i| format!("{:02}", i % 36 + 1)) }
+    }
+}
+
+// Cache editor-only previews across frames. MIDI, curve data and point handles
+// are recomputed when host state or the selected 72-slot index changes.
+struct SlotRenderCache {
+    version: u64,
+    slot: i32,
+    ready: bool,
+    points: Vec<Point>,
+    midi: bool,
+    curve: [f32; GRAPH_SAMPLES],
+    curve_ready: bool,
+}
+impl Default for SlotRenderCache {
+    fn default() -> Self {
+        Self { version: 0, slot: -1, ready: false, points: Vec::new(),
+            midi: false, curve: [0.0; GRAPH_SAMPLES], curve_ready: false }
+    }
+}
+impl SlotRenderCache {
+    fn needs_refresh(&self, version: u64, slot: i32) -> bool {
+        !self.ready || self.version != version || self.slot != slot
     }
 }
 
@@ -117,12 +144,14 @@ pub struct BeatEditorExtension {
     engine: AtomicUsize,
     ui: Mutex<UiState>,
     tiles: Mutex<TileCache>,
+    slot_render: Mutex<SlotRenderCache>,
 }
 
 impl BeatEditorExtension {
     pub fn new(params: Arc<FxParams>) -> Self {
         Self { params, engine: AtomicUsize::new(0), ui: Mutex::new(UiState::default()),
-            tiles: Mutex::new(TileCache::default()) }
+            tiles: Mutex::new(TileCache::default()),
+            slot_render: Mutex::new(SlotRenderCache::default()) }
     }
 
     fn raw(&self) -> Vec<u8> { self.params.raw_copy() }
@@ -255,18 +284,37 @@ impl Extension for BeatEditorExtension {
 
     fn paint(&self, c: &mut Canvas, _model: &dyn view::Model) {
         let ui = self.ui.lock().unwrap_or_else(|e| e.into_inner());
+        // Read the version first so a concurrent state write is never silently
+        // cached under a newer version than the raw snapshot being rendered.
+        let version = self.params.raw_version.load(Ordering::Acquire);
         let raw = self.raw();
         let slot = Self::slot_index(&ui);
-        let points = self.points(&raw, slot);
-        let midi = self.midi_enabled(&raw);
+        let mut slot_render = self.slot_render.lock().unwrap_or_else(|e| e.into_inner());
+        if slot_render.needs_refresh(version, slot) {
+            let points = self.points(&raw, slot);
+            let midi = self.midi_enabled(&raw);
+            let rendered = unsafe { lynx_gb_state_render_slot(raw.as_ptr(), raw.len(), slot,
+                slot_render.curve.as_mut_ptr(), GRAPH_SAMPLES as i32) };
+            slot_render.points = points;
+            slot_render.midi = midi;
+            slot_render.curve_ready = rendered == GRAPH_SAMPLES as i32;
+            slot_render.version = version;
+            slot_render.slot = slot;
+            slot_render.ready = true;
+        }
+        let points = &slot_render.points;
+        let midi = slot_render.midi;
         let mut tiles = self.tiles.lock().unwrap_or_else(|e| e.into_inner());
-        let version = self.params.raw_version.load(Ordering::Acquire);
         if !tiles.ready || tiles.version != version {
             // Editor thread only; the audio callback uses its own pre-parsed state.
             let TileCache { levels, titles, .. } = &mut *tiles;
             let count = unsafe { lynx_gb_state_thumbnails(raw.as_ptr(), raw.len(),
                 levels.as_mut_ptr(), THUMB_SAMPLES as i32, titles.as_mut_ptr(), NAME_BYTES as i32) };
             tiles.ready = count == 72;
+            if tiles.ready {
+                tiles.display_names = std::array::from_fn(|index|
+                    Self::slot_name(&tiles.titles, index));
+            }
             tiles.version = version;
         }
         let time_color = brand::MAIN;
@@ -311,10 +359,8 @@ impl Extension for BeatEditorExtension {
                     }
                 }
                 if active || editing { c.stroke_rrect(rect, 2.0, if editing { 1.5 } else { 1.0 }, color); }
-                let name = Self::slot_name(&tiles.titles, source);
-                let title: String = name.chars().take(14).collect();
                 c.text_clip(Font::new(9).bold(), x + 5.0, y + 1.0, SLOT_W - 10.0,
-                    if active || editing { text } else { muted }, &title);
+                    if active || editing { text } else { muted }, &tiles.display_names[source]);
             }
         }
         // Time and Volume tabs, independent of the slot grids.
@@ -326,7 +372,7 @@ impl Extension for BeatEditorExtension {
             Self::draw_text(c, x + 25.0, 51.0, if on { text } else { muted },
                 if kind == 0 { "TIME" } else { "VOLUME" });
         }
-        let name = Self::slot_name(&tiles.titles, ui.kind * 36 + ui.slot);
+        let name = &tiles.display_names[ui.kind * 36 + ui.slot];
         c.text_clip(Font::new(12).bold(), 643.0, 51.0, 425.0, accent,
             &format!("{} SLOT {:02}  /  {}", if ui.kind == 0 { "TIME" } else { "VOLUME" }, ui.slot + 1,
                 if name == format!("{:02}", ui.slot + 1) { "UNTITLED" } else { &name }));
@@ -358,14 +404,13 @@ impl Extension for BeatEditorExtension {
             c.line(GRAPH_X, y, GRAPH_X + GRAPH_W, y, 0.7, grid_line);
         }
         if ui.kind == 0 { c.line(GRAPH_X, GRAPH_Y, GRAPH_X + GRAPH_W, GRAPH_Y + GRAPH_H * 0.5, 0.8, inactive); }
-        let mut curve = [0.0f32; 256];
-        let rendered = unsafe { lynx_gb_state_render_slot(raw.as_ptr(), raw.len(), slot,
-            curve.as_mut_ptr(), curve.len() as i32) };
-        if rendered == curve.len() as i32 {
-            let mut path = [(0.0f32, 0.0f32); 256];
-            for (i, level) in curve.iter().enumerate() {
-                path[i] = (GRAPH_X + i as f32 / (curve.len() - 1) as f32 * GRAPH_W,
-                    GRAPH_Y + (1.0 - level.clamp(0.0, 1.0)) * GRAPH_H);
+        if slot_render.curve_ready {
+            let mut path = [(0.0f32, 0.0f32); GRAPH_SAMPLES];
+            for (i, level) in slot_render.curve.iter().enumerate() {
+                // The graph is bounded visual geometry, not the DSP signal.
+                let display_level = if level.is_finite() { level.clamp(0.0, 1.0) } else { 1.0 };
+                path[i] = (GRAPH_X + i as f32 / (GRAPH_SAMPLES - 1) as f32 * GRAPH_W,
+                    GRAPH_Y + (1.0 - display_level) * GRAPH_H);
             }
             c.polyline(&path, 2.0, accent);
         }
@@ -516,6 +561,18 @@ impl Extension for BeatEditorExtension {
 #[cfg(test)]
 mod lynx_grid_tests {
     use super::*;
+    #[test]
+    fn slot_preview_cache_only_invalidates_for_new_state_or_slot() {
+        let mut cache = SlotRenderCache::default();
+        assert!(cache.needs_refresh(1, 0));
+        cache.version = 1;
+        cache.slot = 0;
+        cache.ready = true;
+        assert!(!cache.needs_refresh(1, 0), "stable repaint reuses previews");
+        assert!(cache.needs_refresh(2, 0), "host state update invalidates cache");
+        assert!(cache.needs_refresh(1, 36), "switching banks invalidates cache");
+    }
+
     #[test]
     fn both_four_by_nine_slot_banks_cover_all_72_slots() {
         assert_eq!(slot_hit(SLOT_X + 5.0, TIME_GRID_Y + 5.0), Some((0, 0)));

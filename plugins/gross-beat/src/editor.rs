@@ -91,11 +91,13 @@ struct UiState {
     snap: usize,
     selected: Option<usize>,
     dragging: bool,
+    /// Mouse hover is UI-only; never written into the 72-slot saved state.
+    hovered: Option<(usize, usize)>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        Self { kind: 0, slot: 0, snap: 2, selected: None, dragging: false }
+        Self { kind: 0, slot: 0, snap: 2, selected: None, dragging: false, hovered: None }
     }
 }
 
@@ -335,7 +337,7 @@ impl Extension for BeatEditorExtension {
         let body = Color::rgb(0x0c1418);
         let tile = Color::rgb(0x19252b);
         let inactive = Color::rgb(0x26333a);
-        let muted = Color::rgb(0x83979d);
+        let muted = Color::rgb(0xa3bbc0);
         let text = brand::TEXT;
         let grid_line = Color::rgb(0x29404b);
         let dark = Color::rgb(0x091014);
@@ -355,8 +357,10 @@ impl Extension for BeatEditorExtension {
                 let y = top + (index / 4) as f32 * (SLOT_H + SLOT_GAP);
                 let active = index == live_slot;
                 let editing = ui.kind == kind && ui.slot == index;
+                let hovered = ui.hovered == Some((kind, index));
                 let rect = Rect::new(x, y, SLOT_W, SLOT_H);
-                c.fill_rrect(rect, 2.0, if editing { Color::rgb(0x304449) } else if active { tile } else { dark });
+                c.fill_rrect(rect, 2.0,
+                    if editing { Color::rgb(0x304449) } else if active || hovered { tile } else { dark });
                 let source = kind * 36 + index;
                 if tiles.ready {
                     let mut path = [(0.0f32, 0.0f32); THUMB_SAMPLES];
@@ -370,10 +374,22 @@ impl Extension for BeatEditorExtension {
                         c.polyline(&path, 1.0, if editing { color } else { inactive });
                     }
                 }
-                if active || editing { c.stroke_rrect(rect, 2.0, if editing { 1.5 } else { 1.0 }, color); }
+                if active || editing || hovered { c.stroke_rrect(rect, 2.0,
+                    if editing { 1.5 } else { 1.0 }, color); }
                 c.text_clip(Font::new(9).bold(), x + 5.0, y + 1.0, SLOT_W - 10.0,
                     if active || editing { text } else { muted }, &tiles.display_names[source]);
             }
+        }
+        // Dense LYNX-style grids truncate 70px names. Hover shows the full
+        // cached title in the unused bank-header area, with no allocations on
+        // stable repaints or need to change 72-slot geometry.
+        if let Some((kind, index)) = ui.hovered {
+            let row_y = if kind == 0 { 139.0 } else { 364.0 };
+            let label_x = if kind == 0 { 139.0 } else { 156.0 };
+            let color = if kind == 0 { time_color } else { volume_color };
+            let label = &tiles.display_names[kind * 36 + index];
+            c.text_clip(Font::new(10).bold(), label_x, row_y, 304.0 - label_x,
+                color, label);
         }
         // Time and Volume tabs, independent of the slot grids.
         for (kind, x) in [(0, 415.0), (1, 526.0)] {
@@ -528,8 +544,13 @@ impl Extension for BeatEditorExtension {
     }
 
     fn moved(&self, x: f32, y: f32) -> bool {
-        let ui = self.ui.lock().unwrap_or_else(|e| e.into_inner());
-        if !ui.dragging { return false; }
+        let mut ui = self.ui.lock().unwrap_or_else(|e| e.into_inner());
+        if !ui.dragging {
+            let next = slot_hit(x, y);
+            if ui.hovered == next { return false; }
+            ui.hovered = next;
+            return true; // request repaint only when the hovered tile changes
+        }
         if let Some(index) = ui.selected {
             if x >= GRAPH_X && x <= GRAPH_X + GRAPH_W && y >= GRAPH_Y && y <= GRAPH_Y + GRAPH_H {
                 let (beat, level) = Self::graph_point(x, y, ui.snap);
@@ -573,6 +594,21 @@ impl Extension for BeatEditorExtension {
 #[cfg(test)]
 mod lynx_grid_tests {
     use super::*;
+    #[test]
+    fn slot_hover_shows_whole_title_without_changing_audio_or_automation() {
+        let params = Arc::new(FxParams::new(crate::SPEC));
+        let extension = BeatEditorExtension::new(Arc::clone(&params));
+        let px = SLOT_X + SLOT_W + SLOT_GAP + 5.0;
+        let py = TIME_GRID_Y + 5.0;
+        let before = params.v(0);
+        assert!(extension.moved(px, py));
+        assert_eq!(extension.ui.lock().unwrap().hovered, Some((0, 1)));
+        assert!(!extension.moved(px, py), "stable cursor should not repaint repeatedly");
+        assert_eq!(params.v(0), before, "hover must not change host automation");
+        assert!(extension.moved(1.0, 1.0), "leaving grid clears the full label");
+        assert_eq!(extension.ui.lock().unwrap().hovered, None);
+    }
+
     #[test]
     fn host_slot_automation_updates_the_curve_panel_selection() {
         let params = Arc::new(FxParams::new(crate::SPEC));

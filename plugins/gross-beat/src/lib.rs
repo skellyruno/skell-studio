@@ -512,12 +512,19 @@ mod tests {
         let mut shared = lemon_small_fx::Shared::default();
         shared.extension = BeatKind::editor_extension(params.clone());
         let shared = Arc::new(shared);
+        let extension = shared.extension.clone();
         let mut logic = editor::Logic::new(SPEC, params, shared, None);
         let mut canvas = os_ui::Canvas::new(SPEC.size.0, SPEC.size.1, 1.0).unwrap();
         logic.paint(&mut canvas, &os_plugkit::palette());
         assert_eq!(logic.hits.iter().filter(|h| matches!(h.t, lemon_small_fx::view::Target::Knob(_))).count(), 8);
         if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
-            canvas.pixmap.save_png(std::path::PathBuf::from(dir).join("skell-beat.png")).unwrap();
+            let dir = std::path::PathBuf::from(dir);
+            canvas.pixmap.save_png(dir.join("skell-beat.png")).unwrap();
+            if let Some(extension) = extension {
+                assert!(extension.moved(94.0, 168.0), "native hover must trigger repaint");
+                logic.paint(&mut canvas, &os_plugkit::palette());
+                canvas.pixmap.save_png(dir.join("skell-beat-hover.png")).unwrap();
+            }
         }
     }
 }

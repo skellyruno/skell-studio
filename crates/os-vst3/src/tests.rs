@@ -111,6 +111,13 @@ fn hosts_skell_plugins_and_roundtrips_component_state_through_host_wrapper() {
         let shared = m.clone().create(&d.id).unwrap_or_else(|e| panic!("create {name}: {e}"));
         let mut first = shared.lock().unwrap();
         assert!(first.activate(48000), "{name} activates at 48 kHz");
+        // pluginval's "Plugin info" section can query before VST3 activation.
+        // Verify *actual active host* delay compensation instead of treating a
+        // pre-activation latency=0 as the DSP's steady-state latency.
+        if name == "Skell Beat" {
+            assert_eq!(first.latency(), 15,
+                "active Skell Beat VST3 must report LYNX's 15-sample latency for host PDC");
+        }
         let info = (0..first.param_count())
             .filter_map(|index| first.param_info(index))
             .find(|parameter| parameter.automatable && !parameter.read_only)

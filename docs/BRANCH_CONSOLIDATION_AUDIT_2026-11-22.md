@@ -37,7 +37,7 @@ These branch commits already occur in the release candidate's ancestry; no repea
 | `fix/host-link-command-exhaustiveness` | All three touched files match candidate exactly. |
 | `fix/quickview-exit-status-four-scenes-20261115` | Six of ten touched files match, including QuickView commands/scripts; app and workflow have newer revisions. |
 | `fix/recent-project-error-string-and-pr-build-check` | Recent/splash source files match exactly; verify workflow has newer revisions. |
-| `main` | Independent base; one ahead commit/file relating to Fruity Compressor AGPL license. Do **not** overwrite or merge licensing differences without review. |
+| `main` | Independent base; its one ahead commit refers to the Fruity Compressor AGPL license, but the current license file blob matches the candidate byte-for-byte (`be3f7b28e564e7dd05eaf59d64adba1a4065ac0e`). Preserve history; no license replacement needed. |
 
 ## Additive consolidation in this audit
 
@@ -54,3 +54,11 @@ Warnings remain on the plugin job: MSVC C compiler-family probe failures in `os-
 ## Outstanding release gates
 
 Keep PR #22 draft and unmerged. Do not distribute this as a validated stable release without: full FL Studio project save/close/reopen; third-party DAW scanning/editor/automation tests; real audio A/B at 44.1/48/96 kHz; sample-rate/buffer stress and CPU/latency/realtime-allocation audit; and legal review of LYNX-derived AGPL/GPL and source attribution. Latest-head Windows CI success is not a substitute for those checks.
+
+## Follow-up: latest candidate, VST3-only packaging, and Windows application EXE
+
+The release-candidate branch advanced after the original audit to `aa912eada4bfb85975f786eca9631219887c1455` with VST3-only packaging and a LYNX-style two-bank Skell Beat UI. This is distinct from the previously audited `66144982` source snapshot. The VST3/CLAP verification text in this historical audit describes the earlier state. **The current build packages VST3 only**, without deleting legacy CLAP installations, as detailed in `docs/SKELL_STUDIO_VST3_ONLY_BEAT_LYNX_UI.md`.
+
+Windows executable request: this follow-up enables the **existing** `windows-manual-build.yml` on pushes to draft PR #22's candidate branch. Its command is `cargo build --locked --release -p os-app --bin skell-studio` with `OPENSTUDIO_NO_PLUGIN_BUILD=1`. It is a full Windows x64 Release-mode **engineering app EXE**, not the VST3 bundle, not the `skell-preview` QuickView binary, and not a bundled-plugin installer. The existing PE x64 verification, SHA-256 and artifact manifest stay in place; the workflow now also checks `git rev-parse HEAD` against `GITHUB_SHA` and uses safe concurrency for superseded feature pushes only.
+
+Conflict dispositions stay conservative: older preset/starter-pack and theme variants, different build workflows, and old Skell Beat/LYNX license notices are *not* copied over the newer candidate without compatibility testing. Full FL Studio project reopen, external DAW test, CPU/latency, real audio A/B, and AGPL/legal review remain unverified release gates. A successful GitHub Actions build is engineering evidence, not final release approval.

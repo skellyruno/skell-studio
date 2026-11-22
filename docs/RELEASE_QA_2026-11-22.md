@@ -21,3 +21,10 @@ The new workflow explicitly checks out `${{ github.event.pull_request.head.sha |
 5. **Licensing:** AGPL-3.0-only LYNX portions and other GPL dependencies must have commercial distribution/attribution/legal review. A passing build is not permission to ship closed-source proprietary binaries.
 
 Do not merge PR #22 as a verified release until those gates are completed. Protect `main`, keep external projects and presets backward-compatible, and never delete installed historical CLAP copies: their host identities are distinct from VST3.
+
+## Follow-up: first exact-head compiler error and root corrections
+The first pinned-head Windows run (`4ec7080`) exposed an E0277 Rust type mismatch in Skell Beat's cached title comparison, caught before any new VST3 bundle was produced. The follow-up corrects the comparison via string slices and eliminates unused editor imports/mutability. The engine's duplicate `Target::MainPitch` match arm is reconciled into the canonical helper, preserving follow flags, per-channel pitch offsets and avoiding redundant retuning. A real engine regression exercises a +75-cent offset and an opted-out channel.
+
+The deterministic DSP report now captures synthetic dry/wet RMS, unaligned residual, and per-callback P95/P99/max at 64 frames and 44.1/48/96 kHz. These are CI runner diagnostics, **not** real recorded-file listening tests, and the residual is not latency-aligned.
+
+The plugin suite now invokes external `pluginval` v1.0.4 (pinned official Tracktion release) at strictness level 5 without GUI tests, for Skell Beat, Skell Compressor, Skell Tune, ML Limiter, ML Delay, and ML Reverb. Exit status is a hard CI gate, reports are artifacts. This is independent plugin-host validation, not an FL Studio session or a replacement for GUI/DAW recall tests.

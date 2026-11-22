@@ -88,6 +88,47 @@ jobs:
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
         run: cargo test --locked -p os-vst3 hosts_skell_plugins_and_roundtrips_component_state_through_host_wrapper -- --nocapture
 
+      - name: Validate six priority Windows VST3 plugins in external pluginval host
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dir = Join-Path $env:GITHUB_WORKSPACE "target/pluginval-v1.0.4"
+          $reports = Join-Path $env:GITHUB_WORKSPACE "target/pluginval-reports"
+          New-Item -ItemType Directory -Force -Path $dir, $reports | Out-Null
+          $zip = Join-Path $dir "pluginval_Windows.zip"
+          Invoke-WebRequest -Uri "https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_Windows.zip" -OutFile $zip
+          (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant() |
+            Set-Content (Join-Path $reports "tool-archive.sha256")
+          Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
+          $validator = Get-ChildItem -Path $dir -File -Recurse -Filter "pluginval.exe" | Select-Object -First 1
+          if (-not $validator) { throw "pluginval v1.0.4 Windows executable missing from official archive" }
+          foreach ($name in @("Skell Beat", "Skell Compressor", "Skell Tune", "ML Limiter", "ML Delay", "ML Reverb")) {
+            $module = Join-Path (Resolve-Path "target/bundled").Path "$name.vst3"
+            if (-not (Test-Path -LiteralPath $module -PathType Container)) { throw "Missing VST3 $module" }
+            $base = $name -replace " ", "-"
+            $log = Join-Path $reports "$base.out.txt"
+            $err = Join-Path $reports "$base.err.txt"
+            $args = "--strictness-level 5 --skip-gui-tests --validate `"$module`""
+            Write-Host "pluginval v1.0.4, strictness 5: $name"
+            $p = Start-Process -FilePath $validator.FullName -ArgumentList $args -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError $err
+            try {
+              if (-not $p.WaitForExit(180000)) {
+                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                throw "pluginval timeout: $name"
+              }
+              if ($p.ExitCode -ne 0) { throw "pluginval failed with exit $($p.ExitCode): $name" }
+              Write-Host "pluginval passed: $name"
+            } finally { $p.Dispose() }
+          }
+      - name: Upload external VST3 validator reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkellStudio-External-VST3-Validator-Reports
+          path: target/pluginval-reports/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Validate 33 VST3 bundles and AMD64 modules
         shell: pwsh
         run: |

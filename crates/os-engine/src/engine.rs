@@ -3189,10 +3189,6 @@ impl Engine {
                     ch.glide(None, Some(f64::from(os_dsp::level::knob(r12800 - 6400, os_dsp::level::R6400))), len);
                 }
             }
-            Target::MainPitch => {
-                let cents=(2400.0*v-1200.0).round().clamp(-1200.0,1200.0) as i32;
-                for ch in &mut self.channels {if ch.main_follow{ch.main=Some(cents + ch.main_offset);ch.retune(ch.knob);}}
-            }
             Target::ChannelPitch(c) => {
                 if let Some(ch) = self.channels.get_mut(usize::from(c)) {
                     ch.retune(f64::from(laws::auto_pitch_cents(v)));
@@ -3286,9 +3282,14 @@ impl Engine {
     /// that follows it has its pitch worked out again and its sounding voices follow, as for a change of the channel's
     /// own pitch; a channel that does not follow it is not touched.
     fn set_main_pitch(&mut self, cents: i32) {
-        for ch in self.channels.iter_mut().filter(|c| c.main.is_some_and(|m| m != cents)) {
-            ch.main = Some(cents);
-            ch.retune(ch.knob);
+        // A channel follows main pitch only when enabled. Keep the saved
+        // follow offset and avoid unnecessary voice retunes.
+        for ch in self.channels.iter_mut().filter(|c| c.main_follow) {
+            let pitched = cents.saturating_add(ch.main_offset);
+            if ch.main != Some(pitched) {
+                ch.main = Some(pitched);
+                ch.retune(ch.knob);
+            }
         }
     }
 
@@ -7911,6 +7912,27 @@ mod tests {
         assert!((e.channels[0].base_rate/before-2f64.powf(500.0/1200.0)).abs()<0.001);
         e.channels[0].reset();assert_eq!(e.channels[0].main,Some(100));assert_eq!(e.channels[0].base_rate,before);
         let init=os_model::InitControl::from_unit(os_model::target::MAIN_PITCH,0.75).unwrap();assert_eq!(init.value,600);assert_eq!(init.unit(),Some(0.75));
+    }
+
+    #[test]
+    fn main_pitch_automation_preserves_follow_offsets_and_ignores_opt_outs() {
+        let mut p = project(vec![], vec![]);
+        p.main_pitch = Some(100);
+        p.channels[0].misc.pitch_follow_offset = 75;
+        p.channels.push(channel());
+        p.channels[1].misc.main_pitch = false;
+        let mut engine = Engine::new(&p, &mut SampleLibrary::new(None), 48_000, PlayMode::Song);
+        assert_eq!(engine.channels[0].main, Some(175));
+        assert_eq!(engine.channels[1].main, None);
+        engine.auto_value(os_model::target::Target::MainPitch,
+            (0.75 * 1_073_741_824.0) as i64, 1);
+        assert_eq!(engine.channels[0].main, Some(675),
+            "automation must include the saved +75 cent follow offset");
+        assert_eq!(engine.channels[1].main, None,
+            "channels opted out of main pitch must not be retuned");
+        engine.auto_value(os_model::target::Target::MainPitch,
+            (0.5 * 1_073_741_824.0) as i64, 1);
+        assert_eq!(engine.channels[0].main, Some(75));
     }
 
     #[test]

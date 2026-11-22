@@ -384,7 +384,7 @@ mod tests {
         use std::time::Instant;
         // Host buffer-size invariance and objective dry/wet measurements.
         // This test never claims equivalence with recordings or FL Studio.
-        fn render(rate: u32, block: usize) -> (Vec<f32>, Vec<f32>, u128) {
+        fn render(rate: u32, block: usize) -> (Vec<f32>, Vec<f32>, u128, Vec<u128>) {
             let state = factory_state();
             let mut sound = BeatSound::new(rate, &[0, 0, 256, 256, 1765, 5000, 0, 0]);
             sound.set_saved_state(&state);
@@ -401,40 +401,73 @@ mod tests {
                     + if i == frames / 8 { -0.35 } else { 0.0 });
             }
             let now = Instant::now();
+            let mut callback_ns = Vec::new();
             for offset in (0..frames).step_by(block) {
                 let end = (offset + block).min(frames);
                 let position_beats = offset as f64 / rate as f64 * 2.0;
                 sound.set_transport(120.0, Some(position_beats), true);
+                let callback_start = Instant::now();
                 sound.process(&mut left[offset..end], &mut right[offset..end]);
+                callback_ns.push(callback_start.elapsed().as_nanos());
             }
             let nanos = now.elapsed().as_nanos();
             assert_eq!(sound.latency(), 15, "published 15-sample latency changed at {rate}");
             assert!(left.iter().chain(&right).all(|v| v.is_finite()),
                 "NaN/Inf in Skell Beat audio output at {rate} Hz, block={block}");
-            (left, right, nanos)
+            (left, right, nanos, callback_ns)
         }
 
         let mut metrics = Vec::new();
         metrics.push("Skell Beat | synthetic input diagnostics (not recorded audio A/B)".to_string());
         metrics.push("Runner wall-clock timing includes host transport calls; no hard CPU target.".to_string());
         for rate in [44_100, 48_000, 96_000] {
-            let (reference_l, reference_r, elapsed_ns) = render(rate, 4096);
+            let (reference_l, reference_r, elapsed_ns, _) = render(rate, 4096);
             let peak = reference_l.iter().chain(&reference_r)
                 .fold(0.0f32, |m, &v| m.max(v.abs()));
             let rms = (reference_l.iter().chain(&reference_r)
                 .map(|v| f64::from(*v) * f64::from(*v)).sum::<f64>()
                 / (reference_l.len() + reference_r.len()) as f64).sqrt();
             assert!(rms.is_finite() && peak.is_finite());
+            let mut callback_p95_ns = 0;
+            let mut callback_p99_ns = 0;
+            let mut callback_max_ns = 0;
             for block in [17, 64, 257] {
-                let (a, b, _) = render(rate, block);
+                let (a, b, _, mut callbacks) = render(rate, block);
+                if block == 64 {
+                    callbacks.sort_unstable();
+                    callback_p95_ns = callbacks[callbacks.len() * 95 / 100];
+                    callback_p99_ns = callbacks[callbacks.len() * 99 / 100];
+                    callback_max_ns = *callbacks.last().expect("nonempty 64-frame calls");
+                }
                 let difference = a.iter().zip(&reference_l).chain(b.iter().zip(&reference_r))
                     .map(|(x, y)| (*x - *y).abs())
                     .fold(0.0f32, f32::max);
                 assert!(difference < 2.0e-6,
                     "Skell Beat block-size dependent output: rate={rate} block={block} diff={difference}");
             }
-            let line = format!("rate_hz={rate} input=stereo_multitone_impulses seconds=1.0 blocks=17/64/257/4096 latency_samples=15 wet_peak={peak:.6} wet_rms={rms:.6} wall_ms={:.3} wall_ratio={:.5}",
-                elapsed_ns as f64 / 1.0e6, elapsed_ns as f64 / 1.0e9);
+            // Dry/wet objective statistics for deterministic synthetic test
+            // signals. The residual is intentionally NOT latency-aligned.
+            let mut dry_energy = 0.0f64;
+            let mut residual_energy = 0.0f64;
+            for i in 0..rate as usize {
+                let t = i as f32 / rate as f32;
+                let dry_l = 0.17 * (std::f32::consts::TAU * 220.0 * t).sin()
+                    + 0.07 * (std::f32::consts::TAU * 937.0 * t).sin()
+                    + if i == 0 { 0.45 } else { 0.0 };
+                let dry_r = 0.12 * (std::f32::consts::TAU * 330.0 * t).sin()
+                    + if i == rate as usize / 8 { -0.35 } else { 0.0 };
+                dry_energy += f64::from(dry_l).powi(2) + f64::from(dry_r).powi(2);
+                residual_energy += f64::from(reference_l[i] - dry_l).powi(2)
+                    + f64::from(reference_r[i] - dry_r).powi(2);
+            }
+            let dry_rms = (dry_energy / (2.0 * rate as f64)).sqrt();
+            let residual_rms = (residual_energy / (2.0 * rate as f64)).sqrt();
+            assert!(residual_rms > 1.0e-6,
+                "time effect did not change the test audio at {rate} Hz");
+            let delta_db = 20.0 * (rms / dry_rms).log10();
+            let line = format!("rate_hz={rate} input=stereo_multitone_impulses seconds=1.0 blocks=17/64/257/4096 latency_samples=15 wet_peak={peak:.6} dry_rms={dry_rms:.6} wet_rms={rms:.6} delta_db={delta_db:+.3} unaligned_null_rms={residual_rms:.6} wall_ms={:.3} callback_64_p95_us={:.3} callback_64_p99_us={:.3} callback_64_max_us={:.3}",
+                elapsed_ns as f64 / 1.0e6, callback_p95_ns as f64 / 1000.0,
+                callback_p99_ns as f64 / 1000.0, callback_max_ns as f64 / 1000.0);
             println!("{line}");
             metrics.push(line);
         }

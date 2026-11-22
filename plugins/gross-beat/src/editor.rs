@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::{GuiContext, Param};
-use lemon_small_fx::editor::{self, Extension};
+use lemon_small_fx::editor::Extension;
 use lemon_small_fx::params::FxParams;
 use lemon_small_fx::view::{self, ViewState};
 use os_theme::design::lemon as brand;
@@ -387,7 +387,7 @@ impl Extension for BeatEditorExtension {
         let name = &tiles.display_names[ui.kind * 36 + ui.slot];
         c.text_clip(Font::new(12).bold(), 643.0, 51.0, 425.0, accent,
             &format!("{} SLOT {:02}  /  {}", if ui.kind == 0 { "TIME" } else { "VOLUME" }, ui.slot + 1,
-                if name == format!("{:02}", ui.slot + 1) { "UNTITLED" } else { &name }));
+                if name.as_str() == format!("{:02}", ui.slot + 1).as_str() { "UNTITLED" } else { name.as_str() }));
         // Narrow FL/LYNX-style envelope tool column with a real snap selector.
         c.fill_rrect(Rect::new(344.0, 90.0, 58.0, 443.0), 3.0, dark);
         Self::draw_text(c, 350.0, 104.0, muted, "SNAP");
@@ -528,7 +528,7 @@ impl Extension for BeatEditorExtension {
     }
 
     fn moved(&self, x: f32, y: f32) -> bool {
-        let mut ui = self.ui.lock().unwrap_or_else(|e| e.into_inner());
+        let ui = self.ui.lock().unwrap_or_else(|e| e.into_inner());
         if !ui.dragging { return false; }
         if let Some(index) = ui.selected {
             if x >= GRAPH_X && x <= GRAPH_X + GRAPH_W && y >= GRAPH_Y && y <= GRAPH_Y + GRAPH_H {

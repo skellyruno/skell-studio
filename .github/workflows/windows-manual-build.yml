@@ -1,7 +1,7 @@
 name: Windows DAW - engineering executable
 on:
   push:
-    branches: [main, feature/windows-release-exe-trigger-20261120, feature/skell-release-candidate-20261121]
+    branches: [main, feature/windows-release-exe-trigger-20261120, feature/skell-release-candidate-20261121, dev/skell-smooth-ui-branding-20261122]
     paths:
       - ".github/workflows/windows-manual-build.yml"
       - "Cargo.toml"
@@ -33,6 +33,17 @@ jobs:
         with:
           shared-key: skell-windows-exe
           cache-on-failure: true
+      - name: Validate Skell Beat cached preview and builtin vendor identity
+        shell: pwsh
+        env:
+          OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        run: |
+          cargo test --locked -p gross-beat --lib
+          if ($LASTEXITCODE -ne 0) { throw "Skell Beat regression tests failed" }
+          cargo test --locked -p os-app --bin skell-studio builtin_vendor_branding_preserves_plugin_identity
+          if ($LASTEXITCODE -ne 0) { throw "Skell Studio builtin vendor regression failed" }
+
       - name: Build Skell Studio Windows x64 engineering executable
         shell: pwsh
         env:

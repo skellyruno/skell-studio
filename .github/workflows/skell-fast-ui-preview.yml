@@ -1,7 +1,7 @@
 name: Skell Studio fast Windows preview + real UI captures
 on:
   push:
-    branches: [dev/skell-fast-ui-preview, fix/quickview-exit-status-four-scenes-20261115]
+    branches: [dev/skell-fast-ui-preview, fix/quickview-exit-status-four-scenes-20261115, dev/skell-smooth-ui-branding-20261122]
     paths:
       - ".github/workflows/skell-fast-ui-preview.yml"
       - "Cargo.toml"

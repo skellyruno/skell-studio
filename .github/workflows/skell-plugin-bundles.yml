@@ -41,8 +41,20 @@ jobs:
   windows-plugin-suite:
     runs-on: windows-latest
     timeout-minutes: 120
+    env:
+      SKELL_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify checkout is the exact release-candidate revision
+        shell: pwsh
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:SKELL_SOURCE_SHA) {
+            throw "Incorrect checked-out source: expected=$env:SKELL_SOURCE_SHA actual=$actual"
+          }
+          Write-Host "Verified source commit: $actual"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -52,6 +64,7 @@ jobs:
           $shotDir = Join-Path $env:GITHUB_WORKSPACE "target/skell-plugin-shots"
           New-Item -ItemType Directory -Force -Path $shotDir | Out-Null
           $env:OS_SHOT_DIR = $shotDir
+          $env:SKELL_DSP_METRICS_PATH = Join-Path $shotDir "BEAT_DSP_METRICS.txt"
           cargo test --locked -p lemon-limiter -p lemon-delay -p lemon-reverb -p lemon-hall -p lemon-parametric-eq-2 -p press -p gross-beat -p fruity-compressor -p lynx-tune
 
       - name: Upload native Skell plugin editor captures
@@ -59,7 +72,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SkellStudio-Native-Plugin-Editor-Captures
-          path: target/skell-plugin-shots/*.png
+          path: |
+            target/skell-plugin-shots/*.png
+            target/skell-plugin-shots/BEAT_DSP_METRICS.txt
           if-no-files-found: warn
           retention-days: 7
 
@@ -119,7 +134,8 @@ jobs:
           }
           $manifest = @(
             "Skell Studio Windows VST3-only plugin bundle"
-            "Commit: $env:GITHUB_SHA"
+            "Commit: $env:SKELL_SOURCE_SHA"
+            "CI workflow ref SHA: $env:GITHUB_SHA"
             "Target: Windows x64 / AMD64"
             "VST3 modules: $($modules.Count)"
             "CLAP modules: 0 (not distributed)"
@@ -131,7 +147,7 @@ jobs:
             $manifest += "$hash  $relative"
           }
           $manifest | Set-Content -LiteralPath (Join-Path $root "BUILD_MANIFEST.txt") -Encoding utf8
-          Write-Host "Manifest generated: $($modules.Count) VST3 modules at $env:GITHUB_SHA"
+          Write-Host "Manifest generated: $($modules.Count) VST3 modules from $env:SKELL_SOURCE_SHA"
 
       - name: Upload Windows VST3 plugin suite
         uses: actions/upload-artifact@v4

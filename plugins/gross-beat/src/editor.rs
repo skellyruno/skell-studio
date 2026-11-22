@@ -158,6 +158,17 @@ impl BeatEditorExtension {
 
     fn slot_index(ui: &UiState) -> i32 { (ui.kind * 36 + ui.slot) as i32 }
 
+    // Keep the curve panel aligned with host automation, not only the active
+    // 4x9 cell outline. Never override the slot during an editor drag.
+    fn sync_host_slot(&self, ui: &mut UiState) {
+        if ui.dragging { return; }
+        let active = self.params.v(ui.kind).clamp(0, 35) as usize;
+        if active != ui.slot {
+            ui.slot = active;
+            ui.selected = None;
+        }
+    }
+
     fn point_count(&self, raw: &[u8], slot: i32) -> usize {
         unsafe { lynx_gb_state_point_count(raw.as_ptr(), raw.len(), slot).max(0) as usize }
     }
@@ -283,7 +294,8 @@ impl Extension for BeatEditorExtension {
     }
 
     fn paint(&self, c: &mut Canvas, _model: &dyn view::Model) {
-        let ui = self.ui.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ui = self.ui.lock().unwrap_or_else(|e| e.into_inner());
+        self.sync_host_slot(&mut ui);
         // Read the version first so a concurrent state write is never silently
         // cached under a newer version than the raw snapshot being rendered.
         let version = self.params.raw_version.load(Ordering::Acquire);
@@ -561,6 +573,24 @@ impl Extension for BeatEditorExtension {
 #[cfg(test)]
 mod lynx_grid_tests {
     use super::*;
+    #[test]
+    fn host_slot_automation_updates_the_curve_panel_selection() {
+        let params = Arc::new(FxParams::new(crate::SPEC));
+        let editor = BeatEditorExtension::new(Arc::clone(&params));
+        let mut ui = UiState::default();
+        ui.selected = Some(1);
+        let target = params.p[0].preview_normalized(21);
+        params.live.set(params.p[0].as_ptr(), target);
+        editor.sync_host_slot(&mut ui);
+        assert_eq!(ui.slot, 21);
+        assert_eq!(ui.kind, 0);
+        assert_eq!(ui.selected, None);
+        ui.dragging = true;
+        params.live.set(params.p[0].as_ptr(), params.p[0].preview_normalized(7));
+        editor.sync_host_slot(&mut ui);
+        assert_eq!(ui.slot, 21, "active editor gestures must not jump to another slot");
+    }
+
     #[test]
     fn slot_preview_cache_only_invalidates_for_new_state_or_slot() {
         let mut cache = SlotRenderCache::default();

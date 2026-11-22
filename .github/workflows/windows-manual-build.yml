@@ -1,7 +1,7 @@
 name: Windows DAW - engineering executable
 on:
   push:
-    branches: [main, feature/windows-release-exe-trigger-20261120, feature/skell-release-candidate-20261121, dev/skell-smooth-ui-branding-20261122]
+    branches: [main, feature/windows-release-exe-trigger-20261120, feature/skell-release-candidate-20261121]
     paths:
       - ".github/workflows/windows-manual-build.yml"
       - "Cargo.toml"

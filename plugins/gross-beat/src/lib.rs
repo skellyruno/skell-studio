@@ -380,6 +380,71 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_audio_diagnostics_44100_48000_96000() {
+        use std::time::Instant;
+        // Host buffer-size invariance and objective dry/wet measurements.
+        // This test never claims equivalence with recordings or FL Studio.
+        fn render(rate: u32, block: usize) -> (Vec<f32>, Vec<f32>, u128) {
+            let state = factory_state();
+            let mut sound = BeatSound::new(rate, &[0, 0, 256, 256, 1765, 5000, 0, 0]);
+            sound.set_saved_state(&state);
+            sound.set(&[1, 0, 256, 256, 1765, 5000, 0, 0]);
+            let frames = rate as usize;
+            let mut left = Vec::with_capacity(frames);
+            let mut right = Vec::with_capacity(frames);
+            for i in 0..frames {
+                let t = i as f32 / rate as f32;
+                left.push(0.17 * (std::f32::consts::TAU * 220.0 * t).sin()
+                    + 0.07 * (std::f32::consts::TAU * 937.0 * t).sin()
+                    + if i == 0 { 0.45 } else { 0.0 });
+                right.push(0.12 * (std::f32::consts::TAU * 330.0 * t).sin()
+                    + if i == frames / 8 { -0.35 } else { 0.0 });
+            }
+            let now = Instant::now();
+            for offset in (0..frames).step_by(block) {
+                let end = (offset + block).min(frames);
+                let position_beats = offset as f64 / rate as f64 * 2.0;
+                sound.set_transport(120.0, Some(position_beats), true);
+                sound.process(&mut left[offset..end], &mut right[offset..end]);
+            }
+            let nanos = now.elapsed().as_nanos();
+            assert_eq!(sound.latency(), 15, "published 15-sample latency changed at {rate}");
+            assert!(left.iter().chain(&right).all(|v| v.is_finite()),
+                "NaN/Inf in Skell Beat audio output at {rate} Hz, block={block}");
+            (left, right, nanos)
+        }
+
+        let mut metrics = Vec::new();
+        metrics.push("Skell Beat | synthetic input diagnostics (not recorded audio A/B)".to_string());
+        metrics.push("Runner wall-clock timing includes host transport calls; no hard CPU target.".to_string());
+        for rate in [44_100, 48_000, 96_000] {
+            let (reference_l, reference_r, elapsed_ns) = render(rate, 4096);
+            let peak = reference_l.iter().chain(&reference_r)
+                .fold(0.0f32, |m, &v| m.max(v.abs()));
+            let rms = (reference_l.iter().chain(&reference_r)
+                .map(|v| f64::from(*v) * f64::from(*v)).sum::<f64>()
+                / (reference_l.len() + reference_r.len()) as f64).sqrt();
+            assert!(rms.is_finite() && peak.is_finite());
+            for block in [17, 64, 257] {
+                let (a, b, _) = render(rate, block);
+                let difference = a.iter().zip(&reference_l).chain(b.iter().zip(&reference_r))
+                    .map(|(x, y)| (*x - *y).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(difference < 2.0e-6,
+                    "Skell Beat block-size dependent output: rate={rate} block={block} diff={difference}");
+            }
+            let line = format!("rate_hz={rate} input=stereo_multitone_impulses seconds=1.0 blocks=17/64/257/4096 latency_samples=15 wet_peak={peak:.6} wet_rms={rms:.6} wall_ms={:.3} wall_ratio={:.5}",
+                elapsed_ns as f64 / 1.0e6, elapsed_ns as f64 / 1.0e9);
+            println!("{line}");
+            metrics.push(line);
+        }
+        if let Some(path) = std::env::var_os("SKELL_DSP_METRICS_PATH") {
+            // Test harness thread only, never the DSP callback.
+            std::fs::write(path, metrics.join("\n") + "\n").expect("write diagnostic report");
+        }
+    }
+
+    #[test]
     fn all_72_slot_thumbnails_and_titles_are_batched_from_lynx_state() {
         let state = factory_state();
         let mut levels = [0.0f32; 72 * 16];

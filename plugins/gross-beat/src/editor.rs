@@ -284,7 +284,7 @@ impl Extension for BeatEditorExtension {
         c.stroke_rrect(Rect::new(335.0, 20.0, 757.0, 600.0), 7.0, 1.0, inactive);
         Self::draw_text(c, 19.0, 139.0, time_color, "TIME SLOTS  /  36");
         Self::draw_text(c, 19.0, 364.0, volume_color, "VOLUME SLOTS  /  36");
-        Self::draw_text(c, 348.0, 35.0, muted, "LYNX ENVELOPE ENGINE");
+        Self::draw_text(c, 348.0, 35.0, muted, "ENVELOPE");
         // LYNX's two independent 4x9 grids (not a single tabbed 6x6 matrix).
         for kind in 0..2 {
             let top = if kind == 0 { TIME_GRID_Y } else { VOLUME_GRID_Y };

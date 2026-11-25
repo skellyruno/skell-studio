@@ -132,6 +132,16 @@ pub fn paint(spec: &Spec, c: &mut Canvas, t: &Palette, m: &dyn Model, st: &ViewS
     for control in spec.controls {
         match *control {
             Control::Knob { id, cx, cy, r, caption, bipolar } => knob(&mut ui, id, cx, cy, r, caption, bipolar),
+            Control::KnobWithValue { id, cx, cy, r, caption, bipolar, width } => {
+                knob(&mut ui, id, cx, cy, r, caption, bipolar);
+                let text = ui.m.text(id);
+                let ink = brand::TEXT;
+                let font = Font::new(11).bold();
+                let text = fitted(ui.c, font, &text, width - 8.0);
+                let h = ui.c.line_height(font);
+                let area = Rect::new(cx - width / 2.0, cy + r + 20.0, width, h + 2.0);
+                ui.c.text_center(font, area, ink, &text);
+            }
             Control::Choice { id, x, top, names } => {
                 let min = spec.index(id).map_or(0, |k| spec.settings[k].range.0);
                 choices(&mut ui, id, x, top, min, names);
@@ -323,7 +333,7 @@ fn text_field(ui: &mut Ui, id: &str, r: Rect, text: &str, status: &str) {
 
 /// `s` as it fits in `max_w` px of `f`: when it is wider, cut after a whole character and ended with "…" (never cut
 /// through a glyph).
-pub(crate) fn fitted(c: &mut Canvas, f: Font, s: &str, max_w: f32) -> String {
+pub fn fitted(c: &mut Canvas, f: Font, s: &str, max_w: f32) -> String {
     if s.is_empty() || c.text_width(f, s) <= max_w {
         return s.to_string();
     }

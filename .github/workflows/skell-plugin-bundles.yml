@@ -24,6 +24,7 @@ on:
       - "crates/os-host/**"
       - "crates/os-hostlink/**"
       - "crates/os-plugkit/**"
+      - "crates/os-vst3/**"
       - "plugins/**"
       - "tools/bundle-plugins/**"
       - "Cargo.toml"
@@ -70,6 +71,12 @@ jobs:
       - name: Verify FLP container compatibility on release-candidate commits
         shell: pwsh
         run: cargo test --locked -p os-flp --lib
+
+      - name: Render stock effects at native and 200 percent scale
+        shell: pwsh
+        run: |
+          $env:SMALLFX_PNG = Join-Path $env:GITHUB_WORKSPACE "target/skell-plugin-shots"
+          cargo test --locked -p lemon-small-fx render_editor -- --ignored --nocapture
 
       - name: Upload native Skell plugin editor captures
         if: always()
@@ -168,8 +175,8 @@ jobs:
       - name: Validate 33 VST3 bundles and AMD64 modules
         shell: pwsh
         run: |
-          $names = @("ML Limiter", "ML Delay", "ML Reverb", "ML Hall", "ML EQ", "ML Press", "Skell Beat", "Skell Compressor", "Skell Tune")
           $allVst3 = @(Get-ChildItem -Path "target/bundled" -Directory -Filter "*.vst3")
+          $names = @($allVst3 | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) })
           if ($allVst3.Count -ne 33) { throw "Expected 33 VST3 bundles, found $($allVst3.Count)" }
           $staleClap = @(Get-ChildItem -Path "target/bundled" -Filter "*.clap")
           if ($staleClap.Count -ne 0) { throw "CLAP found in VST3-only release output" }
@@ -219,7 +226,9 @@ jobs:
             "licenses/Skell-Compressor-AGPL-3.0.txt",
             "licenses/ML-Limiter-AGPL-3.0.txt",
             "licenses/ML-Delay-AGPL-3.0.txt",
-            "licenses/ML-Reverb-AGPL-3.0.txt"
+            "licenses/ML-Reverb-AGPL-3.0.txt",
+            "licenses/ML-EQ-AGPL-3.0.txt",
+            "licenses/Skell-Tune-AGPL-3.0.txt"
           )) {
             $file = Join-Path $root $needed
             if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Required release license or source notice missing: $needed" }

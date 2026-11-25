@@ -109,12 +109,15 @@ struct TileCache {
     titles: [u8; 72 * NAME_BYTES],
     // Cache text labels on state changes instead of allocating 72 Strings per repaint.
     display_names: [String; 72],
+    // Ellipsized at logical 1x width; cached with the state, not allocated per tile/frame.
+    short_names: [String; 72],
 }
 impl Default for TileCache {
     fn default() -> Self {
         Self { version: 0, ready: false, levels: [0.0; 72 * THUMB_SAMPLES],
             titles: [0; 72 * NAME_BYTES],
-            display_names: std::array::from_fn(|i| format!("{:02}", i % 36 + 1)) }
+            display_names: std::array::from_fn(|i| format!("{:02}", i % 36 + 1)),
+            short_names: std::array::from_fn(|i| format!("{:02}", i % 36 + 1)) }
     }
 }
 
@@ -328,6 +331,10 @@ impl Extension for BeatEditorExtension {
             if tiles.ready {
                 tiles.display_names = std::array::from_fn(|index|
                     Self::slot_name(&tiles.titles, index));
+                let old_scale = c.rescale(1.0);
+                tiles.short_names = std::array::from_fn(|index|
+                    view::fitted(c, Font::new(9).bold(), &tiles.display_names[index], SLOT_W - 12.0));
+                c.unscale(old_scale);
             }
             tiles.version = version;
         }
@@ -371,13 +378,13 @@ impl Extension for BeatEditorExtension {
                                 // Keep the mini envelope below the slot title, never behind text.
                                 y + 12.0 + (1.0 - level.clamp(0.0, 1.0)) * 4.0);
                         }
-                        c.polyline(&path, 1.0, if editing { color } else { inactive });
+                        c.polyline(&path, 1.0, if editing { color } else { Color::rgb(0x455a60) });
                     }
                 }
                 if active || editing || hovered { c.stroke_rrect(rect, 2.0,
                     if editing { 1.5 } else { 1.0 }, color); }
                 c.text_clip(Font::new(9).bold(), x + 5.0, y + 1.0, SLOT_W - 10.0,
-                    if active || editing { text } else { muted }, &tiles.display_names[source]);
+                    if active || editing { text } else { muted }, &tiles.short_names[source]);
             }
         }
         // Dense LYNX-style grids truncate 70px names. Hover shows the full

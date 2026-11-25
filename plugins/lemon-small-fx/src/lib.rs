@@ -71,6 +71,9 @@ pub enum Control {
     /// A Pith dial of radius `r` centred at (`cx`, `cy`), its caption under it (the value text, in lemon, when the
     /// caption is empty).
     Knob { id: &'static str, cx: f32, cy: f32, r: f32, caption: &'static str, bipolar: bool },
+    /// Opt-in persistent parameter readout beneath an ordinary knob and caption.
+    /// The readout is display-only; the knob retains its original automation and hit region.
+    KnobWithValue { id: &'static str, cx: f32, cy: f32, r: f32, caption: &'static str, bipolar: bool, width: f32 },
     /// A radio list: one row per value from the range's minimum, 16 px apart from `top`, a toggle at `x` and the name
     /// beside it.
     Choice { id: &'static str, x: f32, top: f32, names: &'static [&'static str] },
@@ -92,6 +95,7 @@ impl Control {
     pub fn id(&self) -> &'static str {
         match self {
             Control::Knob { id, .. }
+            | Control::KnobWithValue { id, .. }
             | Control::Choice { id, .. }
             | Control::Fader { id, .. }
             | Control::Shape { id, .. }

@@ -61,6 +61,16 @@ fn stage_distribution_metadata(root: &Path, out: &Path) {
         std::fs::copy(&from, &to)
             .unwrap_or_else(|err| panic!("required AGPL license {}: {err}", from.display()));
     }
+    // These two ports keep the full license next to their vendored engine.
+    for (source, display) in [
+        ("plugins/lemon-parametric-eq-2/vendor/lynx/LICENSE-AGPL-3.0.txt", "ML-EQ"),
+        ("plugins/lynx-tune/vendor/LICENSE-AGPL-3.0.txt", "Skell-Tune"),
+    ] {
+        let from = root.join(source);
+        let to = licenses.join(format!("{display}-AGPL-3.0.txt"));
+        std::fs::copy(&from, &to)
+            .unwrap_or_else(|err| panic!("required AGPL license {}: {err}", from.display()));
+    }
     let revision = std::env::var("SKELL_SOURCE_SHA").ok()
         .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
         .or_else(|| Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root)

@@ -50,14 +50,14 @@ const SETTINGS: [Setting; 8] = [
 const CONTROLS: [Control; 8] = [
     // Automation IDs remain stable. LYNX's grid selects slots; these knobs remain
     // accessible for hosts and existing project automation at the panel edges.
-    Control::Knob { id: "time_slot", cx: 46.0, cy: 71.0, r: 18.0, caption: "TIME SLOT", bipolar: false },
-    Control::Knob { id: "time_mix", cx: 121.0, cy: 71.0, r: 18.0, caption: "TIME MIX", bipolar: false },
-    Control::Knob { id: "hold", cx: 197.0, cy: 71.0, r: 18.0, caption: "HOLD", bipolar: false },
-    Control::Knob { id: "volume_slot", cx: 273.0, cy: 71.0, r: 18.0, caption: "VOL SLOT", bipolar: false },
-    Control::Knob { id: "volume_mix", cx: 46.0, cy: 656.0, r: 18.0, caption: "VOL MIX", bipolar: false },
-    Control::Knob { id: "attack", cx: 121.0, cy: 656.0, r: 18.0, caption: "ATTACK", bipolar: false },
-    Control::Knob { id: "release", cx: 197.0, cy: 656.0, r: 18.0, caption: "RELEASE", bipolar: false },
-    Control::Knob { id: "tension", cx: 273.0, cy: 656.0, r: 18.0, caption: "TENSION", bipolar: true },
+    Control::KnobWithValue { id: "time_slot", cx: 46.0, cy: 71.0, r: 18.0, caption: "TIME SLOT", bipolar: false, width: 70.0 },
+    Control::KnobWithValue { id: "time_mix", cx: 121.0, cy: 71.0, r: 18.0, caption: "TIME MIX", bipolar: false, width: 70.0 },
+    Control::KnobWithValue { id: "hold", cx: 197.0, cy: 71.0, r: 18.0, caption: "HOLD", bipolar: false, width: 70.0 },
+    Control::KnobWithValue { id: "volume_slot", cx: 273.0, cy: 71.0, r: 18.0, caption: "VOL SLOT", bipolar: false, width: 70.0 },
+    Control::KnobWithValue { id: "volume_mix", cx: 46.0, cy: 656.0, r: 18.0, caption: "VOL MIX", bipolar: false, width: 70.0 },
+    Control::KnobWithValue { id: "attack", cx: 121.0, cy: 656.0, r: 18.0, caption: "ATTACK", bipolar: false, width: 70.0 },
+    Control::KnobWithValue { id: "release", cx: 197.0, cy: 656.0, r: 18.0, caption: "RELEASE", bipolar: false, width: 70.0 },
+    Control::KnobWithValue { id: "tension", cx: 273.0, cy: 656.0, r: 18.0, caption: "TENSION", bipolar: true, width: 70.0 },
 ];
 
 fn factory_state() -> Vec<u8> {
@@ -536,6 +536,9 @@ mod tests {
                 logic.paint(&mut canvas, &os_plugkit::palette());
                 canvas.pixmap.save_png(dir.join("skell-beat-hover.png")).unwrap();
             }
+            let mut scaled = os_ui::Canvas::new(SPEC.size.0 * 3 / 2, SPEC.size.1 * 3 / 2, 1.5).unwrap();
+            logic.paint(&mut scaled, &os_plugkit::palette());
+            scaled.pixmap.save_png(dir.join("skell-beat-150pct.png")).unwrap();
         }
     }
 }

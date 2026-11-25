@@ -34,11 +34,11 @@ const SETTINGS: [Setting; 8] = [
 ];
 
 const CONTROLS: [Control; 8] = [
-    Control::Knob { id: "threshold", cx: 68.0, cy: 150.0, r: 23.0, caption: "THRESHOLD", bipolar: false },
-    Control::Knob { id: "ratio", cx: 174.0, cy: 150.0, r: 23.0, caption: "RATIO", bipolar: false },
-    Control::Knob { id: "gain", cx: 280.0, cy: 150.0, r: 23.0, caption: "GAIN", bipolar: true },
-    Control::Knob { id: "attack", cx: 386.0, cy: 150.0, r: 23.0, caption: "ATTACK", bipolar: false },
-    Control::Knob { id: "release", cx: 492.0, cy: 150.0, r: 23.0, caption: "RELEASE", bipolar: false },
+    Control::KnobWithValue { id: "threshold", cx: 68.0, cy: 150.0, r: 23.0, caption: "THRESHOLD", bipolar: false, width: 98.0 },
+    Control::KnobWithValue { id: "ratio", cx: 174.0, cy: 150.0, r: 23.0, caption: "RATIO", bipolar: false, width: 98.0 },
+    Control::KnobWithValue { id: "gain", cx: 280.0, cy: 150.0, r: 23.0, caption: "GAIN", bipolar: true, width: 98.0 },
+    Control::KnobWithValue { id: "attack", cx: 386.0, cy: 150.0, r: 23.0, caption: "ATTACK", bipolar: false, width: 98.0 },
+    Control::KnobWithValue { id: "release", cx: 492.0, cy: 150.0, r: 23.0, caption: "RELEASE", bipolar: false, width: 98.0 },
     Control::Choice { id: "type", x: 570.0, top: 76.0, names: TYPES },
     Control::Choice { id: "lookahead", x: 684.0, top: 76.0, names: LOOKAHEAD },
     Control::Choice { id: "sidechain", x: 684.0, top: 132.0, names: SIDECHAIN },
@@ -388,7 +388,15 @@ mod tests {
         assert_eq!(logic.hits.iter().filter(|h| matches!(h.t, lemon_small_fx::view::Target::Knob(_))).count(), 5);
         assert_eq!(logic.hits.iter().filter(|h| matches!(h.t, lemon_small_fx::view::Target::Choice(_, _))).count(), 12);
         if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
-            canvas.pixmap.save_png(std::path::PathBuf::from(dir).join("skell-compressor.png")).unwrap();
+            let dir = std::path::PathBuf::from(dir);
+            canvas.pixmap.save_png(dir.join("skell-compressor.png")).unwrap();
+            logic.typed("threshold", "-24 dB");
+            logic.typed("ratio", "4:1");
+            assert_eq!(logic.value_text("threshold"), "-24.0 dB");
+            assert_eq!(logic.value_text("ratio"), "4.0:1");
+            let mut scaled = os_ui::Canvas::new(SPEC.size.0 * 3 / 2, SPEC.size.1 * 3 / 2, 1.5).unwrap();
+            logic.paint(&mut scaled, &os_plugkit::palette());
+            scaled.pixmap.save_png(dir.join("skell-compressor-150pct-edited.png")).unwrap();
         }
     }
 }

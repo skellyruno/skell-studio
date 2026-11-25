@@ -36,14 +36,14 @@ const SETTINGS: [Setting; 8] = [
 ];
 
 const CONTROLS: [Control; 8] = [
-    Control::Knob { id: "key", cx: 72.0, cy: 126.0, r: 23.0, caption: "KEY", bipolar: false },
-    Control::Knob { id: "scale", cx: 208.0, cy: 126.0, r: 23.0, caption: "SCALE", bipolar: false },
-    Control::Knob { id: "retune", cx: 344.0, cy: 126.0, r: 23.0, caption: "RETUNE", bipolar: false },
-    Control::Knob { id: "humanize", cx: 480.0, cy: 126.0, r: 23.0, caption: "HUMANIZE", bipolar: false },
-    Control::Knob { id: "formant_shift", cx: 616.0, cy: 126.0, r: 23.0, caption: "FORMANT", bipolar: true },
-    Control::Knob { id: "transpose", cx: 752.0, cy: 126.0, r: 23.0, caption: "TRANSPOSE", bipolar: true },
-    Control::Knob { id: "mix", cx: 888.0, cy: 126.0, r: 23.0, caption: "MIX", bipolar: false },
-    Control::Knob { id: "range", cx: 1024.0, cy: 126.0, r: 23.0, caption: "RANGE", bipolar: false },
+    Control::KnobWithValue { id: "key", cx: 72.0, cy: 126.0, r: 23.0, caption: "KEY", bipolar: false, width: 128.0 },
+    Control::KnobWithValue { id: "scale", cx: 208.0, cy: 126.0, r: 23.0, caption: "SCALE", bipolar: false, width: 128.0 },
+    Control::KnobWithValue { id: "retune", cx: 344.0, cy: 126.0, r: 23.0, caption: "RETUNE", bipolar: false, width: 128.0 },
+    Control::KnobWithValue { id: "humanize", cx: 480.0, cy: 126.0, r: 23.0, caption: "HUMANIZE", bipolar: false, width: 128.0 },
+    Control::KnobWithValue { id: "formant_shift", cx: 616.0, cy: 126.0, r: 23.0, caption: "FORMANT", bipolar: true, width: 128.0 },
+    Control::KnobWithValue { id: "transpose", cx: 752.0, cy: 126.0, r: 23.0, caption: "TRANSPOSE", bipolar: true, width: 128.0 },
+    Control::KnobWithValue { id: "mix", cx: 888.0, cy: 126.0, r: 23.0, caption: "MIX", bipolar: false, width: 128.0 },
+    Control::KnobWithValue { id: "range", cx: 1024.0, cy: 126.0, r: 23.0, caption: "RANGE", bipolar: false, width: 128.0 },
 ];
 
 fn text(k: usize, raw: i32) -> String {
@@ -226,7 +226,16 @@ mod tests {
             SETTINGS.len()
         );
         if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
-            canvas.pixmap.save_png(std::path::PathBuf::from(dir).join("skell-tune.png")).unwrap();
+            let dir = std::path::PathBuf::from(dir);
+            canvas.pixmap.save_png(dir.join("skell-tune.png")).unwrap();
+            logic.typed("retune", "100 ms");
+            logic.typed("scale", "Harmonic Minor");
+            logic.typed("formant_shift", "+3.00 st");
+            assert_eq!(logic.value_text("retune"), "100.0 ms");
+            assert_eq!(logic.value_text("scale"), "Harmonic Minor");
+            let mut scaled = os_ui::Canvas::new(SPEC.size.0 * 3 / 2, SPEC.size.1 * 3 / 2, 1.5).unwrap();
+            logic.paint(&mut scaled, &os_plugkit::palette());
+            scaled.pixmap.save_png(dir.join("skell-tune-150pct-edited.png")).unwrap();
         }
     }
 

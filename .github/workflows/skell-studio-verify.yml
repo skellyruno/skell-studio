@@ -3,21 +3,29 @@ on:
   push:
     branches: [main, dev/skell-verified-upgrade]
     paths:
+      - "plugins/**"
       - ".github/workflows/skell-studio-verify.yml"
       - "crates/os-app/**"
+      - "crates/os-flp/**"
       - "crates/os-dsp/**"
       - "crates/os-theme/**"
+      - "crates/os-ui/**"
       - "crates/os-paths/**"
       - "plugins/smith/**"
+      - "plugins/lemon-small-fx/**"
+      - "plugins/lemon-reverb/**"
       - "plugins/lemon-chop/**"
       - "crates/os-hostlink/**"
       - "Cargo.toml"
       - "Cargo.lock"
   pull_request:
-    branches: [main]
+    branches: [main, feature/skell-fl-fst-presets-lynx-audit-20261120, feature/skell-lynx-reeverb2-in-place-20261121]
     paths:
+      - "crates/os-ui/**"
+      - "plugins/**"
       - ".github/workflows/skell-studio-verify.yml"
       - "crates/os-app/**"
+      - "crates/os-flp/**"
       - "crates/os-theme/**"
       - "crates/os-paths/**"
       - "plugins/smith/**"
@@ -30,13 +38,15 @@ permissions:
   contents: read
 concurrency:
   group: skell-verify-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   core-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run theme and settings-path unit tests
@@ -50,6 +60,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Verify Skell Studio Windows code compiles
@@ -60,3 +72,51 @@ jobs:
         run: |
           cargo check --locked -p os-app --bin skell-studio
           cargo check --locked -p os-app --bin skell-studio --features rt-audit
+      - name: Validate branch retirement script parses (never execute)
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/retire_ancestry_verified_branches.ps1).Path,
+            [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            throw "Branch retirement PowerShell syntax errors: $($errors.Count)"
+          }
+      - name: Verify main-pitch automation preserves channel offsets and opt-outs
+        shell: pwsh
+        env:
+          OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        run: cargo test --locked -p os-engine main_pitch_automation_preserves_follow_offsets_and_ignores_opt_outs -- --nocapture
+      - name: Read-only archive-first retirement dry run
+        shell: pwsh
+        run: |
+          ./scripts/retire_ancestry_verified_branches.ps1
+
+      - name: Verify recording and device-input regressions
+        shell: pwsh
+        env:
+          OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        run: |
+          cargo test --locked -p os-app --bin skell-studio device::tests::reopening_input_never_replays_the_previous_device
+          if ($LASTEXITCODE -ne 0) { throw "Input reopen regression failed" }
+          cargo test --locked -p os-app --bin skell-studio device::tests::a_stream_hears_the_inputs_without_gaps
+          if ($LASTEXITCODE -ne 0) { throw "Input continuity regression failed" }
+          cargo test --locked -p os-app --bin skell-studio track_rec::tests
+          if ($LASTEXITCODE -ne 0) { throw "Track recording regression failed" }
+          cargo test --locked -p os-app --bin skell-studio smart_recording::tests
+          if ($LASTEXITCODE -ne 0) { throw "Smart recording regression failed" }
+
+      - name: Run FL FST preset import regression
+        shell: pwsh
+        env:
+          OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        run: |
+          cargo test --locked -p os-app --bin skell-studio fl_fst_presets
+          if ($LASTEXITCODE -ne 0) { throw "FL FST regression failed" }
+          cargo test --locked -p os-app --bin skell-studio builtin_vendor_branding_preserves_plugin_identity
+          if ($LASTEXITCODE -ne 0) { throw "Built-in vendor identity regression failed" }

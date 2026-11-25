@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! A small effect's editor: painting and hit regions (platform independent). The Lemon "Pith" plugin look, as Lemon
+//! A small effect's editor: painting and hit regions (platform independent). The Skell matte-black / neon-green plug-in look, laid out as the original
 //! Delay's, laid out as the original's editor: outlined cards under ruled headings holding knobs where the original
 //! has knobs, faders where it has sliders and radio lists where it has radio buttons, a well that pictures the
 //! settings, the hint well and the wordmark.
@@ -11,10 +11,10 @@
 // lemon-fast-distortion.md, lemon-balance.md, lemon-stereo-enhancer.md, lemon-transient-processor.md, lemon-chorus.md,
 // lemon-stereo-shaper.md; each §2 controls); ui/lemon-design.md §11.1
 
-use os_theme::design::lemon as brand;
+use os_theme::design::lemon as brand; // Stable theme namespace; its displayed skin name is Skell.
 use os_theme::Palette;
 use os_ui::kit::eq as keq;
-use os_ui::kit::lemon::{self, plug};
+use os_ui::kit::lemon::{self as skell, plug};
 use os_ui::kit::{inst, State};
 use os_ui::{Canvas, Color, Font, Rect};
 
@@ -124,7 +124,7 @@ pub fn paint(spec: &Spec, c: &mut Canvas, t: &Palette, m: &dyn Model, st: &ViewS
     ui.c.begin_frame(None);
     ui.c.clear(plug::BG);
     for card in spec.cards {
-        lemon::plug_panel(ui.c, Rect::span(card.x0, card.x1, card.y0, card.y1));
+        skell::plug_panel(ui.c, Rect::span(card.x0, card.x1, card.y0, card.y1));
         if !card.heading.is_empty() {
             heading(&mut ui, card.x0, card.x1, card.y0 - 12.0, card.heading);
         }
@@ -132,6 +132,16 @@ pub fn paint(spec: &Spec, c: &mut Canvas, t: &Palette, m: &dyn Model, st: &ViewS
     for control in spec.controls {
         match *control {
             Control::Knob { id, cx, cy, r, caption, bipolar } => knob(&mut ui, id, cx, cy, r, caption, bipolar),
+            Control::KnobWithValue { id, cx, cy, r, caption, bipolar, width } => {
+                knob(&mut ui, id, cx, cy, r, caption, bipolar);
+                let text = ui.m.text(id);
+                let ink = brand::TEXT;
+                let font = Font::new(11).bold();
+                let text = fitted(ui.c, font, &text, width - 8.0);
+                let h = ui.c.line_height(font);
+                let area = Rect::new(cx - width / 2.0, cy + r + 20.0, width, h + 2.0);
+                ui.c.text_center(font, area, ink, &text);
+            }
             Control::Choice { id, x, top, names } => {
                 let min = spec.index(id).map_or(0, |k| spec.settings[k].range.0);
                 choices(&mut ui, id, x, top, min, names);
@@ -149,7 +159,7 @@ pub fn paint(spec: &Spec, c: &mut Canvas, t: &Palette, m: &dyn Model, st: &ViewS
         }
     }
     if let Some(d) = &spec.display {
-        lemon::plug_well(ui.c, d.r, 6.0);
+        skell::plug_well(ui.c, d.r, 6.0);
         let n = spec.settings.len();
         let v = if st.settings.len() == n { st.settings.clone() } else { values(spec, m)[..n].to_vec() };
         (d.draw)(ui.c, d.r, &v);
@@ -164,7 +174,7 @@ pub fn paint(spec: &Spec, c: &mut Canvas, t: &Palette, m: &dyn Model, st: &ViewS
             if well.y < mark.bottom() && mark.y < well.bottom() && well.right() > mark.x - 16.0 {
                 well = Rect::span(well.x, mark.x - 16.0, well.y, well.bottom());
             }
-            lemon::plug_well(ui.c, well, 6.0);
+            skell::plug_well(ui.c, well, 6.0);
             if !hint.is_empty() {
                 let hint = fitted(ui.c, HINT, hint, well.w - 16.0);
                 ui.c.text_clip(HINT, well.x + 8.0, (well.cy() - lh / 2.0).round(), well.w - 16.0, brand::TEXT, &hint);
@@ -186,13 +196,13 @@ pub fn paint(spec: &Spec, c: &mut Canvas, t: &Palette, m: &dyn Model, st: &ViewS
 /// short of the text (none where the card is too narrow for it).
 fn heading(ui: &mut Ui, x0: f32, x1: f32, y: f32, s: &str) {
     let lh = ui.c.line_height(HEADING);
-    let w = lemon::spaced_width(ui.c, HEADING, s, 2.0);
+    let w = skell::spaced_width(ui.c, HEADING, s, 2.0);
     let tx = ((x0 + x1 + 1.0) / 2.0 - w / 2.0).round();
-    lemon::spaced(ui.c, HEADING, tx, (y - lh / 2.0).round(), plug::DIM, s, 2.0);
+    skell::spaced(ui.c, HEADING, tx, (y - lh / 2.0).round(), plug::DIM, s, 2.0);
     // Whether the card has room for the rule goes by the text's width at 1x (text widths differ a little with the
     // scale), so the rule is there at every scale or at none.
     let old = ui.c.rescale(1.0);
-    let w1 = lemon::spaced_width(ui.c, HEADING, s, 2.0);
+    let w1 = skell::spaced_width(ui.c, HEADING, s, 2.0);
     ui.c.unscale(old);
     if ((x0 + x1 + 1.0) / 2.0 - w1 / 2.0).round() - 7.0 > x0 + 8.0 {
         ui.c.fill_rect(Rect::span(x0 + 4.0, tx - 7.0, y, y + 1.0), RULE);
@@ -205,7 +215,7 @@ fn knob(ui: &mut Ui, id: &str, cx: f32, cy: f32, r: f32, cap: &str, bipolar: boo
     let target = Target::Knob(id.into());
     let hr = Rect::new(cx - r - 3.0, cy - r - 3.0, 2.0 * r + 6.0, 2.0 * r + 6.0);
     let st = ui.state(hr, &target);
-    lemon::dial(ui.c, cx, cy, r, if r > SMALL { 3.2 } else { 2.8 }, ui.m.norm(id), bipolar, brand::MAIN, st);
+    skell::dial(ui.c, cx, cy, r, if r > SMALL { 3.2 } else { 2.8 }, ui.m.norm(id), bipolar, brand::MAIN, st);
     if cap.is_empty() {
         let lh = ui.c.line_height(LABEL);
         let text = ui.m.text(id);
@@ -228,7 +238,7 @@ fn choices(ui: &mut Ui, id: &str, x: f32, top: f32, min: i32, names: &[&str]) {
         let w = ui.c.text_width(LABEL, name);
         let r = Rect::span(x - 2.0, (x + 20.0 + w).ceil(), y, y + 15.0);
         let st = ui.state(r, &target);
-        lemon::toggle(ui.c, x + 6.0, y + 7.5, chosen == v, st);
+        skell::toggle(ui.c, x + 6.0, y + 7.5, chosen == v, st);
         let ink = if chosen == v { brand::MAIN } else if st.hover { brand::TEXT } else { plug::DIM };
         ui.c.text(LABEL, x + 17.0, (y + 7.5 - lh / 2.0).round(), ink, name);
         ui.hit(r, target);
@@ -268,7 +278,7 @@ fn shape(ui: &mut Ui, id: &str, cx: f32, cy: f32, (lo, hi): (i32, i32)) {
     let target = Target::Choice(id.into(), next);
     let r = Rect::new(cx - 20.0, cy - 10.0, 40.0, 20.0);
     let st = ui.state(r, &target);
-    lemon::plug_button(ui.c, r, 5.0, st);
+    skell::plug_button(ui.c, r, 5.0, st);
     let n = if hi > lo { (v - lo).clamp(0, hi - lo) as f32 / (hi - lo) as f32 } else { 0.0 };
     // The rise's curve: t^p, p from 0.35 (sharp) to 2.8 (slow); the fall mirrors it.
     let p = 0.35 * 8.0f32.powf(n);
@@ -289,19 +299,19 @@ fn shape(ui: &mut Ui, id: &str, cx: f32, cy: f32, (lo, hi): (i32, i32)) {
 /// A tile of a grid (Lemon Chorus's, as the original's): a card, a small dial at the left, the caption on a field at
 /// the top right and the value text under it. The whole tile turns the dial.
 fn tile(ui: &mut Ui, id: &str, r: Rect, caption: &str) {
-    lemon::plug_panel(ui.c, r);
+    skell::plug_panel(ui.c, r);
     let rad = ((r.h - 14.0) / 2.0).min(17.0);
     let (cx, cy) = (r.x + 8.0 + rad, r.cy());
     let target = Target::Knob(id.into());
     let hr = Rect::span(r.x + 2.0, r.right() - 2.0, r.y + 2.0, r.bottom() - 2.0);
     let st = ui.state(hr, &target);
-    lemon::dial(ui.c, cx, cy, rad, 2.8, ui.m.norm(id), false, brand::MAIN, st);
+    skell::dial(ui.c, cx, cy, rad, 2.8, ui.m.norm(id), false, brand::MAIN, st);
     let x = cx + rad + 10.0;
     let band = Rect::span(x, r.right() - 7.0, r.y + 6.0, r.y + 21.0);
-    lemon::field(ui.c, band, State::NORMAL);
+    skell::field(ui.c, band, State::NORMAL);
     let lh = ui.c.line_height(LABEL);
-    let w = lemon::spaced_width(ui.c, LABEL, caption, 1.0);
-    lemon::spaced(ui.c, LABEL, (band.cx() - w / 2.0).round(), (band.cy() - lh / 2.0).round(), plug::DIM, caption, 1.0);
+    let w = skell::spaced_width(ui.c, LABEL, caption, 1.0);
+    skell::spaced(ui.c, LABEL, (band.cx() - w / 2.0).round(), (band.cy() - lh / 2.0).round(), plug::DIM, caption, 1.0);
     let text = ui.m.text(id);
     let vh = ui.c.line_height(VALUE);
     ui.c.text_clip(VALUE, x + 4.0, (r.bottom() - 13.0 - vh / 2.0).round(), band.w - 4.0, brand::TEXT, &text);
@@ -313,7 +323,7 @@ fn tile(ui: &mut Ui, id: &str, r: Rect, caption: &str) {
 fn text_field(ui: &mut Ui, id: &str, r: Rect, text: &str, status: &str) {
     let target = Target::Text(id.into());
     let st = ui.state(r, &target);
-    lemon::field(ui.c, r, st);
+    skell::field(ui.c, r, st);
     let vh = ui.c.line_height(VALUE);
     ui.c.text_clip(VALUE, r.x + 8.0, (r.cy() - vh / 2.0).round(), r.w - 16.0, brand::TEXT, text);
     let status = fitted(ui.c, LABEL, status, r.w - 4.0);
@@ -323,7 +333,7 @@ fn text_field(ui: &mut Ui, id: &str, r: Rect, text: &str, status: &str) {
 
 /// `s` as it fits in `max_w` px of `f`: when it is wider, cut after a whole character and ended with "…" (never cut
 /// through a glyph).
-pub(crate) fn fitted(c: &mut Canvas, f: Font, s: &str, max_w: f32) -> String {
+pub fn fitted(c: &mut Canvas, f: Font, s: &str, max_w: f32) -> String {
     if s.is_empty() || c.text_width(f, s) <= max_w {
         return s.to_string();
     }
@@ -342,31 +352,32 @@ pub(crate) fn fitted(c: &mut Canvas, f: Font, s: &str, max_w: f32) -> String {
 /// capitals, or LEMON over the name (`stacked`), placed by the spec's [`Mark`]; returns where it is.
 fn logo(ui: &mut Ui, spec: &Spec) -> Rect {
     let Mark { x, y, anchor, stacked } = spec.mark;
-    let ws = lemon::spaced_width(ui.c, MARK_SMALL, "ML", 2.5);
+    const BRAND_TAG: &str = "SKELL";
+    let ws = skell::spaced_width(ui.c, MARK_SMALL, BRAND_TAG, 2.0);
     let (lh_b, lh_s) = (ui.c.line_height(MARK_BIG), ui.c.line_height(MARK_SMALL));
     if stacked {
-        // The mark and LEMON centred over the name.
-        let (wn, wl) = (lemon::spaced_width(ui.c, MARK_BIG, spec.word, 2.0), 14.0 + ws);
+        // The skull + SKELL signature stays aligned to the existing wordmark and hit target.
+        let (wn, wl) = (skell::spaced_width(ui.c, MARK_BIG, spec.word, 2.0), 16.0 + ws);
         let w = wn.max(wl);
         let left = (x - w * anchor).round();
         let lx = (left + (w - wl) / 2.0).round();
-        lemon::lemon_mark(ui.c, lx + 5.0, y + lh_s / 2.0, 4.0, brand::MAIN);
-        lemon::spaced(ui.c, MARK_SMALL, lx + 14.0, y, brand::MAIN, "ML", 2.5);
-        lemon::spaced(ui.c, MARK_BIG, (left + (w - wn) / 2.0).round(), y + lh_s - 2.0, plug::WORDMARK, spec.word, 2.0);
+        skell::skell_mark(ui.c, lx + 6.0, y + lh_s / 2.0, 5.2, brand::MAIN);
+        skell::spaced(ui.c, MARK_SMALL, lx + 15.0, y, brand::MAIN, BRAND_TAG, 2.0);
+        skell::spaced(ui.c, MARK_BIG, (left + (w - wn) / 2.0).round(), y + lh_s - 2.0, plug::WORDMARK, spec.word, 2.0);
         let r = Rect::span(left - 2.0, left + w + 2.0, y - 2.0, y + lh_s + lh_b - 2.0);
         ui.hit(r, Target::Logo);
         return r;
     }
-    let wb = lemon::spaced_width(ui.c, MARK_BIG, spec.word, 2.0);
-    let total = 14.0 + ws + 8.0 + wb;
+    let wb = skell::spaced_width(ui.c, MARK_BIG, spec.word, 2.0);
+    let total = 16.0 + ws + 8.0 + wb;
     let left = (x - total * anchor).round();
     // Preserve the specified right edge instead of rounding the left edge first.
     let right = x + total * (1.0 - anchor);
     let bx = (right - wb).round();
-    lemon::spaced(ui.c, MARK_BIG, bx, (y - lh_b / 2.0).round(), plug::WORDMARK, spec.word, 2.0);
+    skell::spaced(ui.c, MARK_BIG, bx, (y - lh_b / 2.0).round(), plug::WORDMARK, spec.word, 2.0);
     let sx = (bx - 8.0 - ws).round();
-    lemon::spaced(ui.c, MARK_SMALL, sx, (y - lh_s / 2.0).round() + 1.0, brand::MAIN, "ML", 2.5);
-    lemon::lemon_mark(ui.c, left + 5.0, y, 4.0, brand::MAIN);
+    skell::spaced(ui.c, MARK_SMALL, sx, (y - lh_s / 2.0).round() + 1.0, brand::MAIN, BRAND_TAG, 2.0);
+    skell::skell_mark(ui.c, left + 7.0, y, 5.2, brand::MAIN);
     let r = Rect::span(left - 2.0, right, y - 12.0, y + 12.0);
     ui.hit(r, Target::Logo);
     r

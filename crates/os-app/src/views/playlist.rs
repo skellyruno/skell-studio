@@ -18,6 +18,9 @@ use crate::playlist::{self as pl, Mark, Overlay, PGeom, PickKind, MARKER_H, TITL
 /// Default pixels per bar (the zoom is `State::playlist_bar_w`).
 pub const BAR_W: f32 = 60.0;
 
+// Keep track names clear of their automation toggle while preserving the lower control row.
+const TRACK_HEAD_W: f32 = 122.0;
+
 // Clip colours (spec: ui/playlist.md §2).
 const CLIP_BORDER: u32 = 0x353c41;
 const TITLE_TOP: u32 = 0x50595e;
@@ -267,7 +270,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         }
         ui.c.pop_clip();
     }
-    let strip = Rect::new(r.x + pick_w + 2.0, client.y + 1.0, 108.0, 38.0);
+    let strip = Rect::new(r.x + pick_w + 2.0, client.y + 1.0, TRACK_HEAD_W + 10.0, 38.0);
     if super::lemon(ui) {
         ui.c.fill_rrect(strip, lk::r_btn(t), t.track_header);
     } else {
@@ -280,7 +283,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
 
     // Arrangement geometry.
     let head_x = r.x + pick_w + 2.0;
-    let head_w = 98.0;
+    let head_w = TRACK_HEAD_W;
     let grid = grid_rect(s, r, client);
     debug_assert_eq!(grid, cover);
     let (grid_x, grid_y, grid_w) = (grid.x, grid.y, grid.w);
@@ -549,7 +552,7 @@ pub fn scroll_parts(s: &State, grid: Rect) -> ScrollParts {
         grid,
         ruler: ruler_rect(s, grid),
         lane: (!pl::markers(s).is_empty()).then(|| Rect::new(grid.x, overview.y + 41.0, grid.w, MARKER_H)),
-        heads: Rect::new(grid.x - 110., grid.y, 98.0, grid.h),
+        heads: Rect::new(grid.x - TRACK_HEAD_W - 12.0, grid.y, TRACK_HEAD_W, grid.h),
         vbar: Rect::new(grid.right(), overview.y, 4.0 + bar_sizes().1, grid.bottom() - overview.y),
         overview,
     }
@@ -557,7 +560,7 @@ pub fn scroll_parts(s: &State, grid: Rect) -> ScrollParts {
 
 /// The arrangement grid in a window laid out at `r` with client rect `client` (see `super::frame_rects`).
 pub(crate) fn grid_rect(s: &State, r: Rect, client: Rect) -> Rect {
-    let grid_x = r.x + crate::clip_picker::width(s,r) + 2.0 + 98.0 + 12.0;
+    let grid_x = r.x + crate::clip_picker::width(s,r) + 2.0 + TRACK_HEAD_W + 12.0;
     let grid_w = (r.right() - grid_x - 4.0 - bar_sizes().1).max(1.0);
     let grid_y = client.y + 42.0 + if pl::markers(s).is_empty() { 0.0 } else { MARKER_H };
     Rect::new(grid_x, grid_y, grid_w, (r.bottom() - grid_y).max(0.0))
@@ -1431,6 +1434,11 @@ pub(crate) fn draw_padlock(c: &mut os_ui::Canvas, x: f32, y: f32, scale: f32, in
     }
 }
 
+/// Leave a real hit-target gap before the top-row automation toggle, not merely the LED.
+fn track_label_available_width(label_x: f32, toggle_x: f32) -> f32 {
+    (toggle_x - label_x - 4.0).max(0.0)
+}
+
 /// Choose the largest compact Skell track-label face that fits before the automation control.
 fn track_label_font_size(mut measure: impl FnMut(u16) -> f32, max_width: f32) -> u16 {
     for size in [13u16, 12, 11] {
@@ -1559,7 +1567,7 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
                     Rect::new(hr.x + 31.0, hr.y + 5.0, 12.0, 12.0), text);
             }
             let label_x = hr.x + if lead { 46.0 } else { 33.0 };
-            let label_w = (hr.right() - label_x - 24.0).max(0.0);
+            let label_w = track_label_available_width(label_x, toggle.x);
             let label = pl::track_name(s, row);
             let label_font = Font::new(track_label_font_size(
                 |size| ui.c.text_width(Font::new(size), &label),
@@ -1853,7 +1861,18 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
 
 #[cfg(test)]
 mod track_label_font_tests {
-    use super::track_label_font_size;
+    use super::{track_label_available_width, track_label_font_size, TRACK_HEAD_W};
+
+    #[test]
+    fn default_track_name_has_room_without_crossing_automation_toggle() {
+        // The top-row number takes 33 px; the toggle begins 40 px from the right edge.
+        let label_x = 33.0;
+        let toggle_x = TRACK_HEAD_W - 40.0;
+        let available = track_label_available_width(label_x, toggle_x);
+        assert!(available >= 41.0, "default Track 1 should remain readable");
+        assert!(label_x + available + 4.0 <= toggle_x);
+        assert_eq!(track_label_available_width(toggle_x + 1.0, toggle_x), 0.0);
+    }
 
     #[test]
     fn keeps_default_face_when_track_name_fits() {

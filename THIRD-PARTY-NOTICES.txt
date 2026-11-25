@@ -12,6 +12,46 @@ Signalsmith (MIT), Rubber Band (GPL), Lua (MIT), and the other original licence 
 No Serum code, factory presets or audio assets are bundled. Import compatibility
 uses Gridline Plasma's own importer and synthesis engine; results can differ.
 
+LYNX SHARE — Gross Beat time/volume DSP
+======================================
+Source: https://github.com/Ka1-S/LYNX-SHARE
+Source snapshot supplied for this integration: LYNX SHARE 0.1.30.
+Components adapted: src/core/GrossBeat.cpp/.h, FlCurve.cpp/.h, FlCurves.inc and Simd.h; src/core/FruityDynamics.cpp/.h (Fruity Compressor engine only).
+Licence: GNU Affero General Public License v3.0 (AGPL-3.0-only); full text: plugins/gross-beat/LICENSE-AGPL-3.0.txt.
+Skell adaptation: the Gross Beat engine/state reader is isolated from LYNX's DAW-specific Effect wrapper and exposed as the standalone Skell Beat VST3 plug-in (legacy CLAP source exports are retained for existing projects, but new release bundles contain VST3 only). No Image-Line source code, factory presets, graphics or audio were copied. Engine and preset behaviour are reconstructed from published behaviour and test evidence in the supplied LYNX source.
+The plug-ins are distributed separately from the Skell Studio application; their source and licence accompany each plug-in. The Gross Beat engine is packaged as Skell Beat and the isolated Fruity Compressor engine as Skell Compressor.
+
+
+LYNX SHARE — Fruity Delay 3 DSP
+===============================
+Source: https://github.com/Ka1-S/LYNX-SHARE
+Pinned source snapshot: LYNX SHARE 0.1.30, commit 88ec555ea2bce9714c92707cc06a5abfd317c900.
+Adapted component: src/core/FruityDelay.cpp (Fruity Delay 3 engine section only) and src/core/FruityDelay.h plus its required engine headers.
+The DAW-specific EffectSlot wrapper and Fruity Delay 2 path are excluded from the compiled translation unit. The C ABI bridge and Rust host adapter are Skell modifications.
+Licence: GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+Full licence text: plugins/lemon-delay/LICENSE-AGPL-3.0.txt.
+No Image-Line binaries, factory presets, samples, graphics or proprietary FL assets are included.
+
+LYNX SHARE — Fruity Limiter DSP
+===============================
+Source: https://github.com/Ka1-S/LYNX-SHARE
+Pinned source snapshot: LYNX SHARE 0.1.30, commit 88ec555ea2bce9714c92707cc06a5abfd317c900.
+Adapted component: src/core/FruityDynamics.cpp (Fruity Limiter engine and helper routines only).
+The DAW-specific Effect wrapper and Fruity Compressor engine are excluded from this translation unit. The C ABI bridge and Rust adapter are Skell modifications.
+Licence: GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+Full licence text: plugins/lemon-limiter/LICENSE-AGPL-3.0.txt.
+No Image-Line binaries, factory presets, samples, artwork or proprietary FL assets are included.
+
+LYNX SHARE — Fruity Reeverb 2 DSP
+==================================
+Source: https://github.com/Ka1-S/LYNX-SHARE
+Pinned source snapshot: LYNX SHARE 0.1.30, commit 88ec555ea2bce9714c92707cc06a5abfd317c900.
+Adapted files: src/core/Reeverb2.cpp and the corresponding engine interface/dependency headers under src/core/.
+The engine-only translation unit excludes the DAW-specific Effect wrapper. The C ABI bridge and Rust host adapter are Skell modifications.
+Licence: GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+Full licence text: plugins/lemon-reverb/LICENSE-AGPL-3.0.txt.
+No Image-Line binaries, factory presets, samples, artwork or proprietary FL assets are included.
+
 Lemon Hall — Dragonfly / Freeverb3
 ==================================
 Dragonfly Reverb: Copyright (c) 2018 Michael Willis, Rob van den Berg. GPL-3.0-or-later.
@@ -15222,3 +15262,25 @@ Vintage FL Studio artwork and cursor resources
 Original artwork: Image-Line / respective rights holders. Included with
 redistribution permission confirmed by the Lemon Studio publisher. See
 crates/os-app/assets/vintage-2005/README.txt and manifest.json in the source.
+
+
+LYNX SHARE — Fruity Parametric EQ 2 DSP
+========================================
+Source: https://github.com/Ka1-S/LYNX-SHARE
+Pinned source snapshot: LYNX SHARE 0.1.30, commit 88ec555ea2bce9714c92707cc06a5abfd317c900.
+Adapted files: ParametricEqFl.h/.cpp, ParametricEqLinear.h/.cpp, Simd.h and CpuFeatures.h. The DAW model is replaced
+by a minimal EffectParams shim; no LYNX application, UI or JUCE code is included.
+License: GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+Full license: plugins/lemon-parametric-eq-2/vendor/lynx/LICENSE-AGPL-3.0.txt.
+The standalone VST3/CLAP target links this source; the Studio linked build keeps its existing in-tree EQ.
+
+
+LYNX SHARE — LYNX Tune pitch-correction DSP
+=========================================
+Source: https://github.com/Ka1-S/LYNX-SHARE
+Pinned source revision: 0.1.30, commit 88ec555ea2bce9714c92707cc06a5abfd317c900.
+Adapted components: src/core/LynxTune.cpp/.h and src/core/VocalPitch.cpp/.h, plus the required Simd.h subset.
+The DAW-specific Song/EffectSlot integration and Send Scale To All traversal are excluded from the isolated module. Skell's C ABI bridge supplies the Effect/EffectParams/NoteMask interface and the host MIDI-note mask.
+Licence: GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+Full licence text: plugins/lynx-tune/vendor/LICENSE-AGPL-3.0.txt.
+The Tune implementation is packaged as the separate Skell Tune VST3/CLAP plug-in; its source and licence accompany the module.

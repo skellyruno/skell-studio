@@ -1,7 +1,7 @@
 name: Windows DAW - engineering executable
 on:
   push:
-    branches: [main, feature/windows-release-exe-trigger-20261120]
+    branches: [main, feature/windows-release-exe-trigger-20261120, feature/skell-release-candidate-20261121]
     paths:
       - ".github/workflows/windows-manual-build.yml"
       - "Cargo.toml"
@@ -16,6 +16,12 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+
+# Cancel superseded feature-branch pushes only. Preserve main and every manual build.
+concurrency:
+  group: ${{ (github.event_name == 'push' && github.ref != 'refs/heads/main') && format('skell-windows-exe-feature-{0}', github.ref) || format('skell-windows-exe-preserved-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' }}
+
 jobs:
   windows-build:
     runs-on: windows-latest
@@ -27,12 +33,24 @@ jobs:
         with:
           shared-key: skell-windows-exe
           cache-on-failure: true
+      # Plugin/Studio jobs independently run Beat and vendor regression tests.
+      # This job should build the Release-mode engineering EXE without a second
+      # full debug test harness compile beforehand.
       - name: Build Skell Studio Windows x64 engineering executable
         shell: pwsh
         env:
           OPENSTUDIO_NO_PLUGIN_BUILD: "1"
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
         run: cargo build --locked --release -p os-app --bin skell-studio
+      - name: Verify checked-out source matches workflow commit
+        shell: pwsh
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:GITHUB_SHA) {
+            throw "Wrong source revision for Windows EXE build: checkout=$actual workflow=$env:GITHUB_SHA"
+          }
+          Write-Host "Windows engineering EXE source revision: $actual"
+
       - name: Verify Windows PE x64 executable and write checksum
         shell: pwsh
         run: |

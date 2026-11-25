@@ -1,0 +1,41 @@
+# Skell Studio — engineering release gate and independent DSP/DAW QA
+
+## Release provenance (critical)
+On `pull_request`, GitHub's default `GITHUB_SHA` is a synthetic merge commit, **not** the PR branch tip. The prior VST3 artifact therefore contained a legitimate 33-module Windows x64 build whose manifest said `3231dd965b55af4ddeb17470462076532b4289e5`, rather than the PR tip `f394661251b378a82402f3df75253d3da0f8f848`. Never describe that artifact as an exact-head build. It remains useful evidence for the PR merge result but is not exact source provenance.
+
+The new workflow explicitly checks out `${{ github.event.pull_request.head.sha || github.sha }}`, verifies `git rev-parse HEAD`, and writes `SKELL_SOURCE_SHA` to `BUILD_MANIFEST.txt`. Native 3-resolution UI captures likewise stamp their source SHA. The full Windows EXE workflow is a `push` workflow, where `GITHUB_SHA` already refers to the pushed source commit. Recheck every artifact SHA independently before distribution.
+
+## Automated checks
+- Windows gross-beat / limiter / delay / reverb / EQ / compressor / tune unit tests; all 72 slot previews, 4×9 dual-bank hit tests, active host slot selection, 192 state swaps
+- Deterministic real DSP runs with stereo multitone+impulse input for **44,100 / 48,000 / 96,000 Hz**, and 17 / 64 / 257 / 4096-sample host blocks; checks finite results, 15-sample published latency, and sample-wise block invariance. Report RMS, peaks and measured CI wall-clock time in `BEAT_DSP_METRICS.txt`. CI runner timing is **not** a trustworthy production CPU budget; measure locally with a controlled machine before final release.
+- Windows VST3-only 33 AMD64 modules, no CLAP packaging, all per-module SHA-256 hashes, and real VST3 host component-state round-trip
+- Windows full-engine compilation, FL FST preset-import unit regression and opt-in real-time DSP audit tests
+- Actual Studio native UI screenshots across 1280×720, 1440×900 and 1920×1080 plus native Beat/EQ/Compressor/Tune editor snapshots, inspected visually for overlap, labels and DPI fit
+- Windows x64 **release-profile** application EXE, separate from fast preview; verify exact commit, PE machine, executable size and SHA-256 before using
+
+## Outstanding hands-on tests (must not be marked passed from CI)
+1. **FL Studio:** load each VST3 in a real Windows FL Studio host; write automation to every existing parameter; save project, close FL Studio entirely, reopen and verify preset/slot/note recall, automation lanes, latency and state. Compare against previous stable version in a copy of the project; keep the original untouched.
+2. **Other VST3 DAW:** scan and load; open/resize the native editor at 100%, 125% and 150% scaling; test drag, wheel, slot selection, MIDI and host automation gestures; close/reopen, undo/redo, save/reopen and bypass.
+3. **Recorded-audio A/B:** use the same user-supplied WAV, align dry/wet time including 15 samples of reported Skell Beat latency, loudness-match and measure LUFS/RMS, peak/true-peak, phase/null residue and perceptual artifacts at 44.1/48/96 kHz. Synthetic CI stimuli are **not** recorded WAV A/B.
+4. **Performance / real-time safety:** record mean, P95/P99 audio-callback time, max callback, allocations, locks and denormal behavior on the target Windows machine for 32/64/128/256/512 buffers while rapidly changing curves; document actual CPU model, DAW, sample rate and audio driver.
+5. **Licensing:** AGPL-3.0-only LYNX portions and other GPL dependencies must have commercial distribution/attribution/legal review. A passing build is not permission to ship closed-source proprietary binaries.
+
+Do not merge PR #22 as a verified release until those gates are completed. Protect `main`, keep external projects and presets backward-compatible, and never delete installed historical CLAP copies: their host identities are distinct from VST3.
+
+## Follow-up: first exact-head compiler error and root corrections
+The first pinned-head Windows run (`4ec7080`) exposed an E0277 Rust type mismatch in Skell Beat's cached title comparison, caught before any new VST3 bundle was produced. The follow-up corrects the comparison via string slices and eliminates unused editor imports/mutability. The engine's duplicate `Target::MainPitch` match arm is reconciled into the canonical helper, preserving follow flags, per-channel pitch offsets and avoiding redundant retuning. A real engine regression exercises a +75-cent offset and an opted-out channel.
+
+The deterministic DSP report now captures synthetic dry/wet RMS, unaligned residual, and per-callback P95/P99/max at 64 frames and 44.1/48/96 kHz. These are CI runner diagnostics, **not** real recorded-file listening tests, and the residual is not latency-aligned.
+
+The plugin suite now invokes external `pluginval` v1.0.4 (pinned official Tracktion release) at strictness level 5 without GUI tests, for Skell Beat, Skell Compressor, Skell Tune, ML Limiter, ML Delay, and ML Reverb. Exit status is a hard CI gate, reports are artifacts. This is independent plugin-host validation, not an FL Studio session or a replacement for GUI/DAW recall tests.
+
+## Packaging provenance and legal notice inclusion
+The initial 33-module VST3 engineering artifact had checksums but no adjacent root GPL / LYNX AGPL notices. The bundler now stages top-level GPL license, third-party notices, attribution, pinned source commit README, Skell Beat LYNX UI notice, and five LYNX-derived plugin AGPL license texts in `target/bundled`. CI verifies presence, nontrivial file size and source revision match. This improves engineering archive provenance; it **does not** certify legal redistribution compliance or substitute for full corresponding-source obligations. Original historical CLAP binaries remain untouched.
+
+The main-pitch follow-offset regression is now an explicit Windows `os-engine` test gate instead of a test merely present in the repository.
+
+## Host PDC and real UI hover regression (next gate)
+The external pluginval `Plugin info` phase lists Skell Beat latency as 0 before the audio-processing phase, while Skell Beat's actual LYNX engine reports 15 samples. An active-host VST3 round-trip regression now asserts 15 samples **after activation**, to discriminate benign pre-activation reporting from a real host PDC defect. This check is not assumed to pass until the new exact-head Windows job finishes. The native editor also highlights hovered 4×9 cells, shows their full cached preset names in the bank header, and saves a separate actual hover screenshot to verify visual legibility without altering automation or saved state.
+
+## Broader Windows host and release QA (pending exact-head CI)
+A follow-up extends external pluginval v1.0.4 strictness-5 non-GUI validation to **all 33 VST3s**, collecting a CSV summary and reporting every failure in one run. Nine priority effects receive 44.1/48/96 kHz VST3-host activation, 17/64/257/1024-frame processing, finite audio, stable class IDs, and saved-state recall checks. No claim of passing until exact-head CI confirms. The separate Release EXE no longer recompiles full debug tests first; the Studio regression workflow retains FL FST and built-in vendor checks. The historical-branch audit in CI is read-only: retirement is not executed.

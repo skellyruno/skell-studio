@@ -324,11 +324,39 @@ pub fn joined(s: &Sample, t: &Take, append: bool) -> Sample {
     out
 }
 
-fn drain_loop(shared: Weak<Shared>) {
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let Some(s) = shared.upgrade() else { return };
-        s.drain();
+// The host may unload the VST3 module immediately after dropping its last instance.
+// Own and join the drain thread instead of leaving detached code running in that module.
+struct DrainWorker {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DrainWorker {
+    fn start(shared: Weak<Shared>) -> std::io::Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let handle = std::thread::Builder::new().name("tesla-take".into()).spawn(move || {
+            while !worker_stop.load(Ordering::Acquire) {
+                std::thread::park_timeout(std::time::Duration::from_millis(10));
+                if worker_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                let Some(s) = shared.upgrade() else { break };
+                s.drain();
+            }
+        })?;
+        Ok(Self { stop, handle: Some(handle) })
+    }
+}
+
+impl Drop for DrainWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            handle.thread().unpark();
+            // Never called by process(); only instance destruction waits for the worker.
+            let _ = handle.join();
+        }
     }
 }
 
@@ -490,14 +518,15 @@ impl Player {
 }
 
 pub struct Tesla {
+    // Fields drop in declaration order: stop the worker before releasing shared state.
+    drain_worker: Option<DrainWorker>,
     params: Arc<TeslaParams>,
     player: Player,
-    drain_started: bool,
 }
 
 impl Default for Tesla {
     fn default() -> Self {
-        Tesla { params: Arc::new(TeslaParams::default()), player: Player::default(), drain_started: false }
+        Tesla { drain_worker: None, params: Arc::new(TeslaParams::default()), player: Player::default() }
     }
 }
 
@@ -531,9 +560,11 @@ impl Plugin for Tesla {
 
     fn initialize(&mut self, _layout: &AudioIOLayout, config: &BufferConfig, _ctx: &mut impl InitContext<Self>) -> bool {
         self.shared().host_rate.store(config.sample_rate.round() as u32, Ordering::Relaxed);
-        if !self.drain_started {
-            let weak = Arc::downgrade(self.shared());
-            self.drain_started = std::thread::Builder::new().name("tesla-take".into()).spawn(move || drain_loop(weak)).is_ok();
+        if self.drain_worker.is_none() {
+            match DrainWorker::start(Arc::downgrade(self.shared())) {
+                Ok(worker) => self.drain_worker = Some(worker),
+                Err(_) => return false,
+            }
         }
         true
     }
@@ -715,6 +746,21 @@ const OLD_MIN_W: u32 = 680;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drain_worker_is_joined_when_plugin_is_dropped() {
+        // A host/editor may retain params beyond plugin destruction; that must not
+        // keep the worker alive after the plugin's module can be unloaded.
+        let mut plugin = Tesla::default();
+        let shared = plugin.shared().clone();
+        let worker = DrainWorker::start(Arc::downgrade(&shared)).unwrap();
+        let stop = worker.stop.clone();
+        plugin.drain_worker = Some(worker);
+        drop(plugin);
+        assert!(stop.load(Ordering::Acquire));
+        assert_eq!(Arc::strong_count(&stop), 1, "worker still owns stop flag");
+        assert_eq!(Arc::strong_count(&shared), 1, "worker still owns shared state");
+    }
 
     /// A saved window size: kept when Tesla could open at it, widened to today's smallest when it was saved at the
     /// smallest width before the tool grid grew, the default when it is not one Tesla saves.

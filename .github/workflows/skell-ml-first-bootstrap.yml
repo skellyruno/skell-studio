@@ -1,0 +1,39 @@
+name: Skell ML-first source staging lint
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/skell-ml-first-bootstrap.yml"
+      - "scripts/stage_ml_first_source.ps1"
+      - "docs/ML_FIRST_SOURCE_MIGRATION.md"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify-loader:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Parse staging script with Windows PowerShell
+        shell: pwsh
+        run: |
+          $tokens=$null
+          $errors=$null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "scripts/stage_ml_first_source.ps1").Path,
+            [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            throw "Found $($errors.Count) PowerShell parse errors"
+          }
+      - name: Ensure staging cannot overwrite protected branches
+        shell: pwsh
+        run: |
+          $src=Get-Content scripts/stage_ml_first_source.ps1 -Raw
+          if (-not $src.Contains('origin/main')) { throw "Must branch from main" }
+          if (-not $src.Contains('Refusing to stage into a protected branch')) { throw "Protected branch guard missing" }
+          if (-not $src.Contains('THIRD-PARTY-NOTICES.txt')) { throw "License manifest check missing" }
+          if (-not $src.Contains('AGENTS.md')) { throw "Repository instructions must be preserved" }

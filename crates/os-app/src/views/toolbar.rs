@@ -25,8 +25,23 @@ pub const MORE_HINT: &str = "More windows and toolbar options";
 /// The Studio rack's compact corners and flat faces, using the active toolbar palette.
 const STUDIO_RADIUS: f32 = 4.0;
 
+/// FL-inspired electric-green Skell chrome is a visual setting only.
+/// Presets, project state and every existing control hit region are unchanged.
+fn neon(s: &State) -> bool {
+    !s.vintage_2005 && crate::settings_file::flag("skell_neon_toolbar", true)
+}
+fn neon_green() -> Color { Color::rgb(0x28f23b) }
+fn neon_dark() -> Color { Color::rgb(0x020703) }
+
+
 fn studio_tile(ui: &mut Ui, rect: Rect, face: Color) {
-    if rect.w <= 2.0 || rect.h <= 2.0 {
+    if rect.w <= 2.0 || rect.h <= 2.0 { return; }
+    if crate::settings_file::flag("skell_neon_toolbar", true) {
+        let low = Color::rgb(0x071408);
+        let glow = neon_green();
+        let fill = face.mix(low, 0.76);
+        ui.c.fill_rect_gradient(rect, fill.shade(0.05), neon_dark(), 2.5);
+        ui.c.stroke_rrect(rect.inset(0.5), 2.5, 1.0, glow.with_alpha(100));
         return;
     }
     ui.c.fill_rrect(rect, STUDIO_RADIUS, face);
@@ -237,7 +252,8 @@ impl ActionSizes {
 pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     let t = ui.t;
     let lemon = super::lemon(ui);
-    let studio = lemon && !s.vintage_2005;
+    let is_neon = neon(s);
+    let studio = (lemon || is_neon) && !s.vintage_2005;
     let editing = s.bar.editing;
     let l = display_layout(s);
     let action_font = if s.vintage_2005 {Font::vintage(11)}else{Font::new(12)};
@@ -258,6 +274,17 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         ui.c.fill_rect(Rect::new(0.0, 0.0, width, h), t.toolbar);
         for y in [0.0, 40.0] {
             crate::vintage_skin::draw(ui.c, "RecordRail", 0, Rect::new(0.0, y, width, 40.0));
+        }
+    } else if is_neon {
+        // Almost-black hardware shelf, electric-green edge, muted dividers.
+        // The top bar remains opaque over even the brightest custom wallpaper.
+        ui.c.fill_rect_gradient(Rect::new(0.0, 0.0, width, h),
+            Color::rgb(0x071108), neon_dark(), 0.0);
+        ui.c.fill_rect(Rect::new(0.0, 0.0, width, 1.0),
+            Color::rgb(0x135b20));
+        for r in (1..rows).filter(|_| seps) {
+            ui.c.fill_rect(Rect::new(0.0, ROW_H * r as f32, width, 1.0),
+                Color::rgb(0x12401b));
         }
     } else if lemon {
         // Lemon (spec: ui/lemon-design.md §4): flat bands, short rounded separators.
@@ -280,7 +307,8 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
             }
         }
     }
-    ui.c.fill_rect(Rect::new(0.0, h, width, 2.0), t.toolbar_line);
+    ui.c.fill_rect(Rect::new(0.0, h, width, 2.0),
+        if is_neon { Color::rgb(0x0ab326) } else { t.toolbar_line });
     // Empty toolbar areas drag the window (registered first, so controls win).
     ui.hit(Rect::new(0.0, 0.0, width, h), Action::DragWindow, "");
 
@@ -419,7 +447,8 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
             } else {
                 super::button_face(ui,r,if hover {super::Look::Hover}else{super::Look::Off});
             }
-            icons::draw(ui.c,icon,r.inset(6.),t.glyph);
+            icons::draw(ui.c,icon,r.inset(6.),
+                if is_neon { neon_green() } else { t.glyph });
         }
     }
     // Panels left out (spec: ui/ui-scaling.md §1 "Toolbars scaling"): the ▶ arrow at the band's right end, in the logo's
@@ -576,7 +605,8 @@ fn transport(ui: &mut Ui, c: &Ctx) {
         return;
     }
     let (t, a, s, f) = (ui.t, c.a, c.s, c.f);
-    let lemon = super::lemon(ui);
+    let is_neon = neon(s);
+    let lemon = super::lemon(ui) || is_neon;
     let capsule = a.span(383.0, 483.0, 4.0, 36.0);
     if t.style.vintage_2005 {
         os_ui::kit::sunken(ui.c, t, capsule, t.sunken_dark);
@@ -609,13 +639,21 @@ fn transport(ui: &mut Ui, c: &Ctx) {
                 if active { t.on_top } else { t.button }, t.button,
                 os_theme::appearance::Finish::Beveled);
         } else if active && lemon {
-            ui.c.fill_rrect(r.inset(1.5), 3.0, t.pill);
+            ui.c.fill_rrect(r.inset(1.5), 3.0,
+                if is_neon { neon_green() } else { t.pill });
         } else if active {
             ui.c.push_clip(r);
             ui.c.fill_rrect(capsule.inset(1.0), 14.0, t.pill);
             ui.c.pop_clip();
         }
-        ui.c.text_center(mode_font, r, if active { t.pill_text } else { t.text_dim }, label);
+        ui.c.text_center(
+            if is_neon { Font::condensed(13, 5) } else { mode_font },
+            r,
+            if is_neon {
+                if active { neon_dark() } else { neon_green() }
+            } else if active { t.pill_text } else { t.text_dim },
+            label,
+        );
     }
     // Lit while playing, with a pause glyph (Play pauses); unlit with the play glyph when paused.
     let play_on = f.playing && !f.paused;
@@ -632,7 +670,9 @@ fn transport(ui: &mut Ui, c: &Ctx) {
                 os_theme::appearance::Finish::Beveled);
         } else if (on || hov) && lemon {
             let seg = Rect::new(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0);
-            ui.c.fill_rrect(seg, STUDIO_RADIUS, if on { t.on_top } else { t.button_hi });
+            ui.c.fill_rrect(seg, STUDIO_RADIUS,
+                if is_neon { if on { neon_green() } else { Color::rgb(0x14441c) } }
+                else if on { t.on_top } else { t.button_hi });
         } else if on || hov {
             ui.c.push_clip(r);
             if on {
@@ -643,7 +683,9 @@ fn transport(ui: &mut Ui, c: &Ctx) {
             ui.c.pop_clip();
         }
         let g = Rect::new(r.x + 8.0, r.y + 8.0, r.w - 16.0, r.h - 16.0);
-        let c = if on { t.on_glyph } else { t.glyph };
+        let c = if is_neon {
+            if on { neon_dark() } else { neon_green() }
+        } else if on { t.on_glyph } else { t.glyph };
         if icon == Icon::Play && s.rec.waiting {
             // Waiting for input (spec: ui/recording.md §3): three dots.
             for k in [-1.0, 0.0, 1.0] {
@@ -701,7 +743,9 @@ fn transport(ui: &mut Ui, c: &Ctx) {
         ui.c.fill_rrect(tb.inset(1.0), 4.0, ui.t.s(0x5f6466));
     }
     // Lemon displays show their digits in the brand colour.
-    let digits = if t.style.vintage_2005 {Color::rgb(0x23383d)}else if lemon { t.pill } else { t.glyph };
+    let digits = if is_neon { neon_green() }
+        else if t.style.vintage_2005 { Color::rgb(0x23383d) }
+        else if lemon { t.pill } else { t.glyph };
     tempo_readout(ui, s, tb, f.tempo, digits, c.preview);
 }
 
@@ -730,10 +774,11 @@ fn draw_transport_icon(canvas: &mut os_ui::Canvas, icon: Icon, bounds: Rect, ink
 pub(super) fn tempo_readout(ui: &mut Ui, s: &State, rect: Rect, tempo: f64, ink: Color, preview: bool) {
     let tempo = if tempo.is_finite() { tempo } else { 120.0 };
     let label = format!("{tempo:.3}");
-    let modern = super::lemon(ui) && !s.vintage_2005;
+    let modern = (super::lemon(ui) || neon(s)) && !s.vintage_2005;
     let (size, min) = if s.vintage_2005 { (11, 8) } else if modern { (18, 11) } else { (19, 11) };
     let font_at = |size| {
         if s.vintage_2005 { Font::vintage(size).bold() }
+        else if neon(s) { Font::condensed(size, 5) }
         else if modern { Font::new(size) }
         else { Font::condensed(size, 6) }
     };
@@ -787,7 +832,7 @@ fn recording(ui: &mut Ui, c: &Ctx) -> bool {
 /// Song position (B:S:T, or M:S:CS: a click toggles, right-click opens the mode menu).
 fn time(ui: &mut Ui, c: &Ctx) {
     let (t, a, s, f) = (ui.t, c.a, c.s, c.f);
-    let lemon = super::lemon(ui);
+    let lemon = super::lemon(ui) || neon(s);
     let tp = a.span(745.0, 873.0, 4.0, 36.0);
     if t.style.vintage_2005 {
         os_ui::kit::styled_surface(ui.c, t, tp, 1.0, t.window_border, t.time_panel, t.time_panel,
@@ -807,7 +852,7 @@ fn time(ui: &mut Ui, c: &Ctx) {
     let secs = f.tick / ppq * 60.0 / s.project.tick_tempo(s.tempo.max(1.0));
     let (bar, step, tick) = s.clock.reading(secs, f.tick * 96.0 / ppq, sig);
     ui.c.push_clip(tp.inset(1.0));
-    let g = if lemon { t.pill } else { t.glyph };
+    let g = if neon(s) { neon_green() } else if lemon { t.pill } else { t.glyph };
     if let Some(target)=s.rec.preroll.filter(|target|f.playing && !f.paused && f.tick<f64::from(*target)) {
         let beats=((f64::from(target)-f.tick)/f64::from(s.project.beat_ticks().max(1))).ceil().max(1.) as u32;
         ui.c.text_center(Font::light(18,8),Rect::new(tp.x,tp.y+2.,tp.w,tp.h-2.),g,&format!("PRE-ROLL {beats}"));
@@ -1077,9 +1122,13 @@ fn utilities(ui: &mut Ui, c: &Ctx) -> bool {
 fn menu_bar(ui: &mut Ui, c: &Ctx) {
     let (t, a, s) = (ui.t, c.a, c.s);
     let mb = a.span(4.0, 296.0, 45.0, 77.0);
-    let lemon = super::lemon(ui);
+    let is_neon = neon(s);
+    let lemon = super::lemon(ui) || is_neon;
     if t.style.vintage_2005 {
         crate::vintage::recess(ui.c,mb,t.menu_panel);
+    } else if is_neon {
+        ui.c.fill_rrect(mb, 2.0, neon_dark());
+        ui.c.stroke_rrect(mb.inset(0.5), 2.0, 1.0, Color::rgb(0x155a1c));
     } else if lemon {
         studio_tile(ui, mb, t.toolbar.mix(t.menu_panel, 0.45));
     } else {
@@ -1094,13 +1143,19 @@ fn menu_bar(ui: &mut Ui, c: &Ctx) {
             let hovered = ui.hit(r, Action::Menu(i), title);
             let open = s.menu_open == Some(i) && !c.preview;
             if open || hovered {
-                ui.c.fill_rrect(r.inset(1.5), STUDIO_RADIUS, t.menu_drop_hi);
+                ui.c.fill_rrect(r.inset(1.5), if is_neon { 2.0 } else { STUDIO_RADIUS },
+                    if is_neon { Color::rgb(0x124a1a) } else { t.menu_drop_hi });
             }
             if open {
-                ui.c.fill_rrect(Rect::new(r.x + 5.0, r.bottom() - 4.0, r.w - 10.0, 2.0), 1.0, t.accent);
+                ui.c.fill_rrect(Rect::new(r.x + 5.0, r.bottom() - 4.0, r.w - 10.0, 2.0), 1.0,
+                    if is_neon { neon_green() } else { t.accent });
             }
-            let label = if english && title != "…" { menus::VINTAGE_TITLES[i] } else { title };
-            ui.c.text_center(font, r, t.menu_text, label);
+            let label = if is_neon { title }
+                else if english && title != "…" { menus::VINTAGE_TITLES[i] }
+                else { title };
+            ui.c.text_center(font, r,
+                if is_neon { if hovered || open { Color::rgb(0xa0ff91) } else { neon_green() } }
+                else { t.menu_text }, label);
         }
         return;
     }

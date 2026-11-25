@@ -496,11 +496,16 @@ pub(super) fn modern_bar(c: &mut os_ui::Canvas) -> (Font, [(&'static str, f32, f
     });
     const ROOM: f32 = 278.0;
     const MIN_GAP: f32 = 7.0;
-    let (font, widths, total) = (9..=14).rev().map(|size| {
-        let font = Font::new(size);
+    let neon = crate::settings_file::flag("skell_neon_toolbar", true);
+    // Narrow Cuprum-like lettering is much closer to Skell's FL reference.
+    // Measure all translated names instead of hardcoding clickable widths.
+    let minimum = if neon { 13 } else { 9 };
+    let maximum = if neon { 18 } else { 14 };
+    let (font, widths, total) = (minimum..=maximum).rev().map(|size| {
+        let font = if neon { Font::condensed(size, 5) } else { Font::new(size) };
         let widths = titles.map(|title| c.text_width(font, title).ceil());
         (font, widths, widths.iter().sum::<f32>())
-    }).find(|(font, _, total)| *total + MIN_GAP * 7.0 <= ROOM || font.size == 9).unwrap();
+    }).find(|(font, _, total)| *total + MIN_GAP * 7.0 <= ROOM || font.size == minimum).unwrap();
     let gap = ((ROOM - total) / 7.0).clamp(MIN_GAP, 12.0);
     let mut x = 10.0;
     let items = std::array::from_fn(|i| {

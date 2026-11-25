@@ -78,6 +78,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Verify Tesla recorder worker shuts down before plugin unload
+        shell: pwsh
+        run: cargo test --locked -p tesla drain_worker_is_joined_when_plugin_is_dropped -- --nocapture
+
       - name: Build the complete Windows VST3 plugin suite
         shell: pwsh
         run: cargo run --locked --release -p bundle-plugins

@@ -56,10 +56,12 @@ foreach ($branch in $verified.Keys) {
         continue
     }
     & git merge-base --is-ancestor $tip $candidateSha
-    if ($LASTEXITCODE -ne 0) {
+    $ancestryExit = $LASTEXITCODE
+    if ($ancestryExit -eq 1) {
         Write-Warning "SKIP not fully merged by ancestry: $branch"
         continue
     }
+    if ($ancestryExit -ne 0) { throw "Ancestry verification failed for ${branch}: git exit $ancestryExit" }
     $archiveTag = "archive/skell-studio/verified/$branch"
     $existing = (& git ls-remote --tags $Remote "refs/tags/$archiveTag" 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { throw "Archive tag lookup failed: $archiveTag" }
@@ -93,3 +95,6 @@ if (-not $Apply) {
     Write-Host "All diverged historical branches remain protected for full content reconciliation."
     Write-Host "To perform later: -Apply -ConfirmArchiveAndRetire (requires repository write permission)."
 } else { Write-Host "Archived and retired $approvedCount ancestry-contained branches." }
+# A skipped diverged branch is an expected git exit 1, not a failed dry run.
+# Git errors above still throw; successful completion must return success to CI.
+exit 0

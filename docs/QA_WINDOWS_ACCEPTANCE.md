@@ -54,3 +54,11 @@ The first confirmed compilation blocker was a non-exhaustive host command match 
 3. Fix layout defects based on real rendering and interaction.
 4. Run audio/FLP/VST3 regression matrix and log baseline failures.
 5. Replace remaining inherited identity where not compatibility-sensitive, then ship an internal alpha.
+
+## 2026-11-24 continuation (pending exact-commit CI)
+
+- Input-device generation boundary prevents replay of the previous device's buffered frames; regression covers mono to stereo reopening and closing. Physical ASIO/WASAPI latency and dropout testing remain required.
+- Beat slot parser clamps extreme integer values; Tune initializes with restored voice-range settings before publishing PDC; the shared wrapper publishes process-time latency changes in the same callback. Retune remains 0–400 ms with unchanged automation mapping (0 ms = fastest, 100 ms = raw 500). No plugin IDs or state schema intentionally changed.
+- FLP unit tests now run as part of the candidate plugin bundle gate and the dedicated workflow responds to relevant PR updates. Recording/FST gates remain independent of a physical audio device.
+- Visual acceptance: inspect full-resolution native mixer, piano roll, playlist, rack and browser at 100/125/150/200% scale; verify small labels, inactive controls, meter contrast and pointer interactions. Do not substitute a passing capture job for visual inspection. Preserve approved arrangement and mixer layout.
+- Additional Skelly plugins: qualify as external VST3s first. For each candidate require exact source/build provenance, a distinct stable class ID, pluginval, scan/open/close, save/reopen, automation, latency/CPU and audio tests. Do not replace existing stock IDs or add duplicate pitch engines by default. Distribution remains VST3-only; preserve legacy CLAP host support and project loading. Licensing and actual external host testing still open.

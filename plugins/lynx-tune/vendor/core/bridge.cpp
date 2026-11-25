@@ -24,7 +24,9 @@ void mergeHeld(TuneInstance& instance) noexcept {
 }
 
 extern "C" {
-void* skell_lynx_tune_new(int sampleRate) noexcept {
+void skell_lynx_tune_set(void* opaque, const int* values, int count) noexcept;
+
+void* skell_lynx_tune_new(int sampleRate, const int* values, int count) noexcept {
     try {
         auto instance = std::make_unique<TuneInstance>();
         const auto& info = lynx::lynxtune::info();
@@ -32,6 +34,9 @@ void* skell_lynx_tune_new(int sampleRate) noexcept {
             instance->params[i] = info.params[i].defaultValue;
         // Host MIDI from all 16 input channels is merged into the first held-note source.
         instance->params[lynx::lynxtune::midiChannel] = 1.0f / 128.0f;
+        // Set restored controls before construction/prepare so the voice range
+        // determines the host's initial PDC, not only the first process block.
+        skell_lynx_tune_set(instance.get(), values, count);
         instance->effect = lynx::lynxtune::make(&instance->params);
         if (!instance->effect)
             return nullptr;

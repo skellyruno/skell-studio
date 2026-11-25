@@ -406,6 +406,13 @@ impl<K: Kind> Plugin for SmallFx<K> {
                 dsp.process_with_sidechain(&mut left[0][offset..frames], &mut right[0][offset..frames], sidechain);
             }
         }
+        // Some engines recalculate latency during process() (e.g. Tune's voice
+        // range). Notify the host in this callback rather than one block late.
+        let latency = dsp.latency();
+        if latency != self.latency {
+            self.latency = latency;
+            ctx.set_latency_samples(latency);
+        }
         if K::SPEC.rings { ProcessStatus::KeepAlive } else { ProcessStatus::Normal }
     }
 }

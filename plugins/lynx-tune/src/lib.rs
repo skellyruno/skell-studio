@@ -7,7 +7,7 @@ use nih_plug::prelude::{nih_export_clap, nih_export_vst3, ClapFeature, MidiConfi
 use std::{ffi::c_void, ptr};
 
 unsafe extern "C" {
-    fn skell_lynx_tune_new(sample_rate: i32) -> *mut c_void;
+    fn skell_lynx_tune_new(sample_rate: i32, values: *const i32, count: i32) -> *mut c_void;
     fn skell_lynx_tune_delete(instance: *mut c_void);
     fn skell_lynx_tune_prepare(instance: *mut c_void, sample_rate: i32);
     fn skell_lynx_tune_set(instance: *mut c_void, values: *const i32, count: i32);
@@ -96,7 +96,7 @@ unsafe impl Send for TuneSound {}
 impl TuneSound {
     fn new(rate: u32, values: &[i32]) -> Self {
         let rate = rate.clamp(8000, 192000);
-        let instance = ptr::NonNull::new(unsafe { skell_lynx_tune_new(rate as i32) })
+        let instance = ptr::NonNull::new(unsafe { skell_lynx_tune_new(rate as i32, values.as_ptr(), values.len() as i32) })
             .expect("LYNX Tune engine allocation");
         let mut sound = Self { instance, rate };
         sound.set(values);
@@ -256,6 +256,31 @@ mod tests {
             .expect("corrected output should contain stable positive-going crossings");
         // A#3 is outside C major; B3 (246.94 Hz) is the closest allowed note.
         assert!((measured - 246.94).abs() < 4.0, "expected B3, got {measured:.2} Hz");
+    }
+
+    #[test]
+    fn restored_voice_range_has_correct_latency_before_first_audio() {
+        for rate in [44_100, 48_000, 96_000] {
+            for range in 0..=3 {
+                let mut values = SPEC.start();
+                values[7] = range;
+                let mut sound = TuneSound::new(rate, &values);
+                let initial = sound.latency();
+                let mut left = [0.0f32; 127];
+                let mut right = left;
+                sound.process(&mut left, &mut right);
+                assert!(initial > 0);
+                assert_eq!(sound.latency(), initial, "rate={rate}, range={range}");
+            }
+        }
+    }
+
+    #[test]
+    fn retune_display_preserves_existing_ms_mapping() {
+        assert_eq!(parse(2, "0 ms"), Some(0));
+        assert_eq!(parse(2, "100 ms"), Some(500));
+        assert_eq!(text(2, 500), "100.0 ms");
+        assert_eq!(text(2, 1000), "400.0 ms");
     }
 
     #[test]

@@ -95,6 +95,21 @@ jobs:
         run: |
           ./scripts/retire_ancestry_verified_branches.ps1
 
+      - name: Verify recording and device-input regressions
+        shell: pwsh
+        env:
+          OPENSTUDIO_NO_PLUGIN_BUILD: "1"
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        run: |
+          cargo test --locked -p os-app --bin skell-studio device::tests::reopening_input_never_replays_the_previous_device
+          if ($LASTEXITCODE -ne 0) { throw "Input reopen regression failed" }
+          cargo test --locked -p os-app --bin skell-studio device::tests::a_stream_hears_the_inputs_without_gaps
+          if ($LASTEXITCODE -ne 0) { throw "Input continuity regression failed" }
+          cargo test --locked -p os-app --bin skell-studio track_rec::tests
+          if ($LASTEXITCODE -ne 0) { throw "Track recording regression failed" }
+          cargo test --locked -p os-app --bin skell-studio smart_recording::tests
+          if ($LASTEXITCODE -ne 0) { throw "Smart recording regression failed" }
+
       - name: Run FL FST preset import regression
         shell: pwsh
         env:

@@ -257,7 +257,9 @@ struct Inputs {
     channels: AtomicUsize,
     block: AtomicUsize,
     written: AtomicU64,
-    /// Counts the streams opened: a reader of an earlier one is placed again.
+    /// First frame of the current stream; never read samples from an earlier device.
+    opened_at: AtomicU64,
+    /// Even values identify stable input generations; odd values mark a reopen.
     opened: AtomicU64,
 }
 
@@ -268,21 +270,30 @@ pub(crate) const INPUT_CHANNELS: usize = 8;
 
 fn input_ring() -> &'static Inputs {
     static I: OnceLock<Inputs> = OnceLock::new();
-    I.get_or_init(|| Inputs {
-        samples: (0..INPUT_FRAMES * INPUT_CHANNELS).map(|_| AtomicU32::new(0)).collect(),
-        channels: AtomicUsize::new(0),
-        block: AtomicUsize::new(0),
-        written: AtomicU64::new(0),
-        opened: AtomicU64::new(0),
-    })
+    I.get_or_init(Inputs::new)
 }
 
 impl Inputs {
+    fn new() -> Self {
+        Self {
+            samples: (0..INPUT_FRAMES * INPUT_CHANNELS).map(|_| AtomicU32::new(0)).collect(),
+            channels: AtomicUsize::new(0),
+            block: AtomicUsize::new(0),
+            written: AtomicU64::new(0),
+            opened_at: AtomicU64::new(0),
+            opened: AtomicU64::new(0),
+        }
+    }
+
     /// A stream with `channels` inputs and blocks of `block` frames opened (0: closed); readers start again.
     fn open(&self, channels: usize, block: usize) {
-        self.block.store(block, Ordering::Relaxed);
+        // The device owner serializes stream changes. Keep the absolute frame counter
+        // monotonic, but invalidate the previous stream's entire history.
         self.opened.fetch_add(1, Ordering::AcqRel);
-        self.channels.store(channels.min(INPUT_CHANNELS), Ordering::Release);
+        self.opened_at.store(self.written.load(Ordering::Acquire), Ordering::Relaxed);
+        self.block.store(block, Ordering::Relaxed);
+        self.channels.store(channels.min(INPUT_CHANNELS), Ordering::Relaxed);
+        self.opened.fetch_add(1, Ordering::Release);
     }
 
     /// The input's callback: a block of `frames` frames, `at(channel, frame)` an input's sample.
@@ -328,8 +339,18 @@ impl os_engine::DeviceInput for InputReader {
     /// input (the device stalled, or a system input's clock runs slower than the output's) or fell twice that far
     /// behind (it runs faster) is placed again: a jump, heard once.
     fn read(&mut self, out: &mut [f32]) {
-        let i = input_ring();
+        self.read_from(input_ring(), out);
+    }
+}
+
+impl InputReader {
+    fn read_from(&mut self, i: &Inputs, out: &mut [f32]) {
         let opened = i.opened.load(Ordering::Acquire);
+        if opened & 1 != 0 {
+            self.at = None;
+            out.fill(0.0);
+            return;
+        }
         let ch = i.channels.load(Ordering::Acquire);
         if ch == 0 || opened != self.opened {
             (self.at, self.opened) = (None, opened);
@@ -346,7 +367,8 @@ impl os_engine::DeviceInput for InputReader {
             Some(at) if at + frames <= written && written - at <= far => Some(at),
             _ => written.checked_sub(behind),
         };
-        let Some(at) = at else {
+        let Some(at) = at.filter(|&at| at >= i.opened_at.load(Ordering::Relaxed)) else {
+            self.at = None;
             out.fill(0.0);
             return;
         };
@@ -355,6 +377,12 @@ impl os_engine::DeviceInput for InputReader {
             for (c, s) in o.iter_mut().enumerate() {
                 *s = f32::from_bits(i.samples[base + c].load(Ordering::Relaxed));
             }
+        }
+        // Discard a block if the device was replaced while it was being copied.
+        if i.opened.load(Ordering::Acquire) != opened {
+            self.at = None;
+            out.fill(0.0);
+            return;
         }
         self.at = Some(at + frames);
     }
@@ -1069,9 +1097,8 @@ mod tests {
     /// to the newest input and then heard silence, a click, each time it rendered further ahead).
     #[test]
     fn a_stream_hears_the_inputs_without_gaps() {
-        use os_engine::DeviceInput;
         let (block, margin, tick) = (512u64, 264u64, 197usize);
-        let ring = input_ring();
+        let ring = Inputs::new();
         ring.open(1, block as usize);
         let mut reader = input_reader(margin);
         let (mut played, mut rendered, mut heard) = (0u64, 0u64, Vec::new());
@@ -1085,7 +1112,7 @@ mod tests {
             }
             // The feeder: whole ticks until a block and the margin are queued.
             while rendered < played + block + margin {
-                reader.read(&mut buf);
+                reader.read_from(&ring, &mut buf);
                 heard.extend_from_slice(&buf);
                 rendered += tick as u64;
             }
@@ -1094,6 +1121,30 @@ mod tests {
         let start = heard.iter().position(|&v| v != 0.0).expect("inputs heard");
         assert!(start <= 4 * block as usize, "placed within the first blocks ({start})");
         assert!(heard[start..].windows(2).all(|w| w[1] == w[0] + 1.0), "every frame once, in order, no silence between");
+    }
+
+    #[test]
+    fn reopening_input_never_replays_the_previous_device() {
+        let ring = Inputs::new();
+        let mut reader = input_reader(0);
+        let mut out = [0.0; 64];
+        ring.open(1, 64);
+        ring.push(512, |_, _| 0.75);
+        reader.read_from(&ring, &mut out);
+        assert!(out.iter().all(|&v| v == 0.75));
+
+        ring.open(2, 64);
+        reader.read_from(&ring, &mut out);
+        assert!(out.iter().all(|&v| v == 0.0), "old input after reopening");
+        ring.push(64, |_, _| -0.5);
+        reader.read_from(&ring, &mut out);
+        assert!(out.iter().all(|&v| v == 0.0), "must prime the new stream");
+        ring.push(256, |c, _| if c == 0 { -0.5 } else { 0.25 });
+        reader.read_from(&ring, &mut out);
+        assert!(out.chunks_exact(2).all(|v| v == [-0.5, 0.25]));
+        ring.open(0, 0);
+        reader.read_from(&ring, &mut out);
+        assert!(out.iter().all(|&v| v == 0.0));
     }
 
     /// The Buffer length menu's lengths per mode (spec: audio/wasapi-low-latency.md 4.3): only those that change

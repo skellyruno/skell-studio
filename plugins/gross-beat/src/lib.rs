@@ -89,7 +89,7 @@ fn parse(k: usize, value: &str) -> Option<i32> {
     let s = value.trim().trim_end_matches('%').trim();
     if k == 0 || k == 1 {
         let n = s.strip_prefix("Slot").unwrap_or(s).trim().parse::<i32>().ok()?;
-        return Some((n - 1).clamp(0, 35));
+        return Some(n.saturating_sub(1).clamp(0, 35));
     }
     if k == 7 && (s.eq_ignore_ascii_case("on") || s.eq_ignore_ascii_case("off")) {
         return Some(i32::from(s.eq_ignore_ascii_case("on")));
@@ -247,6 +247,17 @@ mod tests {
         (0..(rate as f32 * seconds) as usize)
             .map(|i| (std::f32::consts::TAU * 220.0 * i as f32 / rate as f32).sin() * 0.25)
             .collect()
+    }
+
+    #[test]
+    fn slot_text_parsing_clamps_extreme_values_without_overflow() {
+        for k in [0, 1] {
+            assert_eq!(parse(k, "-2147483648"), Some(0));
+            assert_eq!(parse(k, "2147483647"), Some(35));
+            assert_eq!(parse(k, "Slot 01"), Some(0));
+            assert_eq!(parse(k, "Slot 36"), Some(35));
+            assert_eq!(parse(k, "not a slot"), None);
+        }
     }
 
     #[test]

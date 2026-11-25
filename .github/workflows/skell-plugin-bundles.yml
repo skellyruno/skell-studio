@@ -67,6 +67,10 @@ jobs:
           $env:SKELL_DSP_METRICS_PATH = Join-Path $shotDir "BEAT_DSP_METRICS.txt"
           cargo test --locked -p lemon-limiter -p lemon-delay -p lemon-reverb -p lemon-hall -p lemon-parametric-eq-2 -p press -p gross-beat -p fruity-compressor -p lynx-tune
 
+      - name: Verify FLP container compatibility on release-candidate commits
+        shell: pwsh
+        run: cargo test --locked -p os-flp --lib
+
       - name: Upload native Skell plugin editor captures
         if: always()
         uses: actions/upload-artifact@v4
